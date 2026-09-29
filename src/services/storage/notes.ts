@@ -1,12 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import { CreateNoteInput, Note, UpdateNoteInput } from "./types";
+import { CreateNoteInput, ListNotesOptions, Note, UpdateNoteInput } from "./types";
 
 export const notesStorage = {
   /**
    * Retrieves notes list ordered by pinned status and last modification date.
+   * Supports filtering by notebook or unfiled status.
    */
-  async list(includeDeleted = false): Promise<Note[]> {
-    return await invoke<Note[]>("list_notes", { includeDeleted });
+  async list(options?: ListNotesOptions | boolean): Promise<Note[]> {
+    if (typeof options === "boolean") {
+      return await invoke<Note[]>("list_notes", { includeDeleted: options });
+    }
+    const { includeDeleted = false, notebookId, unfiledOnly = false } = options || {};
+    return await invoke<Note[]>("list_notes", {
+      includeDeleted,
+      notebookId: notebookId ?? null,
+      unfiledOnly,
+    });
   },
 
   /**
@@ -35,5 +44,15 @@ export const notesStorage = {
    */
   async delete(id: string, soft = true): Promise<boolean> {
     return await invoke<boolean>("delete_note", { id, soft });
+  },
+
+  /**
+   * Moves a note to a target notebook, or unfiles it when notebookId is null.
+   */
+  async moveToNotebook(id: string, notebookId: string | null): Promise<Note> {
+    return await invoke<Note>("move_note_to_notebook", {
+      id,
+      notebookId,
+    });
   },
 };

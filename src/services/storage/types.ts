@@ -18,6 +18,12 @@ export interface Note {
   deleted_at: string | null;
 }
 
+export interface ListNotesOptions {
+  includeDeleted?: boolean;
+  notebookId?: string | null;
+  unfiledOnly?: boolean;
+}
+
 export interface CreateNoteInput {
   title?: string;
   content?: string;
@@ -48,6 +54,10 @@ export interface Notebook {
 export interface CreateNotebookInput {
   name: string;
   parent_id?: string | null;
+}
+
+export interface UpdateNotebookInput {
+  name: string;
 }
 
 export interface Tag {

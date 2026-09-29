@@ -143,21 +143,39 @@ impl NoteRepository {
     }
 
     pub fn list(conn: &Connection, include_deleted: bool) -> Result<Vec<Note>, StorageError> {
-        let sql = if include_deleted {
-            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
-             FROM notes
-             ORDER BY is_pinned DESC, modified_at DESC"
-        } else {
-            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
-             FROM notes
-             WHERE is_deleted = 0
-             ORDER BY is_pinned DESC, modified_at DESC"
-        };
+        Self::list_filtered(conn, include_deleted, None, false)
+    }
 
-        let mut stmt = conn.prepare(sql)?;
-        let note_iter = stmt.query_map([], Self::map_row)?;
+    pub fn list_filtered(
+        conn: &Connection,
+        include_deleted: bool,
+        notebook_id: Option<&str>,
+        unfiled_only: bool,
+    ) -> Result<Vec<Note>, StorageError> {
+        let mut sql = String::from(
+            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
+                    is_favorite, is_pinned, is_deleted, deleted_at
+             FROM notes
+             WHERE 1=1",
+        );
+
+        let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
+
+        if !include_deleted {
+            sql.push_str(" AND is_deleted = 0");
+        }
+
+        if unfiled_only {
+            sql.push_str(" AND notebook_id IS NULL");
+        } else if let Some(nb_id) = notebook_id {
+            sql.push_str(" AND notebook_id = ?");
+            params_vec.push(rusqlite::types::Value::Text(nb_id.to_string()));
+        }
+
+        sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let note_iter = stmt.query_map(rusqlite::params_from_iter(params_vec), Self::map_row)?;
 
         let mut notes = Vec::new();
         for note in note_iter {
@@ -233,6 +251,43 @@ impl NoteRepository {
             let rows_affected = conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
             Ok(rows_affected > 0)
         }
+    }
+
+    pub fn move_to_notebook(
+        conn: &Connection,
+        id: &str,
+        notebook_id: Option<&str>,
+    ) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id(conn, id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+
+        if let Some(target_nb_id) = notebook_id {
+            let nb_exists: bool = conn.query_row(
+                "SELECT COUNT(1) FROM notebooks WHERE id = ?1",
+                params![target_nb_id],
+                |row| row.get::<_, i64>(0),
+            )? > 0;
+
+            if !nb_exists {
+                return Err(StorageError::Validation(format!(
+                    "Notebook with id '{target_nb_id}' does not exist"
+                )));
+            }
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        conn.execute(
+            "UPDATE notes
+             SET notebook_id = ?1, modified_at = ?2
+             WHERE id = ?3",
+            params![notebook_id, now, id],
+        )?;
+
+        let mut updated = existing;
+        updated.notebook_id = notebook_id.map(|s| s.to_string());
+        updated.modified_at = now;
+        Ok(updated)
     }
 }
 

@@ -19,6 +19,12 @@ export const NoteCard: React.FC<NoteCardProps> = ({
       onClick={() => onSelect(note.id)}
       role="button"
       tabIndex={0}
+      draggable={true}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("application/x-note-id", note.id);
+        e.dataTransfer.setData("text/plain", note.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();

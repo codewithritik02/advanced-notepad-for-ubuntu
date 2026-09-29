@@ -8,6 +8,8 @@ export interface NoteEditorProps {
   onSaveNote?: (id: string, title: string, content: string, format?: NoteFormat) => Promise<void> | void;
   onNoteUpdated?: (updatedNote: Note) => void;
   onRegisterSave?: (saveFn: (() => Promise<void>) | null) => void;
+  notebookName?: string | null;
+  onMoveNote?: (note: Note) => void;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -16,6 +18,12 @@ const SaveIcon = () => (
     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
     <polyline points="17 21 17 13 7 13 7 21" />
     <polyline points="7 3 7 8 15 8" />
+  </svg>
+);
+
+const FolderMoveIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
   </svg>
 );
 
@@ -105,6 +113,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onSaveNote,
   onNoteUpdated,
   onRegisterSave,
+  notebookName,
+  onMoveNote,
 }) => {
   const [loadedNote, setLoadedNote] = useState<Note | null>(null);
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
@@ -698,6 +708,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
 
         <div className="toolbar-spacer" />
+
+        {onMoveNote && loadedNote && (
+          <button
+            type="button"
+            className="toolbar-notebook-badge"
+            title={`Move note to notebook (current: ${notebookName || "Unfiled"})`}
+            onClick={() => onMoveNote(loadedNote)}
+          >
+            <FolderMoveIcon />
+            <span>{notebookName || "Unfiled"}</span>
+          </button>
+        )}
 
         <button
           type="button"

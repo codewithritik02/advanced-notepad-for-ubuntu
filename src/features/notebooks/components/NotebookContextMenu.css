@@ -1,0 +1,100 @@
+/* Notebook Context Menu */
+
+.notebook-context-menu {
+  position: fixed;
+  z-index: 1000;
+  width: 190px;
+  background-color: var(--color-bg-surface-elevated, var(--color-bg-surface));
+  border: 1px solid var(--color-border-default, var(--color-border-subtle));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  animation: contextMenuFadeIn 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+@keyframes contextMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.notebook-context-menu-header {
+  padding: 6px 8px 4px 8px;
+  border-bottom: 1px solid var(--color-border-subtle);
+  margin-bottom: 4px;
+}
+
+.notebook-context-menu-title {
+  display: block;
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.notebook-context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.notebook-context-menu-item:hover,
+.notebook-context-menu-item:focus-visible {
+  background-color: var(--color-surface-hover);
+  outline: none;
+}
+
+.notebook-context-menu-item.is-danger {
+  color: var(--color-danger-default);
+}
+
+.notebook-context-menu-item.is-danger:hover,
+.notebook-context-menu-item.is-danger:focus-visible {
+  background-color: var(--color-danger-subtle);
+}
+
+.context-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+
+.context-menu-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notebook-context-menu-divider {
+  height: 1px;
+  background-color: var(--color-border-subtle);
+  margin: 4px 0;
+}
