@@ -1,0 +1,191 @@
+/* Personal Notepad — Reusable Button & IconButton Styling */
+
+.app-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
+  white-space: nowrap;
+}
+
+.app-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.app-btn:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.app-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ==========================================================================
+   Button Sizes
+   ========================================================================== */
+.app-btn-sm {
+  height: 28px;
+  padding: 0 var(--spacing-md);
+  font-size: var(--font-size-xs);
+}
+
+.app-btn-md {
+  height: 34px;
+  padding: 0 var(--spacing-base);
+  font-size: var(--font-size-sm);
+}
+
+.app-btn-lg {
+  height: 40px;
+  padding: 0 var(--spacing-xl);
+  font-size: var(--font-size-base);
+}
+
+/* ==========================================================================
+   Button Variants
+   ========================================================================== */
+/* Primary */
+.app-btn-primary {
+  background-color: var(--color-accent-default);
+  color: var(--color-accent-text);
+  border: 1px solid transparent;
+  box-shadow: var(--shadow-sm);
+}
+
+.app-btn-primary:hover:not(:disabled) {
+  background-color: var(--color-accent-hover);
+}
+
+.app-btn-primary:active:not(:disabled) {
+  background-color: var(--color-accent-active);
+}
+
+/* Secondary */
+.app-btn-secondary {
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+  box-shadow: var(--shadow-sm);
+}
+
+.app-btn-secondary:hover:not(:disabled) {
+  background-color: var(--color-surface-hover);
+  border-color: var(--color-border-strong);
+}
+
+.app-btn-secondary:active:not(:disabled) {
+  background-color: var(--color-surface-active);
+}
+
+/* Subtle */
+.app-btn-subtle {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border: 1px solid transparent;
+}
+
+.app-btn-subtle:hover:not(:disabled) {
+  background-color: var(--color-surface-active);
+}
+
+/* Ghost */
+.app-btn-ghost {
+  background-color: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid transparent;
+}
+
+.app-btn-ghost:hover:not(:disabled) {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.app-btn-ghost:active:not(:disabled) {
+  background-color: var(--color-surface-active);
+}
+
+/* Danger */
+.app-btn-danger {
+  background-color: var(--color-danger-default);
+  color: var(--color-danger-text);
+  border: 1px solid transparent;
+}
+
+.app-btn-danger:hover:not(:disabled) {
+  background-color: var(--color-danger-hover);
+}
+
+.app-btn-danger:active:not(:disabled) {
+  background-color: var(--color-danger-active);
+}
+
+/* ==========================================================================
+   Icon Button
+   ========================================================================== */
+.app-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  outline: none;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+  color: var(--color-text-secondary);
+}
+
+.app-icon-btn:hover:not(:disabled) {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.app-icon-btn:active:not(:disabled) {
+  background-color: var(--color-surface-active);
+}
+
+.app-icon-btn:focus-visible {
+  box-shadow: var(--shadow-focus);
+}
+
+.app-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app-icon-btn-sm {
+  width: 24px;
+  height: 24px;
+}
+
+.app-icon-btn-md {
+  width: 30px;
+  height: 30px;
+}
+
+.app-icon-btn-lg {
+  width: 36px;
+  height: 36px;
+}
+
+/* Loading spinner */
+.btn-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: btn-spin 0.65s linear infinite;
+}
+
+@keyframes btn-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

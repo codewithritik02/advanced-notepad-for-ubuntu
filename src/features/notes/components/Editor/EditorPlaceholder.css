@@ -1,0 +1,234 @@
+/* Personal Notepad — Editor Placeholder Panel Styling */
+
+.editor-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  position: relative;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   Editor Toolbar Placeholder
+   ========================================================================== */
+.editor-toolbar {
+  height: 38px;
+  min-height: 38px;
+  padding: 0 var(--spacing-base);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background-color: var(--color-bg-surface);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background-color: var(--color-border-subtle);
+  margin: 0 var(--spacing-xs);
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.toolbar-info-badge {
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-medium);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-muted);
+  letter-spacing: 0.02em;
+}
+
+/* ==========================================================================
+   Editor Document Scroll Area
+   ========================================================================== */
+.editor-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--spacing-xl) var(--spacing-2xl);
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 1100px) {
+  .editor-scroll-area {
+    padding: var(--spacing-lg) var(--spacing-base);
+  }
+}
+
+.editor-document {
+  width: 100%;
+  max-width: 820px;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-title-wrap {
+  margin-bottom: var(--spacing-sm);
+}
+
+.editor-title-input {
+  width: 100%;
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  line-height: var(--line-height-tight);
+  letter-spacing: -0.02em;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0;
+}
+
+.editor-title-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.editor-meta-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-muted);
+  margin-bottom: var(--spacing-base);
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.meta-label {
+  font-weight: var(--font-weight-medium);
+}
+
+.editor-body-divider {
+  height: 1px;
+  background-color: var(--color-border-subtle);
+  margin-bottom: var(--spacing-lg);
+}
+
+.editor-body-wrap {
+  flex: 1;
+  display: flex;
+}
+
+.editor-content-area {
+  width: 100%;
+  min-height: 380px;
+  font-family: var(--font-family-sans);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editor-content-area::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* ==========================================================================
+   Status Bar
+   ========================================================================== */
+.editor-status-bar {
+  height: 28px;
+  min-height: 28px;
+  padding: 0 var(--spacing-base);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border-subtle);
+  background-color: var(--color-bg-surface);
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.status-separator {
+  color: var(--color-border-strong);
+  font-size: 8px;
+}
+
+.status-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-success-default);
+}
+
+/* ==========================================================================
+   Empty State
+   ========================================================================== */
+.editor-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  padding: var(--spacing-2xl);
+  color: var(--color-text-muted);
+}
+
+.editor-empty-icon {
+  margin-bottom: var(--spacing-base);
+  opacity: 0.4;
+  color: var(--color-text-muted);
+}
+
+.editor-empty-title {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.editor-empty-subtitle {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  max-width: 280px;
+  line-height: var(--line-height-normal);
+}
