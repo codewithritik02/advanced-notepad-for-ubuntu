@@ -11,6 +11,8 @@ export interface NotesListProps {
   status?: NotesListStatus;
   title?: string;
   errorMessage?: string;
+  emptyTitle?: string;
+  emptyDescription?: string;
   onRetry?: () => void;
   onNewNote?: () => void;
 }
@@ -31,6 +33,8 @@ export const NotesList: React.FC<NotesListProps> = ({
   status = "idle",
   title = "All Notes",
   errorMessage = "Unable to load notes.",
+  emptyTitle = "No notes yet",
+  emptyDescription = "Create your first note to get started.",
   onRetry,
   onNewNote,
 }) => {
@@ -66,9 +70,9 @@ export const NotesList: React.FC<NotesListProps> = ({
         {(status === "empty" || (status === "idle" && notes.length === 0)) && (
           <EmptyState
             icon={<EmptyNotesIcon />}
-            title="No notes yet"
-            description="Create your first note to get started."
-            actionText={onNewNote ? "New Note" : undefined}
+            title={emptyTitle}
+            description={emptyDescription}
+            actionText={onNewNote ? "+ New Note" : undefined}
             onAction={onNewNote}
           />
         )}

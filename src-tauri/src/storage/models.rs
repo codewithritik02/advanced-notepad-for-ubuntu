@@ -56,6 +56,12 @@ pub struct CreateNotebookDto {
     pub parent_id: Option<String>,
 }
 
+/// DTO for updating a notebook (rename)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateNotebookDto {
+    pub name: String,
+}
+
 /// Persistent Tag model
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {

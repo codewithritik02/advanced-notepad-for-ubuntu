@@ -1,0 +1,230 @@
+/* Personal Notepad — Notebook Tree Styling */
+
+.notebook-tree-root,
+.notebook-tree-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.notebook-tree-li {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.notebook-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding-right: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-regular);
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+
+.notebook-tree-row:hover {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.notebook-tree-row:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent-default);
+}
+
+.notebook-tree-row.is-selected {
+  background-color: var(--color-surface-selected);
+  color: var(--color-accent-default);
+  font-weight: var(--font-weight-medium);
+}
+
+.notebook-tree-row.is-drag-over {
+  outline: 2px dashed var(--color-accent-default);
+  background-color: var(--color-surface-selected);
+  color: var(--color-accent-default);
+}
+
+
+.notebook-tree-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  opacity: 0.7;
+  transition: opacity var(--transition-fast), background-color var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.notebook-tree-chevron:hover {
+  opacity: 1;
+  background-color: rgba(127, 127, 127, 0.15);
+}
+
+.notebook-tree-chevron.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.chevron-spacer {
+  width: 12px;
+  height: 12px;
+  display: inline-block;
+}
+
+.notebook-tree-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.notebook-tree-row.is-selected .notebook-tree-icon {
+  opacity: 1;
+  color: var(--color-accent-default);
+}
+
+.notebook-tree-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-sm);
+}
+
+.notebook-tree-count {
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-muted);
+  background-color: var(--color-surface-hover);
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: var(--font-weight-medium);
+  flex-shrink: 0;
+}
+
+.notebook-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  margin-left: auto;
+}
+
+.notebook-tree-row:hover .notebook-tree-actions,
+.notebook-tree-row:focus-within .notebook-tree-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.notebook-tree-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.notebook-tree-action-btn:hover {
+  color: var(--color-text-primary);
+  background-color: var(--color-surface-hover);
+}
+
+.notebook-tree-action-btn.action-delete:hover {
+  color: var(--color-text-danger, #ef4444);
+}
+
+/* States */
+.notebook-tree-state {
+  padding: var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.notebook-tree-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border-subtle);
+  border-top-color: var(--color-accent-default);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.notebook-tree-error {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--color-text-danger, #ef4444);
+}
+
+.notebook-tree-retry-btn {
+  padding: 3px 8px;
+  font-size: var(--font-size-xs);
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.notebook-tree-empty {
+  padding: var(--spacing-xs) var(--spacing-sm) var(--spacing-sm) var(--spacing-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notebook-tree-empty-text {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.notebook-tree-create-btn {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-accent-default);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium);
+}
+
+.notebook-tree-create-btn:hover {
+  text-decoration: underline;
+}

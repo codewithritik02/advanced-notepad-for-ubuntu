@@ -98,6 +98,28 @@
   flex: 1;
 }
 
+.toolbar-notebook-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 var(--spacing-sm);
+  background-color: var(--color-surface-hover);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-notebook-badge:hover {
+  background-color: var(--color-surface-selected);
+  color: var(--color-accent-default);
+  border-color: var(--color-accent-default);
+}
+
+
 .toolbar-info-badge {
   font-size: var(--font-size-2xs);
   font-weight: var(--font-weight-medium);

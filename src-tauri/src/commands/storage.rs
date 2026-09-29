@@ -1,7 +1,9 @@
 use serde::Serialize;
 use tauri::State;
 use crate::storage::{
-    models::{CreateNotebookDto, CreateNoteDto, Note, Notebook, Tag, UpdateNoteDto},
+    models::{
+        CreateNotebookDto, CreateNoteDto, Note, Notebook, Tag, UpdateNoteDto, UpdateNotebookDto,
+    },
     repositories::{NotebookRepository, NoteRepository, SettingsRepository, TagRepository},
     Database, StoragePaths,
 };
@@ -26,9 +28,17 @@ pub fn get_storage_info(paths: State<'_, StoragePaths>) -> Result<StorageInfo, S
 pub fn list_notes(
     db: State<'_, Database>,
     include_deleted: Option<bool>,
+    notebook_id: Option<String>,
+    unfiled_only: Option<bool>,
 ) -> Result<Vec<Note>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list(&conn, include_deleted.unwrap_or(false)).map_err(|e| e.to_string())
+    NoteRepository::list_filtered(
+        &conn,
+        include_deleted.unwrap_or(false),
+        notebook_id.as_deref(),
+        unfiled_only.unwrap_or(false),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -64,9 +74,26 @@ pub fn delete_note(
 }
 
 #[tauri::command]
+pub fn move_note_to_notebook(
+    db: State<'_, Database>,
+    id: String,
+    notebook_id: Option<String>,
+) -> Result<Note, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::move_to_notebook(&conn, &id, notebook_id.as_deref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
 pub fn list_notebooks(db: State<'_, Database>) -> Result<Vec<Notebook>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     NotebookRepository::list(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_notebook(db: State<'_, Database>, id: String) -> Result<Option<Notebook>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NotebookRepository::get_by_id(&conn, &id).map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
@@ -75,7 +102,23 @@ pub fn create_notebook(
     dto: CreateNotebookDto,
 ) -> Result<Notebook, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NotebookRepository::create(&conn, dto).map_err(|e| e.to_string())
+    NotebookRepository::create(&conn, dto).map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn update_notebook(
+    db: State<'_, Database>,
+    id: String,
+    dto: UpdateNotebookDto,
+) -> Result<Notebook, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NotebookRepository::update(&conn, &id, dto).map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn delete_notebook(db: State<'_, Database>, id: String) -> Result<bool, String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NotebookRepository::delete(&mut conn, &id).map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]

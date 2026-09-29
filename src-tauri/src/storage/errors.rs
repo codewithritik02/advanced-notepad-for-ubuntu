@@ -17,6 +17,18 @@ pub enum StorageError {
     #[error("Record not found: {0}")]
     NotFound(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    #[error("Invalid hierarchy: {0}")]
+    InvalidHierarchy(String),
+
+    #[error("Deletion blocked: {0}")]
+    DeleteBlocked(String),
+
+    #[error("Storage unavailable: {0}")]
+    StorageUnavailable(String),
+
     #[error("Storage initialization failed: {0}")]
     InitializationFailed(String),
 }
@@ -52,6 +64,10 @@ impl StorageError {
             },
             StorageError::NotFound(msg) => msg.clone(),
             StorageError::Validation(msg) => msg.clone(),
+            StorageError::Conflict(msg) => msg.clone(),
+            StorageError::InvalidHierarchy(msg) => msg.clone(),
+            StorageError::DeleteBlocked(msg) => msg.clone(),
+            StorageError::StorageUnavailable(msg) => msg.clone(),
             StorageError::Migration(msg) => format!("Database schema migration error: {msg}"),
             StorageError::InitializationFailed(msg) => format!("Storage initialization error: {msg}"),
         }
