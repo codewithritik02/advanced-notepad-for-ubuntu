@@ -1,29 +1,139 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { MainLayout } from "../layouts/MainLayout";
 import { TopBar } from "../components/TopBar/TopBar";
 import { Sidebar, NavItemId } from "../components/Sidebar/Sidebar";
 import { NotesList } from "../features/notes/components/NotesList/NotesList";
+import { NoteListItem, NotesListStatus } from "../features/notes/types";
 import { EditorPlaceholder } from "../features/notes/components/Editor/EditorPlaceholder";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
-import { MOCK_NOTES } from "../features/notes/mockNotes";
 import { useTheme } from "../hooks/useTheme";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
+import { storageService, Note, Notebook, Tag } from "../services/storage";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
   const [searchQuery, setSearchQuery] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(
-    MOCK_NOTES[0]?.id ?? null
-  );
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [notebooks, setNotebooks] = useState<Notebook[]>([]);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [isStorageReady, setIsStorageReady] = useState(false);
+  const [status, setStatus] = useState<NotesListStatus>("loading");
+  const [errorMessage, setErrorMessage] = useState("Unable to load notes.");
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Keyboard shortcut actions
-  const handleNewNoteAction = useCallback(() => {
-    // UI action placeholder for future note creation
+  // Check and verify storage readiness at startup
+  const initStorage = useCallback(async () => {
+    setStatus("loading");
+    try {
+      const info = await storageService.getInfo();
+      if (info.is_initialized) {
+        setIsStorageReady(true);
+      } else {
+        setErrorMessage(
+          "Unable to initialize local storage. Please check disk permissions."
+        );
+        setStatus("error");
+      }
+    } catch (err) {
+      setErrorMessage(
+        "Failed to connect to local database: " +
+          (err instanceof Error ? err.message : String(err))
+      );
+      setStatus("error");
+    }
   }, []);
+
+  useEffect(() => {
+    initStorage();
+  }, [initStorage]);
+
+  // Load metadata (notebooks and tags) from SQLite
+  const loadMetadata = useCallback(async () => {
+    if (!isStorageReady) return;
+    try {
+      const [nbList, tagList] = await Promise.all([
+        storageService.notebooks.list(),
+        storageService.tags.list(),
+      ]);
+      setNotebooks(nbList);
+      setTags(tagList);
+    } catch {
+      // Non-fatal error for metadata
+    }
+  }, [isStorageReady]);
+
+  // Load persistent notes from SQLite
+  const loadNotes = useCallback(async () => {
+    if (!isStorageReady) return;
+    setStatus("loading");
+    try {
+      const isTrash = activeNavId === "trash";
+      const fetchedNotes = await storageService.notes.list(isTrash);
+      setNotes(fetchedNotes);
+
+      if (fetchedNotes.length > 0) {
+        setSelectedNoteId((prev) =>
+          prev && fetchedNotes.some((n) => n.id === prev) ? prev : fetchedNotes[0].id
+        );
+      } else {
+        setSelectedNoteId(null);
+      }
+      setStatus(fetchedNotes.length === 0 ? "empty" : "idle");
+    } catch (err) {
+      setErrorMessage(
+        "Unable to load notes: " +
+          (err instanceof Error ? err.message : String(err))
+      );
+      setStatus("error");
+    }
+  }, [activeNavId, isStorageReady]);
+
+  useEffect(() => {
+    if (isStorageReady) {
+      loadNotes();
+      loadMetadata();
+    }
+  }, [isStorageReady, loadNotes, loadMetadata]);
+
+  // Persistent note creation
+  const handleNewNoteAction = useCallback(async () => {
+    try {
+      const created = await storageService.notes.create({
+        title: "Untitled Note",
+        content: "",
+        format: "txt",
+      });
+      setNotes((prev) => [created, ...prev]);
+      setSelectedNoteId(created.id);
+      setStatus("idle");
+    } catch (err) {
+      setErrorMessage(
+        "Failed to create note: " +
+          (err instanceof Error ? err.message : String(err))
+      );
+      setStatus("error");
+    }
+  }, []);
+
+  // Persistent note update
+  const handleSaveNote = useCallback(
+    async (id: string, title: string, content: string) => {
+      try {
+        const updated = await storageService.notes.update(id, { title, content });
+        setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
+      } catch (err) {
+        setErrorMessage(
+          "Failed to save note: " +
+            (err instanceof Error ? err.message : String(err))
+        );
+      }
+    },
+    []
+  );
 
   const handleFocusSearch = useCallback(() => {
     searchInputRef.current?.focus();
@@ -52,52 +162,73 @@ export function App() {
     onEscape: handleEscape,
   });
 
-  // Derive title and notes based on active sidebar navigation
-  const getNavDetails = () => {
+  // Filter notes based on active sidebar section and search query
+  const filteredNotes = useMemo(() => {
+    return notes.filter((n) => {
+      if (activeNavId === "favorites" && !n.is_favorite) return false;
+      if (activeNavId === "trash" && !n.is_deleted) return false;
+      if (activeNavId !== "trash" && n.is_deleted) return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        return (
+          n.title.toLowerCase().includes(q) ||
+          n.content.toLowerCase().includes(q)
+        );
+      }
+      return true;
+    });
+  }, [notes, activeNavId, searchQuery]);
+
+  // Convert SQLite domain Notes to UI NoteListItems
+  const noteListItems = useMemo<NoteListItem[]>(() => {
+    return filteredNotes.map((n) => ({
+      id: n.id,
+      title: n.title || "Untitled Note",
+      preview: n.content.trim() ? n.content.slice(0, 120) : "No additional text",
+      updatedAt: n.modified_at
+        ? new Date(n.modified_at).toLocaleDateString([], {
+            month: "short",
+            day: "numeric",
+          })
+        : "Just now",
+      isFavorite: n.is_favorite,
+      notebookId: n.notebook_id ?? undefined,
+    }));
+  }, [filteredNotes]);
+
+  const selectedNote = useMemo(() => {
+    return (
+      filteredNotes.find((n) => n.id === selectedNoteId) ??
+      (filteredNotes.length > 0 ? filteredNotes[0] : null)
+    );
+  }, [filteredNotes, selectedNoteId]);
+
+  const getSectionTitle = () => {
+    if (searchQuery.trim()) return `Search: "${searchQuery}"`;
     switch (activeNavId) {
       case "favorites":
-        return {
-          title: "Favorites",
-          notes: MOCK_NOTES.filter((n) => n.isFavorite),
-        };
+        return "Favorites";
       case "notebooks":
-        return {
-          title: "Notebooks",
-          notes: MOCK_NOTES,
-        };
+        return notebooks.length > 0 ? `Notebooks (${notebooks.length})` : "Notebooks";
       case "tags":
-        return {
-          title: "Tags",
-          notes: MOCK_NOTES,
-        };
+        return tags.length > 0 ? `Tags (${tags.length})` : "Tags";
       case "trash":
-        return {
-          title: "Trash",
-          notes: [],
-        };
+        return "Trash";
       case "all-notes":
       default:
-        return {
-          title: "All Notes",
-          notes: MOCK_NOTES,
-        };
+        return "All Notes";
     }
   };
 
-  const { title, notes } = getNavDetails();
-
-  // Visual search filtering on temporary mock data (UI state only)
-  const displayedNotes = searchQuery.trim()
-    ? notes.filter(
-        (n) =>
-          n.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          n.preview.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : notes;
-
-  const selectedNote =
-    displayedNotes.find((n) => n.id === selectedNoteId) ??
-    (displayedNotes.length > 0 ? displayedNotes[0] : null);
+  const handleRetry = () => {
+    if (!isStorageReady) {
+      initStorage();
+    } else {
+      loadNotes();
+      loadMetadata();
+    }
+  };
 
   return (
     <>
@@ -119,29 +250,27 @@ export function App() {
             onSelectNav={(navId) => {
               setActiveNavId(navId);
               setSearchQuery("");
-              if (navId === "trash") {
-                setSelectedNoteId(null);
-              } else if (navId === "favorites") {
-                const firstFav = MOCK_NOTES.find((n) => n.isFavorite);
-                setSelectedNoteId(firstFav?.id ?? null);
-              } else {
-                setSelectedNoteId(MOCK_NOTES[0]?.id ?? null);
-              }
             }}
-            onNewNoteClick={() => {
-              // Visual action placeholder for future note creation
-            }}
+            onNewNoteClick={handleNewNoteAction}
           />
         }
         notesList={
           <NotesList
-            title={searchQuery.trim() ? `Search: "${searchQuery}"` : title}
-            notes={displayedNotes}
+            title={getSectionTitle()}
+            notes={noteListItems}
             selectedNoteId={selectedNote?.id ?? null}
             onSelectNote={setSelectedNoteId}
+            status={status}
+            errorMessage={errorMessage}
+            onRetry={handleRetry}
           />
         }
-        editor={<EditorPlaceholder selectedNote={selectedNote} />}
+        editor={
+          <EditorPlaceholder
+            selectedNote={selectedNote}
+            onSaveNote={handleSaveNote}
+          />
+        }
       />
 
       <SettingsModal
