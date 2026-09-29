@@ -12,6 +12,7 @@ export interface NotesListProps {
   title?: string;
   errorMessage?: string;
   onRetry?: () => void;
+  onNewNote?: () => void;
 }
 
 const EmptyNotesIcon = () => (
@@ -31,6 +32,7 @@ export const NotesList: React.FC<NotesListProps> = ({
   title = "All Notes",
   errorMessage = "Unable to load notes.",
   onRetry,
+  onNewNote,
 }) => {
   return (
     <div className="notes-list-container">
@@ -66,6 +68,8 @@ export const NotesList: React.FC<NotesListProps> = ({
             icon={<EmptyNotesIcon />}
             title="No notes yet"
             description="Create your first note to get started."
+            actionText={onNewNote ? "New Note" : undefined}
+            onAction={onNewNote}
           />
         )}
 

@@ -4,11 +4,11 @@ import { TopBar } from "../components/TopBar/TopBar";
 import { Sidebar, NavItemId } from "../components/Sidebar/Sidebar";
 import { NotesList } from "../features/notes/components/NotesList/NotesList";
 import { NoteListItem, NotesListStatus } from "../features/notes/types";
-import { EditorPlaceholder } from "../features/notes/components/Editor/EditorPlaceholder";
+import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { storageService, Note, Notebook, Tag } from "../services/storage";
+import { storageService, Note, Notebook, Tag, NoteFormat } from "../services/storage";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -99,9 +99,22 @@ export function App() {
     }
   }, [isStorageReady, loadNotes, loadMetadata]);
 
+  const isCreatingRef = useRef(false);
+
   // Persistent note creation
   const handleNewNoteAction = useCallback(async () => {
+    if (isCreatingRef.current) return;
+    isCreatingRef.current = true;
+
     try {
+      // If user was viewing trash or has an active search filter, reset to all-notes to reveal the new note
+      if (activeNavId === "trash") {
+        setActiveNavId("all-notes");
+      }
+      if (searchQuery) {
+        setSearchQuery("");
+      }
+
       const created = await storageService.notes.create({
         title: "Untitled Note",
         content: "",
@@ -116,14 +129,20 @@ export function App() {
           (err instanceof Error ? err.message : String(err))
       );
       setStatus("error");
+    } finally {
+      isCreatingRef.current = false;
     }
-  }, []);
+  }, [activeNavId, searchQuery]);
 
   // Persistent note update
   const handleSaveNote = useCallback(
-    async (id: string, title: string, content: string) => {
+    async (id: string, title: string, content: string, format?: NoteFormat) => {
       try {
-        const updated = await storageService.notes.update(id, { title, content });
+        const updated = await storageService.notes.update(id, {
+          title,
+          content,
+          format: format || "txt",
+        });
         setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
       } catch (err) {
         setErrorMessage(
@@ -155,11 +174,23 @@ export function App() {
     }
   }, [isSettingsOpen, searchQuery]);
 
+  const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  const handleRegisterSave = useCallback(
+    (saveFn: (() => Promise<void> | void) | null) => {
+      editorSaveRef.current = saveFn;
+    },
+    []
+  );
+
   useKeyboardShortcuts({
     onNewNote: handleNewNoteAction,
     onFocusSearch: handleFocusSearch,
     onOpenSettings: handleOpenSettings,
     onEscape: handleEscape,
+    onSaveNote: () => {
+      editorSaveRef.current?.();
+    },
   });
 
   // Filter notes based on active sidebar section and search query
@@ -182,26 +213,46 @@ export function App() {
 
   // Convert SQLite domain Notes to UI NoteListItems
   const noteListItems = useMemo<NoteListItem[]>(() => {
-    return filteredNotes.map((n) => ({
-      id: n.id,
-      title: n.title || "Untitled Note",
-      preview: n.content.trim() ? n.content.slice(0, 120) : "No additional text",
-      updatedAt: n.modified_at
-        ? new Date(n.modified_at).toLocaleDateString([], {
-            month: "short",
-            day: "numeric",
-          })
-        : "Just now",
-      isFavorite: n.is_favorite,
-      notebookId: n.notebook_id ?? undefined,
-    }));
+    return filteredNotes.map((n) => {
+      // For large notes (100KB-1MB), avoid regex replacement over the full body
+      const snippet = n.content.length > 300 ? n.content.slice(0, 300) : n.content;
+      const cleanContent = snippet.replace(/\s+/g, " ").trim();
+      const preview =
+        cleanContent.length > 0
+          ? cleanContent.length > 120
+            ? cleanContent.slice(0, 120) + "…"
+            : cleanContent
+          : "No content";
+
+      let updatedAt = "Just now";
+      if (n.modified_at) {
+        try {
+          const date = new Date(n.modified_at);
+          if (!isNaN(date.getTime())) {
+            updatedAt = date.toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+            });
+          }
+        } catch {
+          // Graceful fallback to default
+        }
+      }
+
+      return {
+        id: n.id,
+        title: n.title.trim() ? n.title : "Untitled Note",
+        preview,
+        updatedAt,
+        isFavorite: n.is_favorite,
+        notebookId: n.notebook_id ?? undefined,
+      };
+    });
   }, [filteredNotes]);
 
   const selectedNote = useMemo(() => {
-    return (
-      filteredNotes.find((n) => n.id === selectedNoteId) ??
-      (filteredNotes.length > 0 ? filteredNotes[0] : null)
-    );
+    if (!selectedNoteId) return null;
+    return filteredNotes.find((n) => n.id === selectedNoteId) ?? null;
   }, [filteredNotes, selectedNoteId]);
 
   const getSectionTitle = () => {
@@ -263,12 +314,19 @@ export function App() {
             status={status}
             errorMessage={errorMessage}
             onRetry={handleRetry}
+            onNewNote={handleNewNoteAction}
           />
         }
         editor={
-          <EditorPlaceholder
-            selectedNote={selectedNote}
+          <NoteEditor
+            noteId={selectedNote?.id ?? null}
             onSaveNote={handleSaveNote}
+            onRegisterSave={handleRegisterSave}
+            onNoteUpdated={(updated) => {
+              setNotes((prev) =>
+                prev.map((n) => (n.id === updated.id ? updated : n))
+              );
+            }}
           />
         }
       />
