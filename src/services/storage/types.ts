@@ -2,11 +2,13 @@
  * Strongly-typed domain models and DTOs corresponding to SQLite schema entities.
  */
 
+export type NoteFormat = "txt" | "md";
+
 export interface Note {
   id: string;
   title: string;
   content: string;
-  format: "txt" | "md" | string;
+  format: NoteFormat | string;
   notebook_id: string | null;
   created_at: string;
   modified_at: string;

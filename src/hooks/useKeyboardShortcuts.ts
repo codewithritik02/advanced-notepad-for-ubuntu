@@ -5,6 +5,7 @@ export interface KeyboardShortcutHandlers {
   onFocusSearch?: () => void;
   onOpenSettings?: () => void;
   onEscape?: () => void;
+  onSaveNote?: () => void;
 }
 
 /**
@@ -18,6 +19,7 @@ export function useKeyboardShortcuts({
   onFocusSearch,
   onOpenSettings,
   onEscape,
+  onSaveNote,
 }: KeyboardShortcutHandlers): void {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -27,6 +29,13 @@ export function useKeyboardShortcuts({
       // Escape — Global dismiss / blur
       if (event.key === "Escape") {
         onEscape?.();
+        return;
+      }
+
+      // Ctrl/Cmd + S — Explicit Save Current Note
+      if (isModifier && key === "s") {
+        event.preventDefault();
+        onSaveNote?.();
         return;
       }
 
@@ -54,7 +63,7 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onNewNote, onFocusSearch, onOpenSettings, onEscape]);
+  }, [onNewNote, onFocusSearch, onOpenSettings, onEscape, onSaveNote]);
 }
 
 export default useKeyboardShortcuts;
