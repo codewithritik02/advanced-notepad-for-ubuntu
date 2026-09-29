@@ -1,0 +1,81 @@
+/* Personal Notepad — Modal Dialog Styling */
+
+.app-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background-color: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-base);
+  animation: modal-fade-in var(--transition-fast) ease-out;
+}
+
+.app-modal-window {
+  width: 100%;
+  background-color: var(--color-bg-surface-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modal-scale-in var(--transition-fast) ease-out;
+}
+
+.app-modal-header {
+  height: 48px;
+  padding: 0 var(--spacing-base);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+}
+
+.app-modal-title {
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.app-modal-body {
+  padding: var(--spacing-base);
+  overflow-y: auto;
+  max-height: calc(80vh - 110px);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.app-modal-footer {
+  padding: var(--spacing-sm) var(--spacing-base);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  border-top: 1px solid var(--color-border-subtle);
+  background-color: var(--color-bg-panel);
+  flex-shrink: 0;
+}
+
+@keyframes modal-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modal-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

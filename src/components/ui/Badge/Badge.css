@@ -1,0 +1,81 @@
+/* Personal Notepad — Reusable Badge & Tag Styling */
+
+.app-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-full);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.app-badge-sm {
+  padding: 2px 7px;
+  font-size: var(--font-size-2xs);
+}
+
+.app-badge-md {
+  padding: 3px 10px;
+  font-size: var(--font-size-xs);
+}
+
+/* Badge Variants */
+.app-badge-default {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+
+.app-badge-accent {
+  background-color: var(--color-accent-subtle);
+  color: var(--color-accent-default);
+}
+
+.app-badge-subtle {
+  background-color: var(--color-bg-base);
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.app-badge-danger {
+  background-color: var(--color-danger-subtle);
+  color: var(--color-danger-default);
+}
+
+.app-badge-warning {
+  background-color: #fef3c7;
+  color: #b45309;
+}
+
+.app-badge-success {
+  background-color: #d1fae5;
+  color: #047857;
+}
+
+/* Tag */
+.app-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-regular);
+  line-height: normal;
+}
+
+.app-tag-remove {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 1px;
+}
+
+.app-tag-remove:hover {
+  color: var(--color-danger-default);
+}

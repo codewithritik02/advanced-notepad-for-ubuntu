@@ -1,0 +1,159 @@
+/* Personal Notepad — Main Three-Pane Desktop Layout */
+
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  background-color: var(--color-bg-base);
+}
+
+/* ==========================================================================
+   Top Bar Container
+   ========================================================================== */
+.app-topbar {
+  height: var(--topbar-height);
+  min-height: var(--topbar-height);
+  border-bottom: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-surface);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--spacing-md);
+  z-index: 10;
+  flex-shrink: 0;
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+.topbar-placeholder {
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-base);
+  color: var(--color-text-primary);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+/* ==========================================================================
+   Main Body — Holds the Three Panes
+   ========================================================================== */
+.app-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+/* Base style shared across all panes */
+.app-pane {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+  position: relative;
+}
+
+/* ==========================================================================
+   Left Pane — Sidebar Navigation
+   ========================================================================== */
+.app-sidebar-pane {
+  width: var(--sidebar-default-width);
+  min-width: var(--sidebar-min-width);
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-sidebar);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+/* ==========================================================================
+   Middle Pane — Notes List
+   ========================================================================== */
+.app-notes-list-pane {
+  width: var(--notes-list-default-width);
+  min-width: var(--notes-list-min-width);
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-panel);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+/* ==========================================================================
+   Right Pane — Note Editor (Receives majority of width)
+   ========================================================================== */
+.app-editor-pane {
+  flex: 1;
+  min-width: 360px;
+  background-color: var(--color-bg-surface);
+  transition: background-color var(--transition-normal);
+}
+
+/* Internal pane header / toolbar */
+.pane-header {
+  height: 40px;
+  min-height: 40px;
+  padding: 0 var(--spacing-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+/* Pane content area with independent scroll */
+.pane-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--spacing-md);
+}
+
+/* ==========================================================================
+   Desktop Responsive Adaptations (900px to 1920px+)
+   ========================================================================== */
+@media (max-width: 1100px) {
+  .app-sidebar-pane {
+    width: 200px;
+    min-width: 180px;
+  }
+
+  .app-notes-list-pane {
+    width: 270px;
+    min-width: 240px;
+  }
+
+  .app-editor-pane {
+    min-width: 320px;
+  }
+}
+
+@media (max-width: 960px) {
+  .app-sidebar-pane {
+    width: 190px;
+    min-width: 175px;
+  }
+
+  .app-notes-list-pane {
+    width: 255px;
+    min-width: 230px;
+  }
+
+  .app-editor-pane {
+    min-width: 300px;
+  }
+}
+
+@media (min-width: 1600px) {
+  .app-sidebar-pane {
+    width: 260px;
+  }
+
+  .app-notes-list-pane {
+    width: 350px;
+  }
+}
