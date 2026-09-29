@@ -1,10 +1,12 @@
 import { NoteListItem } from "./types";
 
 /**
- * TEMPORARY MOCK DATA FOR UI DEVELOPMENT ONLY
+ * ISOLATED DEVELOPMENT / TEST FIXTURE ONLY
  *
- * This mock data is strictly isolated to allow developing and testing the UI shell
- * without a database. It will be replaced entirely in Phase 2 by SQLite and local storage.
+ * This mock data was used during Phase 1 UI shell setup.
+ * As of Phase 2, SQLite is the single source of truth for all production application state.
+ * This file is retained exclusively for isolated unit testing and UI fixture previews.
+ * It is NOT imported or used by production application flows.
  */
 export const MOCK_NOTES: NoteListItem[] = [
   {

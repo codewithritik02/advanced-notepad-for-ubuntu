@@ -53,6 +53,33 @@
   margin: 0 var(--spacing-xs);
 }
 
+.toolbar-btn-save {
+  width: auto;
+  height: 28px;
+  padding: 0 var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-accent-primary, #3b82f6);
+  color: #ffffff;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  opacity: 1;
+  border: none;
+  transition: opacity var(--transition-fast);
+}
+
+.toolbar-btn-save:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.toolbar-btn-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .toolbar-spacer {
   flex: 1;
 }

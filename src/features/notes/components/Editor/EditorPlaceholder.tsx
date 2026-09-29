@@ -1,12 +1,22 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { NoteListItem } from "../../types";
+import { Note } from "../../../../services/storage";
 import "./EditorPlaceholder.css";
 
 export interface EditorPlaceholderProps {
-  selectedNote?: NoteListItem | null;
+  selectedNote?: Note | NoteListItem | null;
+  onSaveNote?: (id: string, title: string, content: string) => Promise<void> | void;
 }
 
-// Inline lightweight SVG icons for editor toolbar placeholders
+// Inline lightweight SVG icons for editor toolbar
+const SaveIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+    <polyline points="17 21 17 13 7 13 7 21" />
+    <polyline points="7 3 7 8 15 8" />
+  </svg>
+);
+
 const BoldIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M6 4h8a4 4 0 0 1 4 4 4 4 0 0 1-4 4H6z" />
@@ -55,7 +65,30 @@ const LinkIcon = () => (
 
 export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
   selectedNote,
+  onSaveNote,
 }) => {
+  const isRealNote = selectedNote && "content" in selectedNote;
+  const initialContent = isRealNote
+    ? (selectedNote as Note).content
+    : (selectedNote?.preview ?? "");
+
+  const [title, setTitle] = useState(selectedNote?.title ?? "");
+  const [content, setContent] = useState(initialContent);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setTitle(selectedNote?.title ?? "");
+    const noteContent =
+      selectedNote && "content" in selectedNote
+        ? (selectedNote as Note).content
+        : (selectedNote?.preview ?? "");
+    setContent(noteContent);
+  }, [
+    selectedNote?.id,
+    (selectedNote as Note | undefined)?.content,
+    selectedNote?.title,
+  ]);
+
   if (!selectedNote) {
     return (
       <div className="editor-empty-state">
@@ -73,10 +106,18 @@ export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
     );
   }
 
+  const updatedDisplay =
+    "updatedAt" in selectedNote
+      ? selectedNote.updatedAt
+      : new Date((selectedNote as Note).modified_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
   return (
     <div className="editor-container">
-      {/* Editor Toolbar Placeholder */}
-      <div className="editor-toolbar" role="toolbar" aria-label="Formatting toolbar placeholder">
+      {/* Editor Toolbar */}
+      <div className="editor-toolbar" role="toolbar" aria-label="Formatting toolbar">
         <div className="toolbar-group">
           <button type="button" className="toolbar-btn" title="Bold (Ctrl+B)" disabled>
             <BoldIcon />
@@ -105,22 +146,44 @@ export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
 
         <div className="toolbar-spacer" />
 
+        {onSaveNote && (
+          <button
+            type="button"
+            className="toolbar-btn-save"
+            title="Save Note"
+            disabled={isSaving}
+            onClick={async () => {
+              if (!selectedNote) return;
+              setIsSaving(true);
+              try {
+                await onSaveNote(selectedNote.id, title, content);
+              } finally {
+                setIsSaving(false);
+              }
+            }}
+          >
+            <SaveIcon />
+            <span>{isSaving ? "Saving..." : "Save"}</span>
+          </button>
+        )}
+
         <div className="toolbar-info-badge">
-          <span>Editor Preview</span>
+          <span>{onSaveNote ? "SQLite Storage Active" : "Editor Preview"}</span>
         </div>
       </div>
 
       {/* Editor Main Content Area */}
       <div className="editor-scroll-area">
         <div className="editor-document">
-          {/* Note Title Input Placeholder */}
+          {/* Note Title Input */}
           <div className="editor-title-wrap">
             <input
               type="text"
               className="editor-title-input selectable-text"
               placeholder="Note title..."
-              value={selectedNote.title}
-              readOnly
+              value={title}
+              onChange={onSaveNote ? (e) => setTitle(e.target.value) : undefined}
+              readOnly={!onSaveNote}
               aria-label="Note title"
             />
           </div>
@@ -128,9 +191,9 @@ export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
           {/* Note Metadata Strip */}
           <div className="editor-meta-strip">
             <span className="meta-item">
-              <span className="meta-label">Updated:</span> {selectedNote.updatedAt}
+              <span className="meta-label">Updated:</span> {updatedDisplay}
             </span>
-            {selectedNote.tags && selectedNote.tags.length > 0 && (
+            {"tags" in selectedNote && selectedNote.tags && selectedNote.tags.length > 0 && (
               <span className="meta-item">
                 <span className="meta-label">Tags:</span>{" "}
                 {selectedNote.tags.map((t) => `#${t}`).join(", ")}
@@ -140,14 +203,15 @@ export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
 
           <div className="editor-body-divider" />
 
-          {/* Note Body Content Placeholder */}
+          {/* Note Body Content */}
           <div className="editor-body-wrap">
             <textarea
               className="editor-content-area selectable-text"
               placeholder="Start writing your note..."
-              value={selectedNote.preview}
-              readOnly
-              aria-label="Note content preview"
+              value={content}
+              onChange={onSaveNote ? (e) => setContent(e.target.value) : undefined}
+              readOnly={!onSaveNote}
+              aria-label="Note content"
             />
           </div>
         </div>
@@ -156,14 +220,14 @@ export const EditorPlaceholder: React.FC<EditorPlaceholderProps> = ({
       {/* Note Status Bar */}
       <footer className="editor-status-bar">
         <div className="status-item">
-          <span>Words: {selectedNote.preview.split(/\s+/).filter(Boolean).length}</span>
+          <span>Words: {content.split(/\s+/).filter(Boolean).length}</span>
           <span className="status-separator">•</span>
-          <span>Characters: {selectedNote.preview.length}</span>
+          <span>Characters: {content.length}</span>
         </div>
 
         <div className="status-item">
           <span className="status-indicator-dot" />
-          <span>Ready (Offline)</span>
+          <span>Ready (Offline SQLite)</span>
         </div>
       </footer>
     </div>
