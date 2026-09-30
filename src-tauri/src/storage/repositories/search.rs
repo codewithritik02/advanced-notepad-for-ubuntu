@@ -571,4 +571,72 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_task_11_title_or_content_disjunctive_search() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_t11_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Note A: Title matches "project", content does NOT contain "project"
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Alpha".to_string()),
+                content: Some("General system architecture and milestones.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Note B: Content matches "project", title does NOT contain "project"
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Team Sync".to_string()),
+                content: Some("Review the upcoming project deadline on Friday.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Note C: Both Title AND Content match "project"
+        let note_c = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Review".to_string()),
+                content: Some("Reviewing project milestones and project budgets.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 4. Note D: Neither matches "project"
+        let note_d = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Grocery Shopping".to_string()),
+                content: Some("Apples, bananas, milk, coffee beans.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results = SearchRepository::search(&conn, "project", None).unwrap();
+
+        // Must return notes A, B, and C (exactly 3 notes), excluding D
+        assert_eq!(results.len(), 3, "Notes matching either title or content or both must be returned");
+
+        let found_ids: Vec<String> = results.iter().map(|r| r.note_id.clone()).collect();
+        assert!(found_ids.contains(&note_a.id), "Title-only match must be returned");
+        assert!(found_ids.contains(&note_b.id), "Content-only match must be returned");
+        assert!(found_ids.contains(&note_c.id), "Both title & content match must be returned");
+        assert!(!found_ids.contains(&note_d.id), "Neither match must be excluded");
+
+        // Verify deduplication: each note appears exactly once
+        let mut unique_ids = found_ids.clone();
+        unique_ids.sort();
+        unique_ids.dedup();
+        assert_eq!(unique_ids.len(), 3, "No duplicate results allowed");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

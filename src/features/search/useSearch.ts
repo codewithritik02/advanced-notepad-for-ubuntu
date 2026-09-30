@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { searchStorage } from "../../services/storage/search";
 import { SearchResult, SearchState } from "./types";
+import { sanitizeSearchError } from "./utils";
 
 export interface UseSearchOptions {
   debounceMs?: number;
@@ -15,6 +16,7 @@ export interface UseSearchResult {
   isSearchActive: boolean;
   clearSearch: () => void;
   searchNow: (overrideQuery?: string) => Promise<void>;
+  cancelPendingDebounce: () => void;
 }
 
 /**
@@ -28,7 +30,8 @@ export interface UseSearchResult {
  * - Explicit tagged union state machine (Task 21)
  */
 export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
-  const { debounceMs = 200, limit = 50 } = options;
+  const debounceMs = Math.max(0, options.debounceMs ?? 200);
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
 
   const [query, setQueryState] = useState<string>("");
   const [searchState, setSearchState] = useState<SearchState>({ status: "idle" });
@@ -65,8 +68,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
         }
       } catch (err: unknown) {
         if (currentReqId === requestIdRef.current) {
-          const message =
-            err instanceof Error ? err.message : "Unable to search notes right now. Please try again.";
+          const { message } = sanitizeSearchError(err);
           setSearchState({
             status: "error",
             query: trimmed,
@@ -115,6 +117,13 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
     [query, executeSearch]
   );
 
+  const cancelPendingDebounce = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  }, []);
+
   const clearSearch = useCallback(() => {
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -128,6 +137,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      requestIdRef.current += 1; // Invalidate any pending in-flight requests on unmount
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
@@ -144,6 +154,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
     isSearchActive,
     clearSearch,
     searchNow,
+    cancelPendingDebounce,
   };
 }
 

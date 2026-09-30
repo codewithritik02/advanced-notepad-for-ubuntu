@@ -31,11 +31,25 @@ import {
   ManageTagsDialog,
   Tag,
 } from "../features/tags";
+import {
+  useSearch,
+  searchResultToNoteListItem,
+  formatResultCount,
+} from "../features/search";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
-  const [searchQuery, setSearchQuery] = useState("");
+  const {
+    query: searchQuery,
+    setQuery: setSearchQuery,
+    searchState,
+    results: searchResults,
+    isSearchActive,
+    clearSearch,
+    searchNow,
+    cancelPendingDebounce,
+  } = useSearch({ debounceMs: 200, limit: 50 });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -304,7 +318,7 @@ export function App() {
         setActiveNavId("all-notes");
       }
       if (searchQuery) {
-        setSearchQuery("");
+        clearSearch();
       }
 
       const targetNotebookId =
@@ -384,12 +398,12 @@ export function App() {
     if (isSettingsOpen) {
       setIsSettingsOpen(false);
     } else if (searchQuery) {
-      setSearchQuery("");
+      clearSearch();
       searchInputRef.current?.blur();
     } else {
       searchInputRef.current?.blur();
     }
-  }, [isSettingsOpen, searchQuery]);
+  }, [isSettingsOpen, searchQuery, clearSearch]);
 
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -508,7 +522,7 @@ export function App() {
     [notes, refreshNoteCounts]
   );
 
-  // Filter notes based on active sidebar section and search query
+  // Filter notes based on active sidebar navigation section
   const filteredNotes = useMemo(() => {
     return notes.filter((n) => {
       if (activeNavId === "favorites" && !n.is_favorite) return false;
@@ -516,17 +530,9 @@ export function App() {
       if (activeNavId !== "trash" && n.is_deleted) return false;
       if (activeNavId === "unfiled" && n.notebook_id !== null) return false;
       if (activeNavId === "notebook" && selectedNotebookId && n.notebook_id !== selectedNotebookId) return false;
-
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return (
-          n.title.toLowerCase().includes(q) ||
-          n.content.toLowerCase().includes(q)
-        );
-      }
       return true;
     });
-  }, [notes, activeNavId, selectedNotebookId, searchQuery]);
+  }, [notes, activeNavId, selectedNotebookId]);
 
   // Convert SQLite domain Notes to UI NoteListItems
   const noteListItems = useMemo<NoteListItem[]>(() => {
@@ -573,10 +579,51 @@ export function App() {
     });
   }, [filteredNotes, noteTagsMap, notebooks]);
 
+  // Unified items for NotesList: real SQLite search results when searching, standard notes when browsing (Task 14)
+  const displayedNoteListItems = useMemo<NoteListItem[]>(() => {
+    if (isSearchActive) {
+      return searchResults.map((result) => {
+        const nbPath = computeNotebookPath(result.notebookId, notebooks);
+        return searchResultToNoteListItem(result, nbPath, noteTagsMap[result.noteId]);
+      });
+    }
+    return noteListItems;
+  }, [isSearchActive, searchResults, noteListItems, notebooks, noteTagsMap]);
+
+  // Unified status for NotesList (idle | loading | error | empty)
+  const displayedStatus = useMemo<NotesListStatus>(() => {
+    if (isSearchActive) {
+      if (searchState.status === "searching") return "loading";
+      if (searchState.status === "error") return "error";
+      if (searchState.status === "success") {
+        return searchResults.length === 0 ? "empty" : "idle";
+      }
+      return "idle";
+    }
+    return status;
+  }, [isSearchActive, searchState, searchResults.length, status]);
+
+  // Automatically select the first search result on search completion if no valid selection exists
+  useEffect(() => {
+    if (isSearchActive && searchState.status === "success") {
+      if (searchResults.length > 0) {
+        setSelectedNoteId((prev) =>
+          prev && searchResults.some((r) => r.noteId === prev) ? prev : searchResults[0].noteId
+        );
+      } else {
+        setSelectedNoteId(null);
+      }
+    }
+  }, [isSearchActive, searchState, searchResults]);
+
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
-    return filteredNotes.find((n) => n.id === selectedNoteId) ?? null;
-  }, [filteredNotes, selectedNoteId]);
+    return (
+      filteredNotes.find((n) => n.id === selectedNoteId) ??
+      notes.find((n) => n.id === selectedNoteId) ??
+      null
+    );
+  }, [filteredNotes, notes, selectedNoteId]);
 
   const selectedNotebook = useMemo(() => {
     if (!selectedNotebookId) return null;
@@ -687,7 +734,9 @@ export function App() {
           <TopBar
             searchInputRef={searchInputRef}
             searchQuery={searchQuery}
+            isSearching={searchState.status === "searching"}
             onSearchChange={setSearchQuery}
+            onSearchSubmit={() => searchNow()}
             theme={theme}
             onThemeToggle={toggleTheme}
             onNewNoteClick={handleNewNoteAction}
@@ -758,9 +807,10 @@ export function App() {
         notesList={
           <NotesList
             title={getSectionTitle()}
-            notes={noteListItems}
+            notes={displayedNoteListItems}
             selectedNoteId={selectedNote?.id ?? null}
             onSelectNote={async (noteId) => {
+              cancelPendingDebounce();
               if (noteId !== selectedNoteId) {
                 if (editorSaveRef.current) {
                   await editorSaveRef.current();
@@ -768,12 +818,26 @@ export function App() {
                 setSelectedNoteId(noteId);
               }
             }}
-            status={status}
-            errorMessage={errorMessage}
-            emptyTitle={emptyState.title}
-            emptyDescription={emptyState.description}
-            onRetry={handleRetry}
-            onNewNote={handleNewNoteAction}
+            status={displayedStatus}
+            errorTitle={isSearchActive ? "Search failed" : undefined}
+            errorMessage={
+              isSearchActive && searchState.status === "error"
+                ? searchState.message
+                : errorMessage
+            }
+            emptyTitle={isSearchActive ? "No notes found" : emptyState.title}
+            emptyDescription={
+              isSearchActive
+                ? `No notes match "${searchQuery}".`
+                : emptyState.description
+            }
+            mode={isSearchActive ? "search" : "normal"}
+            searchQuery={searchQuery}
+            resultCountLabel={
+              isSearchActive ? formatResultCount(searchResults.length) : undefined
+            }
+            onRetry={isSearchActive ? () => searchNow() : handleRetry}
+            onNewNote={isSearchActive ? undefined : handleNewNoteAction}
             onToggleFavorite={handleToggleNoteFavorite}
           />
         }
