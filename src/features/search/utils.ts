@@ -19,7 +19,8 @@ export function isValidSearchQuery(query: string): boolean {
   return normalizeSearchQuery(query).length > 0;
 }
 
-import type { SearchResult } from "./types";
+import React from "react";
+import type { SearchResult, SearchState } from "./types";
 import type { NoteListItem } from "../notes/types";
 
 /**
@@ -59,10 +60,13 @@ export function searchResultToNoteListItem(
 
 /**
  * Generates user-facing result count text with proper singular/plural grammar (Task 30).
- * Examples: "1 result", "12 results", "0 results".
+ * Examples: "1 result", "12 results", "0 results", "100+ results".
  */
-export function formatResultCount(count: number): string {
-  return `${count} ${count === 1 ? "result" : "results"}`;
+export function formatResultCount(count: number, hasMore?: boolean): string {
+  if (count <= 0) return "0 results";
+  if (count === 1) return hasMore ? "1+ results" : "1 result";
+  if (hasMore) return `${count}+ results`;
+  return `${count} results`;
 }
 
 /**
@@ -80,4 +84,89 @@ export function sanitizeSearchError(err: unknown): { title: string; message: str
     title: "Search failed",
     message: "Unable to search notes right now. Please try again.",
   };
+}
+
+/**
+ * Type guard for idle search state (Task 21).
+ */
+export function isSearchIdle(state: SearchState): state is { status: "idle" } {
+  return state.status === "idle";
+}
+
+/**
+ * Type guard for in-progress search state (Task 21).
+ */
+export function isSearchSearching(
+  state: SearchState
+): state is { status: "searching"; query: string } {
+  return state.status === "searching";
+}
+
+/**
+ * Type guard for successful search state (Task 21).
+ */
+export function isSearchSuccess(
+  state: SearchState
+): state is { status: "success"; query: string; results: SearchResult[] } {
+  return state.status === "success";
+}
+
+/**
+ * Type guard for error search state (Task 21).
+ */
+export function isSearchError(
+  state: SearchState
+): state is { status: "error"; query: string; message: string } {
+  return state.status === "error";
+}
+
+/**
+ * Safely highlights matching search query terms within text using pure React elements (Task 26 & 27).
+ *
+ * Guarantees:
+ * - NEVER uses dangerouslySetInnerHTML or raw HTML injection.
+ * - All text fragments are rendered as standard React text nodes with automatic escaping.
+ * - Safely escapes regex special characters in search queries.
+ * - Supports Unicode, multilingual text, and accented characters.
+ */
+export function highlightText(text: string, query?: string): React.ReactNode {
+  if (!text) return "";
+  if (!query) return text;
+
+  const trimmedQuery = query.trim();
+  if (!trimmedQuery) return text;
+
+  // Split query into distinct non-empty tokens
+  const tokens = trimmedQuery
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length > 0);
+
+  if (tokens.length === 0) return text;
+
+  // Escape special regex characters
+  const escapedTokens = tokens
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+
+  try {
+    const regex = new RegExp(`(${escapedTokens})`, "gi");
+    const parts = text.split(regex);
+
+    if (parts.length <= 1) return text;
+
+    return parts.map((part, index) => {
+      const isMatch = tokens.some((t) => t.toLowerCase() === part.toLowerCase());
+      if (isMatch) {
+        return React.createElement(
+          "mark",
+          { key: index, className: "search-highlight" },
+          part
+        );
+      }
+      return part;
+    });
+  } catch {
+    return text;
+  }
 }

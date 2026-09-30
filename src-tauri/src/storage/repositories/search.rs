@@ -83,7 +83,7 @@ impl SearchRepository {
             JOIN notes n ON notes_fts.rowid = n.rowid
             WHERE notes_fts MATCH ?1
               AND n.is_deleted = 0
-            ORDER BY rank
+            ORDER BY rank, n.modified_at DESC, n.id ASC
             LIMIT ?2
         "#;
 
@@ -112,7 +112,15 @@ impl SearchRepository {
         Ok(results)
     }
 
-    /// Parameterized LIKE search fallback matching title or content case-insensitively
+    /// Parameterized LIKE search fallback matching title or content case-insensitively.
+    ///
+    /// Deterministic Ranking Hierarchy (Task 28 & 29):
+    /// 1. Exact title match (LOWER(title) = LOWER(query))
+    /// 2. Title prefix match (LOWER(title) LIKE LOWER(query%))
+    /// 3. Title contains match (LOWER(title) LIKE LOWER(%query%))
+    /// 4. Content contains match
+    /// 5. Secondary tie-breaker: modified_at DESC (newest edits first)
+    /// 6. Final tie-breaker: id ASC (guarantees 100% deterministic result ordering)
     fn search_like(
         conn: &Connection,
         query: &str,
@@ -138,7 +146,8 @@ impl SearchRepository {
                 WHEN LOWER(title) LIKE LOWER(?1) THEN 2
                 ELSE 3
               END,
-              modified_at DESC
+              modified_at DESC,
+              id ASC
             LIMIT ?4
         "#;
 
@@ -639,4 +648,133 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_task_27_snippet_safety_plain_text() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_snip_safe_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        let malicious_content = "<script>alert('pwned')</script> <iframe src=\"evil.html\"></iframe> <img src=x onerror=alert(1)> Note with markup.";
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Security Test Note".to_string()),
+                content: Some(malicious_content.to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results = SearchRepository::search(&conn, "pwned", None).unwrap();
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert_eq!(result.note_id, note.id);
+        
+        let snippet = result.snippet.as_ref().expect("Snippet must be generated");
+        // Snippet must be a pure plain-text string without HTML transformations or evaluations
+        assert!(snippet.contains("alert('pwned')"));
+        assert!(snippet.contains("<script>"));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_28_deterministic_search_ordering() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_order_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Content only match
+        let note_content = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Weekly Review".to_string()),
+                content: Some("Here is the project status report.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Title contains match
+        let note_title_contains = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Special Project Archive".to_string()),
+                content: Some("Archived records.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Title prefix match
+        let note_title_prefix = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Kickoff".to_string()),
+                content: Some("New initiative launch.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 4. Exact title match
+        let note_exact_title = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project".to_string()),
+                content: Some("Core plan.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results = SearchRepository::search(&conn, "project", None).unwrap();
+        assert_eq!(results.len(), 4);
+
+        // Verification of deterministic rank ordering:
+        // Tier 0 (Exact Title) -> Tier 1 (Prefix Title) -> Tier 2 (Contains Title) -> Tier 3 (Content Only)
+        assert_eq!(results[0].note_id, note_exact_title.id, "Exact title match must be ranked 1st");
+        assert_eq!(results[1].note_id, note_title_prefix.id, "Prefix title match must be ranked 2nd");
+        assert_eq!(results[2].note_id, note_title_contains.id, "Contains title match must be ranked 3rd");
+        assert_eq!(results[3].note_id, note_content.id, "Content-only match must be ranked 4th");
+
+        // 5. Test recency tie-breaking within identical tier
+        let note_recent = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Sprint Plan".to_string()),
+                content: Some("Sprint goals.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note older
+        let note_older = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Sprint Retrospective".to_string()),
+                content: Some("Retro review.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Update timestamps manually to test tie breaking
+        conn.execute(
+            "UPDATE notes SET modified_at = '2026-09-01T00:00:00Z' WHERE id = ?1",
+            params![note_older.id],
+        ).unwrap();
+        conn.execute(
+            "UPDATE notes SET modified_at = '2026-09-02T00:00:00Z' WHERE id = ?1",
+            params![note_recent.id],
+        ).unwrap();
+
+        let sprint_results = SearchRepository::search(&conn, "sprint", None).unwrap();
+        assert_eq!(sprint_results.len(), 2);
+        assert_eq!(sprint_results[0].note_id, note_recent.id, "More recently modified note must rank ahead");
+        assert_eq!(sprint_results[1].note_id, note_older.id, "Older note must rank behind");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+
+

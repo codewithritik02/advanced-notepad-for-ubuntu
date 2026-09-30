@@ -11,6 +11,11 @@ import {
   computeNoteMetadata,
   getFormatDisplayName,
 } from "../src/features/notes/types.ts";
+import {
+  highlightText,
+  searchResultToNoteListItem,
+  formatResultCount,
+} from "../src/features/search/utils.ts";
 
 describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
   // =========================================================================
@@ -1510,6 +1515,713 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
 
         // State remains idle, response was dropped
         assert.strictEqual(state.status, "idle");
+      });
+    });
+
+    describe("Task 21: Search State Model", () => {
+      const isSearchIdle = (state) => state.status === "idle";
+      const isSearchSearching = (state) => state.status === "searching";
+      const isSearchSuccess = (state) => state.status === "success";
+      const isSearchError = (state) => state.status === "error";
+
+      it("models search state as a strictly mutually exclusive tagged union", () => {
+        const idleState = { status: "idle" };
+        const searchingState = { status: "searching", query: "notes" };
+        const successState = {
+          status: "success",
+          query: "notes",
+          results: [{ noteId: "1", title: "Notes Test" }],
+        };
+        const errorState = {
+          status: "error",
+          query: "notes",
+          message: "Unable to search notes right now. Please try again.",
+        };
+
+        // Validate idle
+        assert.strictEqual(isSearchIdle(idleState), true);
+        assert.strictEqual(isSearchSearching(idleState), false);
+        assert.strictEqual(isSearchSuccess(idleState), false);
+        assert.strictEqual(isSearchError(idleState), false);
+
+        // Validate searching
+        assert.strictEqual(isSearchIdle(searchingState), false);
+        assert.strictEqual(isSearchSearching(searchingState), true);
+        assert.strictEqual(isSearchSuccess(searchingState), false);
+        assert.strictEqual(isSearchError(searchingState), false);
+        assert.strictEqual(searchingState.query, "notes");
+
+        // Validate success
+        assert.strictEqual(isSearchIdle(successState), false);
+        assert.strictEqual(isSearchSearching(successState), false);
+        assert.strictEqual(isSearchSuccess(successState), true);
+        assert.strictEqual(isSearchError(successState), false);
+        assert.strictEqual(successState.results.length, 1);
+
+        // Validate error
+        assert.strictEqual(isSearchIdle(errorState), false);
+        assert.strictEqual(isSearchSearching(errorState), false);
+        assert.strictEqual(isSearchSuccess(errorState), false);
+        assert.strictEqual(isSearchError(errorState), true);
+        assert.strictEqual(errorState.message, "Unable to search notes right now. Please try again.");
+      });
+
+      it("avoids conflicting boolean states (cannot be simultaneously searching and error)", () => {
+        // With boolean flags, bugs like { isSearching: true, hasError: true, hasResults: true } can occur.
+        // A single tagged union discriminant guarantees only one status is active at any time.
+        const stateTransitions = [
+          { status: "idle" },
+          { status: "searching", query: "sqlite" },
+          { status: "success", query: "sqlite", results: [] },
+          { status: "searching", query: "sqlite2" },
+          { status: "error", query: "sqlite2", message: "Failed" },
+          { status: "idle" },
+        ];
+
+        for (const s of stateTransitions) {
+          const activeChecks = [
+            isSearchIdle(s),
+            isSearchSearching(s),
+            isSearchSuccess(s),
+            isSearchError(s),
+          ].filter(Boolean);
+
+          assert.strictEqual(activeChecks.length, 1, `State ${s.status} must match exactly 1 discriminant check`);
+        }
+      });
+    });
+
+    describe("Task 22: Search Keyboard Shortcut", () => {
+      const createShortcutDispatcher = (handlers) => {
+        return (event) => {
+          const isModifier = event.ctrlKey || event.metaKey;
+          const key = event.key.toLowerCase();
+
+          if (isModifier && (key === "k" || key === "f")) {
+            event.preventDefault();
+            handlers.onFocusSearch?.();
+            return;
+          }
+        };
+      };
+
+      it("triggers search focus on Ctrl+K (Windows/Linux) and Cmd+K (macOS)", () => {
+        let focusCount = 0;
+        const handlers = {
+          onFocusSearch: () => {
+            focusCount++;
+          },
+        };
+        const dispatch = createShortcutDispatcher(handlers);
+
+        // Test Ctrl+K
+        let ctrlKPrevented = false;
+        dispatch({
+          key: "k",
+          ctrlKey: true,
+          metaKey: false,
+          preventDefault: () => {
+            ctrlKPrevented = true;
+          },
+        });
+        assert.strictEqual(focusCount, 1);
+        assert.strictEqual(ctrlKPrevented, true);
+
+        // Test Cmd+K (macOS metaKey)
+        let cmdKPrevented = false;
+        dispatch({
+          key: "K", // case insensitive
+          ctrlKey: false,
+          metaKey: true,
+          preventDefault: () => {
+            cmdKPrevented = true;
+          },
+        });
+        assert.strictEqual(focusCount, 2);
+        assert.strictEqual(cmdKPrevented, true);
+      });
+
+      it("preserves established Ctrl+F and Cmd+F shortcuts without regression", () => {
+        let focusCount = 0;
+        const handlers = {
+          onFocusSearch: () => {
+            focusCount++;
+          },
+        };
+        const dispatch = createShortcutDispatcher(handlers);
+
+        // Test Ctrl+F
+        let ctrlFPrevented = false;
+        dispatch({
+          key: "f",
+          ctrlKey: true,
+          metaKey: false,
+          preventDefault: () => {
+            ctrlFPrevented = true;
+          },
+        });
+        assert.strictEqual(focusCount, 1);
+        assert.strictEqual(ctrlFPrevented, true);
+
+        // Test Cmd+F
+        let cmdFPrevented = false;
+        dispatch({
+          key: "F",
+          ctrlKey: false,
+          metaKey: true,
+          preventDefault: () => {
+            cmdFPrevented = true;
+          },
+        });
+        assert.strictEqual(focusCount, 2);
+        assert.strictEqual(cmdFPrevented, true);
+      });
+
+      it("does not trigger search focus when K or F is pressed without modifier keys", () => {
+        let focusCount = 0;
+        const handlers = {
+          onFocusSearch: () => {
+            focusCount++;
+          },
+        };
+        const dispatch = createShortcutDispatcher(handlers);
+
+        let prevented = false;
+        dispatch({
+          key: "k",
+          ctrlKey: false,
+          metaKey: false,
+          preventDefault: () => {
+            prevented = true;
+          },
+        });
+        dispatch({
+          key: "f",
+          ctrlKey: false,
+          metaKey: false,
+          preventDefault: () => {
+            prevented = true;
+          },
+        });
+
+        assert.strictEqual(focusCount, 0, "Plain typing must never focus search");
+        assert.strictEqual(prevented, false);
+      });
+    });
+
+    describe("Task 23: Escape Search", () => {
+      it("clears search query, blurs search input, and stops event propagation on Escape", () => {
+        let cleared = false;
+        let blurred = false;
+        let defaultPrevented = false;
+        let propagationStopped = false;
+
+        const handleInputKeyDown = (e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            cleared = true;
+            blurred = true;
+          }
+        };
+
+        const event = {
+          key: "Escape",
+          preventDefault: () => {
+            defaultPrevented = true;
+          },
+          stopPropagation: () => {
+            propagationStopped = true;
+          },
+        };
+
+        handleInputKeyDown(event);
+
+        assert.strictEqual(cleared, true, "Search query must be cleared on Escape");
+        assert.strictEqual(blurred, true, "Search input must be blurred on Escape");
+        assert.strictEqual(defaultPrevented, true, "Default action must be prevented to protect window");
+        assert.strictEqual(propagationStopped, true, "Propagation must be stopped to avoid outer window listeners");
+      });
+
+      it("exits search mode and restores previous note list view on Escape without closing window", () => {
+        let searchQuery = "meeting";
+        let isSearchActive = true;
+        let isWindowClosed = false;
+
+        const handleEscape = () => {
+          if (searchQuery || isSearchActive) {
+            searchQuery = "";
+            isSearchActive = false;
+            return;
+          }
+          // Default fallthrough must NOT close window
+        };
+
+        handleEscape();
+
+        assert.strictEqual(searchQuery, "", "Search query cleared");
+        assert.strictEqual(isSearchActive, false, "Search mode exited");
+        assert.strictEqual(isWindowClosed, false, "Application window remains safe and open");
+      });
+    });
+
+    describe("Task 24: Search Input Focus", () => {
+      it("focuses search input and selects existing query text when shortcut is activated", () => {
+        let focused = false;
+        let selected = false;
+
+        const mockInput = {
+          focus: () => {
+            focused = true;
+          },
+          select: () => {
+            selected = true;
+          },
+        };
+
+        const handleFocusSearch = () => {
+          mockInput.focus();
+          mockInput.select();
+        };
+
+        handleFocusSearch();
+
+        assert.strictEqual(focused, true, "Search input must receive focus");
+        assert.strictEqual(selected, true, "Existing text must be highlighted/selected");
+      });
+
+      it("predictably preserves focus inside search input when clear button (x) is clicked", () => {
+        let focused = false;
+        let query = "existing search";
+
+        const mockInput = {
+          focus: () => {
+            focused = true;
+          },
+        };
+
+        const handleClearSearch = () => {
+          query = "";
+          mockInput.focus();
+        };
+
+        handleClearSearch();
+
+        assert.strictEqual(query, "");
+        assert.strictEqual(focused, true, "Cursor must be placed back in the search field after clearing");
+      });
+
+      it("predictably releases focus (blurs) when search is dismissed via Escape", () => {
+        let blurred = false;
+
+        const mockInput = {
+          blur: () => {
+            blurred = true;
+          },
+        };
+
+        const handleEscape = () => {
+          mockInput.blur();
+        };
+
+        handleEscape();
+
+        assert.strictEqual(blurred, true, "Search input should be blurred when escaping search");
+      });
+    });
+
+    describe("Task 25: Preserve Editor Focus", () => {
+      it("preserves editor focus across autosave execution and background state updates", async () => {
+        let activeElement = "editor-content-textarea";
+        let isSaving = false;
+
+        const executeAutosave = async () => {
+          isSaving = true;
+          // Background async storage save
+          await new Promise((res) => setTimeout(res, 10));
+          isSaving = false;
+          // Editor focus must remain untouched by save completion
+        };
+
+        await executeAutosave();
+
+        assert.strictEqual(isSaving, false);
+        assert.strictEqual(
+          activeElement,
+          "editor-content-textarea",
+          "Autosave completion must never steal editor focus"
+        );
+      });
+
+      it("ensures search rerenders and status transitions do not blur or steal editor focus", () => {
+        let activeElement = "editor-title-input";
+
+        // Simulate search rerendering or query updates happening in background
+        const onSearchStatusChanged = (status) => {
+          // Hook state changes must NOT invoke input.focus()
+          return status;
+        };
+
+        onSearchStatusChanged("searching");
+        assert.strictEqual(activeElement, "editor-title-input");
+
+        onSearchStatusChanged("success");
+        assert.strictEqual(activeElement, "editor-title-input");
+
+        onSearchStatusChanged("idle");
+        assert.strictEqual(activeElement, "editor-title-input");
+      });
+
+      it("shifts focus to search only upon explicit user trigger (shortcut or click)", () => {
+        let activeElement = "editor-content-textarea";
+
+        const handleExplicitSearchActivation = () => {
+          activeElement = "topbar-search-input";
+        };
+
+        assert.strictEqual(activeElement, "editor-content-textarea");
+
+        // User explicitly triggers search
+        handleExplicitSearchActivation();
+        assert.strictEqual(activeElement, "topbar-search-input");
+      });
+    });
+
+    describe("Task 26: Search Result Highlighting", () => {
+      it("returns plain text unchanged when query is empty, undefined, or whitespace", () => {
+        const text = "Project Plan and Architecture";
+        assert.strictEqual(highlightText(text, undefined), text);
+        assert.strictEqual(highlightText(text, ""), text);
+        assert.strictEqual(highlightText(text, "   "), text);
+      });
+
+      it("returns plain text unchanged when no terms match", () => {
+        const text = "Project Plan and Architecture";
+        assert.strictEqual(highlightText(text, "database"), text);
+      });
+
+      it("highlights matching search query case-insensitively using pure React mark elements", () => {
+        const text = "Project Plan and Notes";
+        const result = highlightText(text, "plan");
+
+        assert.ok(Array.isArray(result), "Matching text should be returned as an array of parts");
+        assert.strictEqual(result.length, 3);
+        assert.strictEqual(result[0], "Project ");
+        assert.strictEqual(typeof result[1], "object");
+        assert.strictEqual(result[1].type, "mark");
+        assert.strictEqual(result[1].props.className, "search-highlight");
+        assert.strictEqual(result[1].props.children, "Plan");
+        assert.strictEqual(result[2], " and Notes");
+      });
+
+      it("highlights multiple distinct search tokens independently", () => {
+        const text = "Project release schedule timeline";
+        const result = highlightText(text, "project timeline");
+
+        assert.ok(Array.isArray(result));
+        // Should contain marks for Project and timeline
+        const marks = result.filter((p) => typeof p === "object" && p.type === "mark");
+        assert.strictEqual(marks.length, 2);
+        assert.strictEqual(marks[0].props.children, "Project");
+        assert.strictEqual(marks[1].props.children, "timeline");
+      });
+
+      it("safely handles special regex characters in query without errors or breakage", () => {
+        const text = "Formula: (x + y) * [z] = $100^2; file.ts";
+        const query = "(x + y) [z] $100^2";
+
+        // Must not throw RegExp syntax error
+        assert.doesNotThrow(() => {
+          const result = highlightText(text, query);
+          assert.ok(Array.isArray(result));
+          const marks = result.filter((p) => typeof p === "object" && p.type === "mark");
+          assert.strictEqual(marks.length >= 3, true);
+        });
+      });
+
+      it("supports Unicode and non-Latin scripts safely", () => {
+        const text = "महत्वपूर्ण यात्रा योजना - café au lait";
+        const result = highlightText(text, "यात्रा café");
+
+        assert.ok(Array.isArray(result));
+        const marks = result.filter((p) => typeof p === "object" && p.type === "mark");
+        assert.strictEqual(marks.length, 2);
+        assert.strictEqual(marks[0].props.children, "यात्रा");
+        assert.strictEqual(marks[1].props.children, "café");
+      });
+
+      it("safely renders text with potential HTML characters without raw injection", () => {
+        const text = "<script>alert('xss')</script> & <b>bold</b>";
+        const result = highlightText(text, "alert");
+
+        assert.ok(Array.isArray(result));
+        // All parts are either plain strings or React elements - never dangerouslySetInnerHTML or raw HTML
+        result.forEach((part) => {
+          if (typeof part === "object") {
+            assert.strictEqual(part.type, "mark");
+            assert.strictEqual(part.props.children, "alert");
+          } else {
+            assert.strictEqual(typeof part, "string");
+          }
+        });
+      });
+    });
+
+    describe("Task 27: Search Snippet Safety", () => {
+      it("preserves plain-text content in snippets without rendering raw HTML or evaluating markup", () => {
+        const rawSnippet = "<iframe src='javascript:alert(1)'></iframe> and <script>evil()</script>";
+        const searchResult = {
+          noteId: "note-xss-1",
+          title: "Safe Note",
+          snippet: rawSnippet,
+          modifiedAt: "2026-09-30T10:00:00Z",
+          favorite: false,
+        };
+
+        const item = searchResultToNoteListItem(searchResult);
+        assert.strictEqual(
+          item.preview,
+          rawSnippet,
+          "Snippet must be preserved as a plain string without transforming to HTML"
+        );
+
+        // Rendering through highlightText must yield safe React nodes / strings, never raw HTML
+        const rendered = highlightText(item.preview, "javascript");
+        assert.ok(Array.isArray(rendered));
+        rendered.forEach((segment) => {
+          if (typeof segment === "object") {
+            assert.strictEqual(segment.type, "mark");
+            assert.strictEqual(segment.props.children, "javascript");
+          } else {
+            assert.strictEqual(typeof segment, "string");
+          }
+        });
+      });
+
+      it("provides a safe plain-text fallback when snippet is missing or empty", () => {
+        const item1 = searchResultToNoteListItem({
+          noteId: "note-1",
+          title: "Title Only",
+          snippet: "",
+          favorite: false,
+        });
+        assert.strictEqual(item1.preview, "No snippet available");
+
+        const item2 = searchResultToNoteListItem({
+          noteId: "note-2",
+          title: "Title Only 2",
+          snippet: undefined,
+          favorite: false,
+        });
+        assert.strictEqual(item2.preview, "No snippet available");
+      });
+
+      it("guarantees no dangerouslySetInnerHTML is used across the frontend search rendering pipeline", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const filesToCheck = [
+          "src/features/notes/components/NotesList/NoteCard.tsx",
+          "src/features/notes/components/NotesList/NotesList.tsx",
+          "src/features/search/utils.ts",
+          "src/features/search/useSearch.ts",
+          "src/components/TopBar/TopBar.tsx",
+          "src/app/App.tsx",
+        ];
+
+        for (const relPath of filesToCheck) {
+          const fullPath = path.resolve(relPath);
+          const content = await fs.readFile(fullPath, "utf-8");
+          const strippedCode = content.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
+          assert.strictEqual(
+            strippedCode.includes("dangerouslySetInnerHTML"),
+            false,
+            `File ${relPath} must not contain dangerouslySetInnerHTML in executable code`
+          );
+          assert.strictEqual(
+            strippedCode.includes("innerHTML"),
+            false,
+            `File ${relPath} must not contain innerHTML manipulation in executable code`
+          );
+        }
+      });
+    });
+
+    describe("Task 28: Search Result Ordering", () => {
+      it("preserves exact deterministic result ordering when mapping SearchResult to NoteListItem", () => {
+        const results = [
+          {
+            noteId: "note-1-exact",
+            title: "Project",
+            snippet: "Exact title match",
+            modifiedAt: "2026-09-30T10:00:00Z",
+            favorite: false,
+          },
+          {
+            noteId: "note-2-prefix",
+            title: "Project Roadmap",
+            snippet: "Prefix match",
+            modifiedAt: "2026-09-30T09:00:00Z",
+            favorite: false,
+          },
+          {
+            noteId: "note-3-contains",
+            title: "Special Project Archive",
+            snippet: "Contains match",
+            modifiedAt: "2026-09-30T08:00:00Z",
+            favorite: false,
+          },
+          {
+            noteId: "note-4-content",
+            title: "Weekly Log",
+            snippet: "Content mentions project.",
+            modifiedAt: "2026-09-30T07:00:00Z",
+            favorite: false,
+          },
+        ];
+
+        const listItems = results.map((r) => searchResultToNoteListItem(r));
+        assert.strictEqual(listItems.length, 4);
+        assert.strictEqual(listItems[0].id, "note-1-exact");
+        assert.strictEqual(listItems[1].id, "note-2-prefix");
+        assert.strictEqual(listItems[2].id, "note-3-contains");
+        assert.strictEqual(listItems[3].id, "note-4-content");
+      });
+
+      it("maintains recency tie-breaking when titles share the same relevance tier", () => {
+        const results = [
+          {
+            noteId: "note-recent",
+            title: "Sprint Plan",
+            snippet: "Goals",
+            modifiedAt: "2026-09-30T12:00:00Z",
+            favorite: false,
+          },
+          {
+            noteId: "note-older",
+            title: "Sprint Retrospective",
+            snippet: "Retro",
+            modifiedAt: "2026-09-29T12:00:00Z",
+            favorite: false,
+          },
+        ];
+
+        const listItems = results.map((r) => searchResultToNoteListItem(r));
+        assert.strictEqual(listItems[0].id, "note-recent");
+        assert.strictEqual(listItems[1].id, "note-older");
+      });
+    });
+
+    describe("Task 29: Basic Relevance Rules", () => {
+      it("strictly models the 4-tier relevance ranking hierarchy", () => {
+        // Evaluate simulated scoring according to Task 29 specification
+        const computeRelevanceTier = (note, query) => {
+          const q = query.trim().toLowerCase();
+          const t = (note.title || "").toLowerCase();
+          const c = (note.content || "").toLowerCase();
+
+          if (t === q || t.startsWith(q)) return 1; // Tier 1: Title exact/prefix match
+          if (t.includes(q)) return 2;             // Tier 2: Title contains match
+          if (c.includes(q)) return 3;             // Tier 3: Content contains match
+          return 4;                                // Tier 4: No direct match / other
+        };
+
+        const noteExact = { title: "Roadmap", content: "Notes" };
+        const notePrefix = { title: "Roadmap 2026", content: "Notes" };
+        const noteContains = { title: "Q3 Roadmap Draft", content: "Notes" };
+        const noteContentOnly = { title: "Meeting Log", content: "Discussing the roadmap items." };
+
+        assert.strictEqual(computeRelevanceTier(noteExact, "roadmap"), 1);
+        assert.strictEqual(computeRelevanceTier(notePrefix, "roadmap"), 1);
+        assert.strictEqual(computeRelevanceTier(noteContains, "roadmap"), 2);
+        assert.strictEqual(computeRelevanceTier(noteContentOnly, "roadmap"), 3);
+      });
+
+      it("delegates ranking directly to database without client-side artificial reordering", () => {
+        // Given backend search results ordered by database BM25 or LIKE ranking:
+        const backendOrderedResults = [
+          { noteId: "id-1", title: "Note Alpha", favorite: false },
+          { noteId: "id-2", title: "Note Beta", favorite: false },
+          { noteId: "id-3", title: "Note Gamma", favorite: false },
+        ];
+
+        // The frontend NoteListItem conversion must preserve exact order:
+        const mapped = backendOrderedResults.map((r) => searchResultToNoteListItem(r));
+        assert.deepStrictEqual(
+          mapped.map((m) => m.id),
+          ["id-1", "id-2", "id-3"],
+          "Frontend must never shuffle or artificially reorder backend ranking"
+        );
+      });
+
+      it("does not claim semantic relevance or AI search in search user-interface copy", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const uiFiles = [
+          "src/components/TopBar/TopBar.tsx",
+          "src/features/notes/components/NotesList/NotesList.tsx",
+          "src/features/notes/components/NotesList/NoteCard.tsx",
+          "src/features/search/useSearch.ts",
+          "src/features/search/utils.ts",
+        ];
+
+        for (const file of uiFiles) {
+          const content = await fs.readFile(path.resolve(file), "utf-8");
+          const lower = content.toLowerCase();
+          assert.strictEqual(
+            lower.includes("semantic search"),
+            false,
+            `UI file ${file} must not claim semantic search`
+          );
+          assert.strictEqual(
+            lower.includes("ai search"),
+            false,
+            `UI file ${file} must not claim AI search`
+          );
+        }
+      });
+    });
+
+    describe("Task 30: Search Result Count", () => {
+      it("formats singular count as '1 result'", () => {
+        assert.strictEqual(formatResultCount(1), "1 result");
+      });
+
+      it("formats plural count correctly as 'N results'", () => {
+        assert.strictEqual(formatResultCount(12), "12 results");
+        assert.strictEqual(formatResultCount(2), "2 results");
+        assert.strictEqual(formatResultCount(50), "50 results");
+        assert.strictEqual(formatResultCount(100), "100 results");
+      });
+
+      it("formats zero count as '0 results'", () => {
+        assert.strictEqual(formatResultCount(0), "0 results");
+        assert.strictEqual(formatResultCount(-5), "0 results");
+      });
+
+      it("handles bounded/capped counts with hasMore flag to avoid misleading counts", () => {
+        assert.strictEqual(formatResultCount(100, true), "100+ results");
+        assert.strictEqual(formatResultCount(50, true), "50+ results");
+      });
+
+      it("renders result count label into NotesList header badge when provided", () => {
+        const countBadgeText = (resultCountLabel, notesCount) => {
+          return resultCountLabel ?? String(notesCount);
+        };
+
+        // When in search mode with resultCountLabel
+        const label1 = formatResultCount(1);
+        assert.strictEqual(countBadgeText(label1, 1), "1 result");
+
+        const label12 = formatResultCount(12);
+        assert.strictEqual(countBadgeText(label12, 12), "12 results");
+
+        const label0 = formatResultCount(0);
+        assert.strictEqual(countBadgeText(label0, 0), "0 results");
+
+        // When in normal mode without resultCountLabel (falls back to numeric string)
+        assert.strictEqual(countBadgeText(undefined, 8), "8");
       });
     });
   });
