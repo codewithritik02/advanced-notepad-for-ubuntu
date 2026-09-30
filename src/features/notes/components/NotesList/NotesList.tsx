@@ -11,11 +11,15 @@ export interface NotesListProps {
   status?: NotesListStatus;
   title?: string;
   errorMessage?: string;
+  errorTitle?: string;
   emptyTitle?: string;
   emptyDescription?: string;
   onRetry?: () => void;
   onNewNote?: () => void;
   onToggleFavorite?: (noteId: string) => void;
+  mode?: "normal" | "search";
+  searchQuery?: string;
+  resultCountLabel?: string;
 }
 
 const EmptyNotesIcon = () => (
@@ -33,23 +37,58 @@ export const NotesList: React.FC<NotesListProps> = ({
   onSelectNote = () => {},
   status = "idle",
   title = "All Notes",
-  errorMessage = "Unable to load notes.",
-  emptyTitle = "No notes yet",
-  emptyDescription = "Create your first note to get started.",
+  errorMessage,
+  errorTitle,
+  emptyTitle,
+  emptyDescription,
   onRetry,
   onNewNote,
   onToggleFavorite,
+  mode = "normal",
+  searchQuery = "",
+  resultCountLabel,
 }) => {
+  const isSearchMode = mode === "search";
+
+  const resolvedErrorTitle =
+    errorTitle ?? (isSearchMode ? "Search failed" : "Failed to load notes");
+
+  const resolvedErrorMessage =
+    errorMessage ??
+    (isSearchMode
+      ? "Unable to search notes right now. Please try again."
+      : "Unable to load notes.");
+
+  const resolvedEmptyTitle =
+    emptyTitle ?? (isSearchMode ? "No notes found" : "No notes yet");
+
+  const resolvedEmptyDescription =
+    emptyDescription ??
+    (isSearchMode
+      ? `No notes match "${searchQuery}".`
+      : "Create your first note to get started.");
+
+  const effectiveActionText = isSearchMode ? undefined : onNewNote ? "+ New Note" : undefined;
+  const effectiveOnAction = isSearchMode ? undefined : onNewNote;
+
+  const countBadgeText = resultCountLabel ?? String(notes.length);
+
   return (
-    <div className="notes-list-container">
+    <div className={`notes-list-container ${isSearchMode ? "is-search-mode" : ""}`}>
       {/* Panel Header */}
       <div className="notes-list-header">
         <div className="notes-list-title-wrap">
           <h2 className="notes-list-title">{title}</h2>
-          {status === "idle" && (
+          {isSearchMode && status === "loading" ? (
             <Badge variant="default" size="sm">
-              {notes.length}
+              Searching...
             </Badge>
+          ) : (
+            status === "idle" && (
+              <Badge variant="default" size="sm">
+                {countBadgeText}
+              </Badge>
+            )
           )}
         </div>
       </div>
@@ -57,13 +96,15 @@ export const NotesList: React.FC<NotesListProps> = ({
       {/* Panel Body */}
       <div className="notes-list-content">
         {/* Loading State */}
-        {status === "loading" && <LoadingState count={4} />}
+        {status === "loading" && (
+          <LoadingState count={4} message={isSearchMode ? "Searching..." : undefined} />
+        )}
 
         {/* Error State */}
         {status === "error" && (
           <ErrorState
-            title="Failed to load notes"
-            message={errorMessage}
+            title={resolvedErrorTitle}
+            message={resolvedErrorMessage}
             onRetry={onRetry}
           />
         )}
@@ -72,10 +113,10 @@ export const NotesList: React.FC<NotesListProps> = ({
         {(status === "empty" || (status === "idle" && notes.length === 0)) && (
           <EmptyState
             icon={<EmptyNotesIcon />}
-            title={emptyTitle}
-            description={emptyDescription}
-            actionText={onNewNote ? "+ New Note" : undefined}
-            onAction={onNewNote}
+            title={resolvedEmptyTitle}
+            description={resolvedEmptyDescription}
+            actionText={effectiveActionText}
+            onAction={effectiveOnAction}
           />
         )}
 

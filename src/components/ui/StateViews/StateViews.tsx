@@ -73,11 +73,18 @@ export const ErrorState: React.FC<ErrorStateProps> = ({
    ========================================================================== */
 export interface LoadingStateProps {
   count?: number;
+  message?: string;
 }
 
-export const LoadingState: React.FC<LoadingStateProps> = ({ count = 3 }) => {
+export const LoadingState: React.FC<LoadingStateProps> = ({ count = 3, message }) => {
   return (
-    <div className="state-view-loading" aria-label="Loading content">
+    <div className="state-view-loading" aria-label={message ?? "Loading content"}>
+      {message && (
+        <div className="state-loading-message" role="status" aria-live="polite">
+          <span className="state-loading-spinner" aria-hidden="true" />
+          <span>{message}</span>
+        </div>
+      )}
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="state-skeleton-card">
           <div className="state-skeleton-line state-skeleton-title" />

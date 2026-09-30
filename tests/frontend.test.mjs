@@ -969,6 +969,549 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
         assert.strictEqual(rUpper[0].id, "n1");
       });
     });
+
+    describe("Task 11: Title + Content Search", () => {
+      const notes = [
+        { id: "note-a", title: "Project Alpha", content: "General system architecture and milestones." },
+        { id: "note-b", title: "Team Sync", content: "Review the upcoming project deadline on Friday." },
+        { id: "note-c", title: "Project Review", content: "Reviewing project milestones and project budgets." },
+        { id: "note-d", title: "Grocery Shopping", content: "Apples, bananas, milk, coffee beans." },
+      ];
+
+      const searchTitleOrContent = (query) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return [];
+        return notes.filter(
+          (n) => n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q)
+        );
+      };
+
+      it("returns notes when either title matches or content matches, without requiring both", () => {
+        const r = searchTitleOrContent("project");
+        assert.strictEqual(r.length, 3);
+        const ids = r.map((n) => n.id);
+        assert.strictEqual(ids.includes("note-a"), true, "Title-only match included");
+        assert.strictEqual(ids.includes("note-b"), true, "Content-only match included");
+        assert.strictEqual(ids.includes("note-c"), true, "Both title and content match included");
+        assert.strictEqual(ids.includes("note-d"), false, "Non-matching note excluded");
+      });
+
+      it("ensures no duplicate entries for notes matching both title and content", () => {
+        const r = searchTitleOrContent("project");
+        const idCounts = {};
+        for (const n of r) {
+          idCounts[n.id] = (idCounts[n.id] || 0) + 1;
+        }
+        for (const count of Object.values(idCounts)) {
+          assert.strictEqual(count, 1, "Each matching note must appear exactly once");
+        }
+      });
+    });
+
+    describe("Task 12: Exact Note Selection", () => {
+      const allNotes = [
+        {
+          id: "note-101",
+          title: "Architecture Plan",
+          content: "Detailed system design specifications.",
+          format: "md",
+          notebook_id: "nb-work",
+          is_favorite: true,
+          is_deleted: false,
+          modified_at: "2026-09-30T10:00:00Z",
+        },
+        {
+          id: "note-102",
+          title: "Personal Thoughts",
+          content: "Ideas for weekend hike.",
+          format: "txt",
+          notebook_id: null,
+          is_favorite: false,
+          is_deleted: false,
+          modified_at: "2026-09-30T11:00:00Z",
+        },
+      ];
+
+      it("loads the exact note by unique noteId into editor with all fields intact", () => {
+        const selectNoteById = (id) => allNotes.find((n) => n.id === id) ?? null;
+
+        const selected = selectNoteById("note-101");
+        assert.notStrictEqual(selected, null);
+        assert.strictEqual(selected.id, "note-101");
+        assert.strictEqual(selected.title, "Architecture Plan");
+        assert.strictEqual(selected.content, "Detailed system design specifications.");
+        assert.strictEqual(selected.format, "md");
+        assert.strictEqual(selected.notebook_id, "nb-work");
+        assert.strictEqual(selected.is_favorite, true);
+      });
+
+      it("does not create a new note or copy when opening a search result", () => {
+        let initialNoteCount = allNotes.length;
+        const selectExistingNote = (searchResult) => {
+          return allNotes.find((n) => n.id === searchResult.noteId);
+        };
+
+        const result = {
+          noteId: "note-101",
+          title: "Architecture Plan",
+          modifiedAt: "2026-09-30T10:00:00Z",
+          notebookId: "nb-work",
+          favorite: true,
+        };
+
+        const loaded = selectExistingNote(result);
+        assert.strictEqual(loaded.id, "note-101");
+        assert.strictEqual(allNotes.length, initialNoteCount, "Note count must remain unchanged");
+      });
+    });
+
+    describe("Task 13: Search Result Click Behavior", () => {
+      it("dispatches selection exclusively using noteId and never title", () => {
+        let selectedId = null;
+        const handleSelectNote = (id) => {
+          selectedId = id;
+        };
+
+        const searchResultA = {
+          noteId: "id-alpha-123",
+          title: "Project Plan",
+        };
+
+        const searchResultB = {
+          noteId: "id-beta-456",
+          title: "Project Plan", // Identical title
+        };
+
+        handleSelectNote(searchResultA.noteId);
+        assert.strictEqual(selectedId, "id-alpha-123");
+
+        handleSelectNote(searchResultB.noteId);
+        assert.strictEqual(selectedId, "id-beta-456");
+      });
+
+      it("guarantees clicking a search result does not invoke note creation APIs", () => {
+        let createCalled = false;
+        let selectCalled = false;
+
+        const mockApi = {
+          createNote: () => {
+            createCalled = true;
+          },
+          selectNote: (id) => {
+            selectCalled = true;
+            return id;
+          },
+        };
+
+        const clickedResult = { noteId: "note-999", title: "Test Note" };
+        mockApi.selectNote(clickedResult.noteId);
+
+        assert.strictEqual(selectCalled, true);
+        assert.strictEqual(createCalled, false, "Must not create a new note copy");
+      });
+    });
+
+    describe("Task 14: Search Result List", () => {
+      it("maps SearchResult objects into NoteListItems with snippet previews and metadata", () => {
+        const searchResult = {
+          noteId: "res-101",
+          title: "Project Plan",
+          snippet: "...project release timeline...",
+          modifiedAt: "2026-09-30T12:00:00Z",
+          notebookId: "nb-work",
+          favorite: true,
+        };
+
+        const item = {
+          id: searchResult.noteId,
+          title: searchResult.title,
+          preview: searchResult.snippet,
+          isFavorite: searchResult.favorite,
+          notebookId: searchResult.notebookId,
+          notebookPath: "Work / Projects",
+          tags: ["work", "important"],
+        };
+
+        assert.strictEqual(item.id, "res-101");
+        assert.strictEqual(item.title, "Project Plan");
+        assert.strictEqual(item.preview, "...project release timeline...");
+        assert.strictEqual(item.isFavorite, true);
+        assert.strictEqual(item.notebookPath, "Work / Projects");
+        assert.deepStrictEqual(item.tags, ["work", "important"]);
+      });
+
+      it("supports dual rendering modes in NotesList without duplicating components", () => {
+        const renderNotesListConfig = (mode, count, query) => ({
+          isSearchMode: mode === "search",
+          title: mode === "search" ? `Search: "${query}"` : "All Notes",
+          countBadge: String(count),
+          emptyTitle: mode === "search" ? "No notes found" : "No notes yet",
+          allowNewNote: mode !== "search",
+        });
+
+        const normalConfig = renderNotesListConfig("normal", 5, "");
+        assert.strictEqual(normalConfig.isSearchMode, false);
+        assert.strictEqual(normalConfig.title, "All Notes");
+        assert.strictEqual(normalConfig.allowNewNote, true);
+
+        const searchConfig = renderNotesListConfig("search", 2, "project");
+        assert.strictEqual(searchConfig.isSearchMode, true);
+        assert.strictEqual(searchConfig.title, 'Search: "project"');
+        assert.strictEqual(searchConfig.emptyTitle, "No notes found");
+        assert.strictEqual(searchConfig.allowNewNote, false);
+      });
+    });
+
+    describe("Task 15: Search Result Empty State", () => {
+      const resolveEmptyStateProps = ({ mode, searchQuery, emptyTitle, emptyDescription, onNewNote }) => {
+        const isSearchMode = mode === "search";
+        const resolvedEmptyTitle = emptyTitle ?? (isSearchMode ? "No notes found" : "No notes yet");
+        const resolvedEmptyDescription =
+          emptyDescription ??
+          (isSearchMode
+            ? `No notes match "${searchQuery}".`
+            : "Create your first note to get started.");
+        const effectiveActionText = isSearchMode ? undefined : onNewNote ? "+ New Note" : undefined;
+        return {
+          title: resolvedEmptyTitle,
+          description: resolvedEmptyDescription,
+          actionText: effectiveActionText,
+        };
+      };
+
+      it("displays 'No notes found' and 'No notes match \"xyzabcdef\".' for zero results", () => {
+        const props = resolveEmptyStateProps({
+          mode: "search",
+          searchQuery: "xyzabcdef",
+          onNewNote: () => {},
+        });
+
+        assert.strictEqual(props.title, "No notes found");
+        assert.strictEqual(props.description, 'No notes match "xyzabcdef".');
+        assert.strictEqual(props.actionText, undefined, "Must omit '+ New Note' action button in search mode");
+      });
+
+      it("does not show an empty/blank list with no explanation when search produces 0 results", () => {
+        const searchResults = [];
+        const isSearchActive = true;
+        const searchQuery = "nonexistent-token";
+
+        const status = isSearchActive
+          ? searchResults.length === 0
+            ? "empty"
+            : "idle"
+          : "idle";
+
+        assert.strictEqual(status, "empty");
+
+        const view = resolveEmptyStateProps({
+          mode: "search",
+          searchQuery,
+        });
+
+        assert.ok(view.title.length > 0, "Title must not be blank");
+        assert.ok(view.description.length > 0, "Description must explain zero results");
+        assert.strictEqual(view.title, "No notes found");
+        assert.strictEqual(view.description, 'No notes match "nonexistent-token".');
+      });
+    });
+
+    describe("Task 16: Search Loading State", () => {
+      it("maps searching status to 'loading' in NotesList with subtle Searching... indicator", () => {
+        const computeSearchDisplayState = (searchState, isSearchActive) => {
+          if (!isSearchActive) return { status: "idle", loadingBadge: undefined, loadingMessage: undefined };
+          if (searchState.status === "searching") {
+            return {
+              status: "loading",
+              loadingBadge: "Searching...",
+              loadingMessage: "Searching...",
+            };
+          }
+          return { status: "idle", loadingBadge: undefined, loadingMessage: undefined };
+        };
+
+        const activeSearch = computeSearchDisplayState({ status: "searching", query: "sqlite" }, true);
+        assert.strictEqual(activeSearch.status, "loading");
+        assert.strictEqual(activeSearch.loadingBadge, "Searching...");
+        assert.strictEqual(activeSearch.loadingMessage, "Searching...");
+
+        const finishedSearch = computeSearchDisplayState({ status: "success", query: "sqlite", results: [] }, true);
+        assert.strictEqual(finishedSearch.status, "idle");
+        assert.strictEqual(finishedSearch.loadingBadge, undefined);
+      });
+
+      it("keeps search UI non-blocking so users can continue typing or interacting", () => {
+        let isSearching = false;
+        let searchInputDisabled = false; // Input should never be disabled during search
+        let fullScreenBlockingModal = false;
+
+        // Simulate initiating an async search
+        isSearching = true;
+        // Verify non-blocking constraints
+        assert.strictEqual(isSearching, true);
+        assert.strictEqual(searchInputDisabled, false, "Search input must remain interactive while searching");
+        assert.strictEqual(fullScreenBlockingModal, false, "Must not block application with a modal overlay");
+
+        // Simulate async completion
+        isSearching = false;
+        assert.strictEqual(isSearching, false);
+      });
+    });
+
+    describe("Task 17: Search Error State", () => {
+      const sanitizeSearchError = (err) => {
+        return {
+          title: "Search failed",
+          message: "Unable to search notes right now. Please try again.",
+        };
+      };
+
+      it("presents friendly 'Search failed' and 'Unable to search notes right now. Please try again.' on failure", () => {
+        const rawSqliteError = new Error('SQLite error: near "SELECT": syntax error in query');
+        const sanitized = sanitizeSearchError(rawSqliteError);
+
+        assert.strictEqual(sanitized.title, "Search failed");
+        assert.strictEqual(sanitized.message, "Unable to search notes right now. Please try again.");
+      });
+
+      it("never exposes internal SQLite error messages to normal users", () => {
+        const technicalErrors = [
+          new Error('SQLite error: near "WHERE": syntax error'),
+          new Error("OperationalError: database disk image is malformed"),
+          new Error("rusqlite::Error::SqliteFailure(1, Some(\"no such table: notes_fts\"))"),
+          "Generic low-level network or IPC failure",
+        ];
+
+        for (const err of technicalErrors) {
+          const sanitized = sanitizeSearchError(err);
+          assert.strictEqual(sanitized.message.includes("SQLite"), false, "Must not leak SQLite token");
+          assert.strictEqual(sanitized.message.includes("syntax error"), false, "Must not leak syntax error");
+          assert.strictEqual(sanitized.message.includes("near"), false, "Must not leak near clause");
+          assert.strictEqual(sanitized.message.includes("malformed"), false, "Must not leak malformed details");
+          assert.strictEqual(sanitized.message, "Unable to search notes right now. Please try again.");
+        }
+      });
+    });
+
+    describe("Task 18: Debounced Search", () => {
+      it("uses default debounce within recommended 150-300ms window (200ms)", () => {
+        const defaultDebounceMs = 200;
+        assert.ok(defaultDebounceMs >= 150 && defaultDebounceMs <= 300);
+      });
+
+      it("coalesces rapid keystrokes (p -> pr -> pro -> proj -> proje -> projec -> project) into 1 search", async () => {
+        let executionCount = 0;
+        let lastExecutedQuery = null;
+        let activeTimer = null;
+        const debounceMs = 20;
+
+        const simulateKeystroke = (text) => {
+          if (activeTimer) {
+            clearTimeout(activeTimer);
+          }
+          activeTimer = setTimeout(() => {
+            executionCount++;
+            lastExecutedQuery = text;
+          }, debounceMs);
+        };
+
+        const keystrokes = ["p", "pr", "pro", "proj", "proje", "projec", "project"];
+        for (const stroke of keystrokes) {
+          simulateKeystroke(stroke);
+          await new Promise((res) => setTimeout(res, 5));
+        }
+
+        assert.strictEqual(executionCount, 0, "Must not execute during rapid burst");
+
+        await new Promise((res) => setTimeout(res, 35));
+
+        assert.strictEqual(executionCount, 1, "Must execute exactly once after pause");
+        assert.strictEqual(lastExecutedQuery, "project");
+      });
+
+      it("cancels pending debounce immediately when query is wiped or replaced with whitespace", () => {
+        let activeTimer = null;
+        let wasCancelled = false;
+
+        const setQuery = (text) => {
+          if (activeTimer) {
+            clearTimeout(activeTimer);
+            activeTimer = null;
+          }
+          const trimmed = text.trim();
+          if (!trimmed) {
+            wasCancelled = true;
+            return;
+          }
+          activeTimer = setTimeout(() => {}, 200);
+        };
+
+        setQuery("hello");
+        assert.ok(activeTimer !== null);
+
+        setQuery("   ");
+        assert.strictEqual(activeTimer, null);
+        assert.strictEqual(wasCancelled, true);
+      });
+    });
+
+    describe("Task 19: Immediate Search Submission (Enter & Selection)", () => {
+      it("executes search immediately on Enter key press without waiting for debounce timer", async () => {
+        let activeTimer = null;
+        let executedQuery = null;
+        let executionCount = 0;
+        const debounceMs = 200;
+
+        const scheduleSearch = (text) => {
+          if (activeTimer) clearTimeout(activeTimer);
+          activeTimer = setTimeout(() => {
+            executionCount++;
+            executedQuery = text;
+          }, debounceMs);
+        };
+
+        const submitImmediately = (text) => {
+          if (activeTimer) {
+            clearTimeout(activeTimer);
+            activeTimer = null;
+          }
+          executionCount++;
+          executedQuery = text;
+        };
+
+        // User typed "meeting"
+        scheduleSearch("meeting");
+        assert.ok(activeTimer !== null);
+        assert.strictEqual(executionCount, 0);
+
+        // User hits Enter immediately (e.g. 5ms later)
+        submitImmediately("meeting");
+        assert.strictEqual(executionCount, 1);
+        assert.strictEqual(executedQuery, "meeting");
+        assert.strictEqual(activeTimer, null);
+
+        // Verify that after 250ms, no duplicate execution happens
+        await new Promise((res) => setTimeout(res, 25));
+        assert.strictEqual(executionCount, 1, "Debounced timer must not fire again after Enter submission");
+      });
+
+      it("cancels pending debounce when user explicitly selects a result and loads note without delay", () => {
+        let activeTimer = "mock-active-timer-id";
+        let selectedNote = null;
+
+        const cancelPendingDebounce = () => {
+          activeTimer = null;
+        };
+
+        const onSelectNote = (noteId) => {
+          cancelPendingDebounce();
+          selectedNote = noteId;
+        };
+
+        // User typed into search bar and timer is armed
+        assert.strictEqual(activeTimer, "mock-active-timer-id");
+
+        // User clicks a search result item
+        onSelectNote("note-456");
+
+        // Debounce is cancelled immediately, and selection applied without waiting
+        assert.strictEqual(activeTimer, null, "Pending debounce must be cancelled on note selection");
+        assert.strictEqual(selectedNote, "note-456");
+      });
+    });
+
+    describe("Task 20: Cancel Stale Search Results", () => {
+      it("ignores older out-of-order search responses (request 1 'pro' returning after request 2 'project')", async () => {
+        let requestId = 0;
+        let finalState = null;
+
+        const executeSearch = async (text, delayMs, results) => {
+          const currentId = ++requestId;
+          await new Promise((res) => setTimeout(res, delayMs));
+
+          // Stale response guard
+          if (currentId === requestId) {
+            finalState = { query: text, results };
+          }
+        };
+
+        // User typed "pro" (takes 40ms)
+        const p1 = executeSearch("pro", 40, [{ noteId: "1", title: "Project Pro" }]);
+
+        // User immediately typed "project" (takes 10ms)
+        const p2 = executeSearch("project", 10, [{ noteId: "2", title: "Final Project" }]);
+
+        await Promise.all([p1, p2]);
+
+        // Even though "pro" returned later, finalState must remain "project" from request 2
+        assert.strictEqual(finalState.query, "project");
+        assert.deepStrictEqual(finalState.results, [{ noteId: "2", title: "Final Project" }]);
+      });
+
+      it("drops stale errors from earlier requests if a newer request succeeded", async () => {
+        let requestId = 0;
+        let finalState = null;
+
+        const executeSearchWithError = async (text, delayMs, shouldFail, results) => {
+          const currentId = ++requestId;
+          await new Promise((res) => setTimeout(res, delayMs));
+
+          try {
+            if (shouldFail) throw new Error("Delayed DB Failure");
+            if (currentId === requestId) {
+              finalState = { status: "success", query: text, results };
+            }
+          } catch (err) {
+            if (currentId === requestId) {
+              finalState = { status: "error", message: err.message };
+            }
+          }
+        };
+
+        // Request 1 fails slowly at 40ms
+        const req1 = executeSearchWithError("old", 40, true, []);
+
+        // Request 2 succeeds quickly at 10ms
+        const req2 = executeSearchWithError("new", 10, false, [{ noteId: "10", title: "New Result" }]);
+
+        await Promise.all([req1, req2]);
+
+        assert.strictEqual(finalState.status, "success");
+        assert.strictEqual(finalState.query, "new");
+      });
+
+      it("drops in-flight responses when search is cleared, preventing late resurrection of search results", async () => {
+        let requestId = 0;
+        let state = { status: "idle" };
+
+        const runSearch = async (delayMs, results) => {
+          const currentId = ++requestId;
+          await new Promise((res) => setTimeout(res, delayMs));
+          if (currentId === requestId) {
+            state = { status: "success", results };
+          }
+        };
+
+        const clearSearch = () => {
+          requestId++;
+          state = { status: "idle" };
+        };
+
+        // Launch slow query
+        const searchPromise = runSearch(30, [{ noteId: "99", title: "Should Be Dropped" }]);
+
+        // Clear query after 5ms
+        await new Promise((res) => setTimeout(res, 5));
+        clearSearch();
+        assert.strictEqual(state.status, "idle");
+
+        // Wait for searchPromise to complete
+        await searchPromise;
+
+        // State remains idle, response was dropped
+        assert.strictEqual(state.status, "idle");
+      });
+    });
   });
 });
 

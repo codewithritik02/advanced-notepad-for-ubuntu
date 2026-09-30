@@ -35,6 +35,8 @@
   max-width: 240px;
   line-height: var(--line-height-normal);
   margin-bottom: var(--spacing-md);
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* Loading skeletons */
@@ -80,4 +82,31 @@
 .state-skeleton-meta {
   height: 9px;
   width: 35%;
+}
+
+.state-loading-message {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+.state-loading-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-border-subtle);
+  border-top-color: var(--color-primary-default);
+  border-radius: 50%;
+  animation: state-spin 0.8s linear infinite;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+@keyframes state-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }

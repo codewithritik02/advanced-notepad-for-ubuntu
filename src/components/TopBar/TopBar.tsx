@@ -4,7 +4,9 @@ import "./TopBar.css";
 
 export interface TopBarProps {
   searchQuery?: string;
+  isSearching?: boolean;
   onSearchChange?: (query: string) => void;
+  onSearchSubmit?: () => void;
   onNewNoteClick?: () => void;
   onThemeToggle?: () => void;
   onSettingsClick?: () => void;
@@ -17,6 +19,13 @@ const SearchIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="11" cy="11" r="8" />
     <line x1="21" y1="21" x2="16.65" y2="16.65" />
+  </svg>
+);
+
+const SearchSpinnerIcon = () => (
+  <svg className="search-spinner-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Searching">
+    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" />
+    <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" />
   </svg>
 );
 
@@ -71,7 +80,9 @@ const SettingsIcon = () => (
 
 export const TopBar: React.FC<TopBarProps> = ({
   searchQuery = "",
+  isSearching = false,
   onSearchChange,
+  onSearchSubmit,
   onNewNoteClick,
   onThemeToggle,
   onSettingsClick,
@@ -108,16 +119,22 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Middle: Visual Search Placeholder Input */}
       <div className="topbar-search-container">
         <div className="topbar-search-bar">
-          <span className="search-icon">
-            <SearchIcon />
+          <span className="search-icon" title={isSearching ? "Searching..." : "Search"}>
+            {isSearching ? <SearchSpinnerIcon /> : <SearchIcon />}
           </span>
           <input
             ref={searchInputRef}
             type="text"
             className="search-input selectable-text"
-            placeholder="Search notes... (Ctrl+F)"
+            placeholder="Search notes... (Ctrl+K)"
             value={searchQuery}
             onChange={(e) => onSearchChange?.(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                onSearchSubmit?.();
+              }
+            }}
             aria-label="Search notes"
           />
           {searchQuery && (
