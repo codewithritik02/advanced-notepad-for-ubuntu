@@ -100,7 +100,8 @@ export const TopBar: React.FC<TopBarProps> = ({
     } else {
       onSearchChange?.("");
     }
-    searchInputRef.current?.focus();
+    // Task 43: Blur after clear so focus returns to content area, consistent with Escape key behavior.
+    searchInputRef.current?.blur();
   };
 
   const renderThemeIcon = () => {
@@ -122,20 +123,20 @@ export const TopBar: React.FC<TopBarProps> = ({
         <span className="topbar-brand-title">Personal Notepad</span>
       </div>
 
-      {/* Middle: Visual Search Placeholder Input */}
-      <div className="topbar-search-container">
+      {/* Middle: Search Landmark & Accessible Input */}
+      <div className="topbar-search-container" role="search">
         <div
           className="topbar-search-bar"
           onClick={() => searchInputRef.current?.focus()}
         >
-          <span className="search-icon" title={isSearching ? "Searching..." : "Search"}>
+          <span className="search-icon" title={isSearching ? "Searching..." : "Search"} aria-hidden="true">
             {isSearching ? <SearchSpinnerIcon /> : <SearchIcon />}
           </span>
           <input
             ref={searchInputRef}
             type="text"
             className="search-input selectable-text"
-            placeholder="Search notes... (Ctrl+K)"
+            placeholder="Search notes..."
             value={searchQuery}
             onChange={(e) => onSearchChange?.(e.target.value)}
             onKeyDown={(e) => {
@@ -154,7 +155,14 @@ export const TopBar: React.FC<TopBarProps> = ({
               }
             }}
             aria-label="Search notes"
+            autoComplete="off"
+            spellCheck={false}
           />
+          {!searchQuery && (
+            <kbd className="search-shortcut-hint" aria-hidden="true">
+              Ctrl+K
+            </kbd>
+          )}
           {searchQuery && (
             <button
               type="button"

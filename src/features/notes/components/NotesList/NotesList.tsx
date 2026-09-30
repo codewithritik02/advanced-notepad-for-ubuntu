@@ -80,12 +80,12 @@ export const NotesList: React.FC<NotesListProps> = ({
         <div className="notes-list-title-wrap">
           <h2 className="notes-list-title">{title}</h2>
           {isSearchMode && status === "loading" ? (
-            <Badge variant="default" size="sm">
+            <Badge variant="default" size="sm" aria-live="polite">
               Searching...
             </Badge>
           ) : (
             status === "idle" && (
-              <Badge variant="default" size="sm">
+              <Badge variant="default" size="sm" aria-live="polite">
                 {countBadgeText}
               </Badge>
             )
@@ -120,9 +120,13 @@ export const NotesList: React.FC<NotesListProps> = ({
           />
         )}
 
-        {/* Normal State */}
+        {/* Normal / Search Results State */}
         {status === "idle" && notes.length > 0 && (
-          <div className="notes-list-items" role="feed">
+          <div
+            className="notes-list-items"
+            role="region"
+            aria-label={isSearchMode ? "Search results" : "Notes list"}
+          >
             {notes.map((note) => (
               <NoteCard
                 key={note.id}

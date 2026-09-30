@@ -1,7 +1,10 @@
 import { useState, useCallback } from "react";
 import type { NoteLocation } from "../types";
+import { locationToNavId } from "../types";
+export { locationToNavId };
 
 export interface UseNotebookSelectionReturn {
+  /** The authoritative navigation location (Task 42). */
   location: NoteLocation;
   selectedNotebookId: string | null;
   selectedTagId: string | null;
@@ -11,6 +14,7 @@ export interface UseNotebookSelectionReturn {
   selectUnfiled: () => void;
   selectFavorites: () => void;
   selectTag: (tagId: string) => void;
+  selectTrash: () => void;
   // Expand / collapse UI state (Task 9)
   expandedNotebookIds: Set<string>;
   toggleExpand: (notebookId: string) => void;
@@ -80,6 +84,10 @@ export function useNotebookSelection(
     setLocation({ type: "tag", tagId });
   }, []);
 
+  const selectTrash = useCallback(() => {
+    setLocation({ type: "trash" });
+  }, []);
+
   // Expand / Collapse toggling (Task 9)
   const toggleExpand = useCallback((notebookId: string) => {
     setExpandedNotebookIds((prev) => {
@@ -128,6 +136,7 @@ export function useNotebookSelection(
     selectUnfiled,
     selectFavorites,
     selectTag,
+    selectTrash,
     expandedNotebookIds,
     toggleExpand,
     expandNotebook,

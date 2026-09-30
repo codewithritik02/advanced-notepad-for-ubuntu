@@ -33,8 +33,10 @@ import {
 } from "../features/tags";
 import {
   useSearch,
+  useSearchKeyboardNav,
   searchResultToNoteListItem,
   formatResultCount,
+  scopeSearchResults,
 } from "../features/search";
 
 export function App() {
@@ -115,6 +117,7 @@ export function App() {
 
   // Notebook tree expansion and navigation state (Task 9 & 10)
   const {
+    location,
     selectedNotebookId,
     selectedTagId,
     selectNotebook,
@@ -424,6 +427,34 @@ export function App() {
     },
   });
 
+  /**
+   * Task 45 — Search Result Keyboard Navigation
+   *
+   * Stable callback used by both the JSX onSelectNote handler and the
+   * keyboard navigation hook so that clicking a card and pressing ↓/↑
+   * produce identical save → select → blur behavior.
+   */
+  const handleKeyboardSelectNote = useCallback(
+    async (noteId: string) => {
+      cancelPendingDebounce();
+      if (noteId !== selectedNoteId) {
+        if (editorSaveRef.current) {
+          await editorSaveRef.current();
+        }
+        setSelectedNoteId(noteId);
+      }
+      // Blur search input so focus moves to the editor (Task 44 / Task 45)
+      if (isSearchActive) {
+        searchInputRef.current?.blur();
+      }
+    },
+    [cancelPendingDebounce, selectedNoteId, isSearchActive]
+  );
+
+  // Wire arrow-key navigation over scoped search results (Task 45)
+  // resultNoteIds is derived below after scopedSearchResults is computed;
+  // we pass a stable ref-based wrapper to avoid dependency ordering issues.
+
   // Notebook creation modal handlers (Task 13)
   const handleOpenCreateNotebook = useCallback(
     (requestedParentId?: string | null) => {
@@ -579,16 +610,54 @@ export function App() {
     });
   }, [filteredNotes, noteTagsMap, notebooks]);
 
-  // Unified items for NotesList: real SQLite search results when searching, standard notes when browsing (Task 14)
+  const notesLookup = useMemo(() => {
+    const map = new Map<string, { is_favorite: boolean }>();
+    for (const n of notes) {
+      map.set(n.id, { is_favorite: n.is_favorite });
+    }
+    return map;
+  }, [notes]);
+
+  // Scoped search results (Task 39: Favorites, Task 40: Tags, Task 41: Notebook, Task 42: NoteLocation model)
+  const scopedSearchResults = useMemo(() => {
+    if (!isSearchActive) return [];
+    return scopeSearchResults(searchResults, {
+      location,
+      tags,
+      noteTagsMap,
+      notesLookup,
+    });
+  }, [isSearchActive, searchResults, location, tags, noteTagsMap, notesLookup]);
+
+  // Task 45: Ordered IDs of the current scoped results for keyboard navigation
+  const searchResultNoteIds = useMemo(
+    () => scopedSearchResults.map((r) => r.noteId),
+    [scopedSearchResults]
+  );
+
+  // Task 45: Arrow-key navigation through search results
+  useSearchKeyboardNav({
+    isSearchActive,
+    resultNoteIds: searchResultNoteIds,
+    selectedNoteId,
+    onSelectNote: handleKeyboardSelectNote,
+  });
+
+  // Unified items for NotesList: real SQLite search results when searching, standard notes when browsing (Task 14, 39)
   const displayedNoteListItems = useMemo<NoteListItem[]>(() => {
     if (isSearchActive) {
-      return searchResults.map((result) => {
+      return scopedSearchResults.map((result) => {
+        const liveNote = notesLookup.get(result.noteId);
         const nbPath = computeNotebookPath(result.notebookId, notebooks);
-        return searchResultToNoteListItem(result, nbPath, noteTagsMap[result.noteId]);
+        const item = searchResultToNoteListItem(result, nbPath, noteTagsMap[result.noteId]);
+        if (liveNote) {
+          item.isFavorite = liveNote.is_favorite;
+        }
+        return item;
       });
     }
     return noteListItems;
-  }, [isSearchActive, searchResults, noteListItems, notebooks, noteTagsMap]);
+  }, [isSearchActive, scopedSearchResults, notesLookup, notebooks, noteTagsMap, noteListItems]);
 
   // Unified status for NotesList (idle | loading | error | empty)
   const displayedStatus = useMemo<NotesListStatus>(() => {
@@ -596,25 +665,58 @@ export function App() {
       if (searchState.status === "searching") return "loading";
       if (searchState.status === "error") return "error";
       if (searchState.status === "success") {
-        return searchResults.length === 0 ? "empty" : "idle";
+        return scopedSearchResults.length === 0 ? "empty" : "idle";
       }
       return "idle";
     }
     return status;
-  }, [isSearchActive, searchState, searchResults.length, status]);
+  }, [isSearchActive, searchState, scopedSearchResults.length, status]);
 
   // Automatically select the first search result on search completion if no valid selection exists
   useEffect(() => {
     if (isSearchActive && searchState.status === "success") {
-      if (searchResults.length > 0) {
+      if (scopedSearchResults.length > 0) {
         setSelectedNoteId((prev) =>
-          prev && searchResults.some((r) => r.noteId === prev) ? prev : searchResults[0].noteId
+          prev && scopedSearchResults.some((r) => r.noteId === prev)
+            ? prev
+            : scopedSearchResults[0].noteId
         );
       } else {
         setSelectedNoteId(null);
       }
     }
-  }, [isSearchActive, searchState, searchResults]);
+  }, [isSearchActive, searchState, scopedSearchResults]);
+
+  /**
+   * Task 43 — Search Clear Behavior
+   *
+   * Chosen behavior: Context-preserving clear.
+   *
+   * When the user clears the search field (via the × button, Escape key, or
+   * navigating away), the UI returns to the note list for the **current
+   * navigation context** — the same notebook, tag, or favorites view that was
+   * active before searching. The `notes` state always holds the last-loaded
+   * batch for that context, so no additional network/IPC round-trip is needed.
+   *
+   * Example:
+   *   Before search:  Work / Projects notebook (5 notes)
+   *   Search query:   "deadline"
+   *   Clear search:   → Work / Projects notebook (5 notes, same as before)
+   *
+   * Selection restoration: If the note that was auto-selected during search
+   * is no longer visible in the restored context (e.g. it belonged to a
+   * different notebook), we fall back to the first note in `filteredNotes`.
+   * If the selected note IS visible, it remains selected — the editor stays
+   * open and the user loses no work.
+   */
+  useEffect(() => {
+    if (isSearchActive) return; // Only run when search has just been cleared
+    if (!selectedNoteId) return;
+    const stillVisible = filteredNotes.some((n) => n.id === selectedNoteId);
+    if (!stillVisible) {
+      setSelectedNoteId(filteredNotes.length > 0 ? filteredNotes[0].id : null);
+    }
+  }, [isSearchActive, filteredNotes, selectedNoteId]);
 
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
@@ -647,14 +749,25 @@ export function App() {
       }
       selectTag(tagId);
       setActiveNavId("tags");
-      setSearchQuery("");
       await loadNotes("tags", null, tagId);
     },
     [selectTag, loadNotes]
   );
 
   const getSectionTitle = () => {
-    if (searchQuery.trim()) return `Search: "${searchQuery}"`;
+    if (searchQuery.trim()) {
+      if (activeNavId === "favorites") {
+        return `Favorites — Search: "${searchQuery}"`;
+      }
+      if (activeNavId === "tags" && selectedTagId) {
+        const t = tags.find((item) => item.id === selectedTagId);
+        return t ? `#${t.name} — Search: "${searchQuery}"` : `Tags — Search: "${searchQuery}"`;
+      }
+      if (activeNavId === "notebook" && selectedNotebook) {
+        return `${selectedNotebook.name} — Search: "${searchQuery}"`;
+      }
+      return `Search: "${searchQuery}"`;
+    }
     switch (activeNavId) {
       case "favorites":
         return "Favorites";
@@ -752,7 +865,11 @@ export function App() {
                 await editorSaveRef.current();
               }
               setActiveNavId(navId);
-              setSearchQuery("");
+              if (navId !== "favorites" && navId !== "all-notes") {
+                if (searchQuery) {
+                  clearSearch();
+                }
+              }
               if (navId === "all-notes") {
                 selectAllNotes();
                 await loadNotes("all-notes", null, null);
@@ -786,7 +903,9 @@ export function App() {
               }
               selectNotebook(nbId, notebooks);
               setActiveNavId("notebook");
-              setSearchQuery("");
+              if (searchQuery) {
+                clearSearch();
+              }
               await loadNotes("notebook", nbId, null);
             }}
             onRetryNotebooks={loadNotebooks}
@@ -810,15 +929,8 @@ export function App() {
             title={getSectionTitle()}
             notes={displayedNoteListItems}
             selectedNoteId={selectedNote?.id ?? null}
-            onSelectNote={async (noteId) => {
-              cancelPendingDebounce();
-              if (noteId !== selectedNoteId) {
-                if (editorSaveRef.current) {
-                  await editorSaveRef.current();
-                }
-                setSelectedNoteId(noteId);
-              }
-            }}
+            onSelectNote={handleKeyboardSelectNote}
+
             status={displayedStatus}
             errorTitle={isSearchActive ? "Search failed" : undefined}
             errorMessage={
@@ -826,16 +938,32 @@ export function App() {
                 ? searchState.message
                 : errorMessage
             }
-            emptyTitle={isSearchActive ? "No notes found" : emptyState.title}
+            emptyTitle={
+              isSearchActive
+                ? (activeNavId === "favorites"
+                    ? "No favorite notes found"
+                    : activeNavId === "tags"
+                    ? "No tagged notes found"
+                    : activeNavId === "notebook"
+                    ? "No notes found in this notebook"
+                    : "No notes found")
+                : emptyState.title
+            }
             emptyDescription={
               isSearchActive
-                ? `No notes match "${searchQuery}".`
+                ? (activeNavId === "favorites"
+                    ? `No favorite notes match "${searchQuery}".`
+                    : activeNavId === "tags" && selectedTagId
+                    ? `No notes tagged #${tags.find((t) => t.id === selectedTagId)?.name ?? "selected tag"} match "${searchQuery}".`
+                    : activeNavId === "notebook" && selectedNotebook
+                    ? `No notes in "${selectedNotebook.name}" match "${searchQuery}".`
+                    : `No notes match "${searchQuery}".`)
                 : emptyState.description
             }
             mode={isSearchActive ? "search" : "normal"}
             searchQuery={searchQuery}
             resultCountLabel={
-              isSearchActive ? formatResultCount(searchResults.length) : undefined
+              isSearchActive ? formatResultCount(scopedSearchResults.length) : undefined
             }
             onRetry={isSearchActive ? () => searchNow() : handleRetry}
             onNewNote={isSearchActive ? undefined : handleNewNoteAction}

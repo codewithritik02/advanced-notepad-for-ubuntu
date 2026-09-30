@@ -19,14 +19,38 @@ export interface NotebookTreeNode extends Notebook {
 
 /**
  * Explicit application navigation model separating All Notes, Unfiled Notes,
- * and specific Notebook views to avoid ambiguous null states.
+ * Favorites, Notebook, Tag, and Trash views to avoid ambiguous null states.
+ *
+ * This is the single source of truth for navigation context in the application.
+ * Search state (searchQuery) is kept entirely separate from this model —
+ * do NOT create tagSearchLocation / favoriteSearchLocation / notebookSearchLocation
+ * variants. Use the composition layer in scopeSearchResults instead (Task 42).
  */
 export type NoteLocation =
   | { type: "all" }
   | { type: "unfiled" }
   | { type: "favorites" }
   | { type: "notebook"; notebookId: string }
-  | { type: "tag"; tagId: string };
+  | { type: "tag"; tagId: string }
+  | { type: "trash" };
+
+/**
+ * Maps a NoteLocation to its NavItemId string equivalent used by the Sidebar
+ * component. This bridge avoids duplicating the location model inside
+ * presentation-layer components.
+ */
+export function locationToNavId(
+  loc: NoteLocation
+): "all-notes" | "unfiled" | "favorites" | "notebook" | "tags" | "trash" {
+  switch (loc.type) {
+    case "all":      return "all-notes";
+    case "unfiled":  return "unfiled";
+    case "favorites":return "favorites";
+    case "notebook": return "notebook";
+    case "tag":      return "tags";
+    case "trash":    return "trash";
+  }
+}
 
 /**
  * Loading and error lifecycle status for notebooks.
