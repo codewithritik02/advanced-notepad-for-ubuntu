@@ -224,6 +224,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setContent(note.content);
       const resolvedFormat: NoteFormat = (note.format as NoteFormat) === "md" ? "md" : "txt";
       setFormat(resolvedFormat);
+      latestDataRef.current = { title: note.title, content: note.content, format: resolvedFormat };
+      isDirtyRef.current = false;
       setIsDirty(false);
       setEditorStatus("saved");
       setLastSavedAt(note.modified_at);
@@ -273,6 +275,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setSaveError(null);
       setTitle("");
       setContent("");
+      latestDataRef.current = { title: "", content: "", format: "txt" };
+      isDirtyRef.current = false;
       setIsDirty(false);
       return;
     }
@@ -285,6 +289,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const latestPersistedRevisionRef = useRef(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isSavingRef = useRef(false);
+  const inFlightSavePromiseRef = useRef<Promise<void> | null>(null);
   const latestDataRef = useRef({ title: "", content: "", format: "txt" as NoteFormat });
   const prevNoteIdRef = useRef<string | null>(null);
   const isDirtyRef = useRef(false);
@@ -462,7 +467,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         if (revisionRef.current > latestPersistedRevisionRef.current) {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = setTimeout(() => {
-            executeSave(targetNoteId, revisionRef.current);
+            const followUpPromise = executeSave(targetNoteId, revisionRef.current);
+            inFlightSavePromiseRef.current = followUpPromise;
+            followUpPromise.finally(() => {
+              if (inFlightSavePromiseRef.current === followUpPromise) {
+                inFlightSavePromiseRef.current = null;
+              }
+            });
           }, 800);
         }
       }
@@ -479,7 +490,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         clearTimeout(debounceTimerRef.current);
       }
       debounceTimerRef.current = setTimeout(() => {
-        executeSave(targetNoteId, currentRev);
+        const savePromise = executeSave(targetNoteId, currentRev);
+        inFlightSavePromiseRef.current = savePromise;
+        savePromise.finally(() => {
+          if (inFlightSavePromiseRef.current === savePromise) {
+            inFlightSavePromiseRef.current = null;
+          }
+        });
       }, 800);
     },
     [executeSave]
@@ -505,6 +522,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newTitle = e.target.value;
+    latestDataRef.current.title = newTitle;
+    isDirtyRef.current = true;
     setTitle(newTitle);
     updateDirtyState(newTitle, content, format);
     if (noteId) scheduleAutosave(noteId);
@@ -512,6 +531,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newContent = e.target.value;
+    latestDataRef.current.content = newContent;
+    isDirtyRef.current = true;
     setContent(newContent);
     updateDirtyState(title, newContent, format);
     if (noteId) scheduleAutosave(noteId);
@@ -607,7 +628,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [noteId, loadedNote, onNoteUpdated]);
 
   const handleSave = useCallback(async () => {
-    if (!noteId || isSavingRef.current) return;
+    if (!noteId) return;
+
+    // Task 54: If an autosave is currently in-flight, await its completion first
+    if (inFlightSavePromiseRef.current) {
+      await inFlightSavePromiseRef.current;
+    }
+
     if (!isDirtyRef.current && editorStatus !== "error") {
       // Per spec Section 42: If there are no changes, do nothing or provide unobtrusive confirmation
       return;
@@ -617,7 +644,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       debounceTimerRef.current = null;
     }
     revisionRef.current += 1;
-    await executeSave(noteId, revisionRef.current);
+    const savePromise = executeSave(noteId, revisionRef.current);
+    inFlightSavePromiseRef.current = savePromise;
+    try {
+      await savePromise;
+    } finally {
+      if (inFlightSavePromiseRef.current === savePromise) {
+        inFlightSavePromiseRef.current = null;
+      }
+    }
   }, [noteId, editorStatus, executeSave]);
 
   useEffect(() => {

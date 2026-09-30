@@ -1,5 +1,5 @@
 import type { Notebook, NotebookTreeNode } from "../types";
-import { logger } from "../../../utils/logger";
+import { logger } from "../../../utils/logger.ts";
 
 /**
  * Builds a nested hierarchical tree structure from a flat array of notebooks retrieved from SQLite.

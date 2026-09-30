@@ -234,16 +234,8 @@ fn sanitize_fts5_query(query: &str) -> String {
         }
 
         if !sub_tokens.is_empty() {
-            if sub_tokens.len() == 1 {
-                word_phrases.push(format!("\"{}\"*", sub_tokens[0]));
-            } else {
-                let phrase = sub_tokens
-                    .into_iter()
-                    .map(|t| format!("\"{}\"*", t))
-                    .collect::<Vec<_>>()
-                    .join(" + ");
-                word_phrases.push(format!("({})", phrase));
-            }
+            let phrase = sub_tokens.join(" ");
+            word_phrases.push(format!("\"{}\"*", phrase));
         }
     }
 
@@ -312,7 +304,7 @@ mod tests {
     use super::*;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
-    use crate::storage::models::CreateNoteDto;
+    use crate::storage::models::{CreateNoteDto, UpdateNoteDto};
     use crate::storage::repositories::NoteRepository;
 
     #[test]
@@ -1495,6 +1487,748 @@ mod tests {
         let res_email = SearchRepository::search(&conn, "user@example.com", None).unwrap();
         assert_eq!(res_email.len(), 1, "user@example.com must find email note without error");
         assert_eq!(res_email[0].note_id, note_email.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_51_sql_injection() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_sqli_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Populate database with confidential test notes
+        let _note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Confidential Financials Q3".to_string()),
+                content: Some("Revenue numbers: 15.4M USD net profit.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Private Employee Feedback".to_string()),
+                content: Some("Internal performance reviews and grading.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Security Infrastructure Credentials".to_string()),
+                content: Some("Server access keys and bastion host configs.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let initial_count: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(initial_count, 3, "Setup must have exactly 3 active notes");
+
+        // The four mandatory attack inputs specified in Task 51:
+        // 1. "'"
+        // 2. '"'
+        // 3. "' OR 1=1 --"
+        // 4. '" OR "1"="1'
+        // Plus additional destructive payloads
+        let injection_payloads = [
+            "'",
+            "\"",
+            "' OR 1=1 --",
+            "\" OR \"1\"=\"1",
+            "' OR '1'='1",
+            "'; DROP TABLE notes; --",
+            "\" UNION SELECT * FROM notes --",
+            "admin' --",
+            "1' ORDER BY 1--+",
+            "1' UNION ALL SELECT NULL,NULL,NULL,NULL,NULL,NULL--",
+        ];
+
+        for payload in &injection_payloads {
+            // Must NOT crash and must return Ok
+            let search_result = SearchRepository::search(&conn, payload, None);
+            assert!(
+                search_result.is_ok(),
+                "Search query with payload {:?} must not return error or crash",
+                payload
+            );
+
+            let results = search_result.unwrap();
+
+            // Must NOT dump the full database (tautology bypass prevention)
+            assert_ne!(
+                results.len(),
+                initial_count as usize,
+                "Payload {:?} must not cause an unintended full database dump",
+                payload
+            );
+
+            // In our test set, none of the payloads match the notes
+            assert_eq!(
+                results.len(),
+                0,
+                "Payload {:?} must safely evaluate to zero matches",
+                payload
+            );
+
+            // Database integrity check: notes table must still exist and count must remain 3
+            let current_count: Result<i64, _> = conn
+                .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get(0));
+            assert!(
+                current_count.is_ok(),
+                "Database table 'notes' must still exist after payload {:?}",
+                payload
+            );
+            assert_eq!(
+                current_count.unwrap(),
+                initial_count,
+                "Note count must not be altered by payload {:?}",
+                payload
+            );
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_52_large_content_search() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_large_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Generate repeated filler text blocks
+        let filler = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua ";
+
+        // Note 1: "project" near beginning
+        let content_beginning = format!("Important initial project briefing notes. {}", filler.repeat(200));
+        let note_beg = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Large Note Beginning".to_string()),
+                content: Some(content_beginning),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note 2: "project" near middle
+        let content_middle = format!("{} Critical project milestone reached in mid architecture. {}", filler.repeat(100), filler.repeat(100));
+        let note_mid = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Large Note Middle".to_string()),
+                content: Some(content_middle),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note 3: "project" near end
+        let content_end = format!("{} Final concluding project summary and retrospectives.", filler.repeat(200));
+        let note_end = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Large Note End".to_string()),
+                content: Some(content_end),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let start = std::time::Instant::now();
+        let results = SearchRepository::search(&conn, "project", None).unwrap();
+        let elapsed = start.elapsed();
+
+        // 1. Result found and correct notes returned
+        assert_eq!(results.len(), 3, "Must find all 3 large notes matching 'project'");
+        let ids: Vec<String> = results.iter().map(|r| r.note_id.clone()).collect();
+        assert!(ids.contains(&note_beg.id));
+        assert!(ids.contains(&note_mid.id));
+        assert!(ids.contains(&note_end.id));
+
+        // 2. UI responsiveness / performance check
+        assert!(elapsed.as_millis() < 500, "Search across large content must complete within 500ms");
+
+        // 3. Snippet is reasonable and full content is NOT returned
+        for res in &results {
+            assert!(res.snippet.is_some(), "SearchResult must include a preview snippet");
+            let snippet = res.snippet.as_ref().unwrap();
+
+            // Snippet must be a concise extract, far shorter than the large content
+            assert!(
+                snippet.len() < 300,
+                "Snippet length ({}) must be compact (< 300 characters)",
+                snippet.len()
+            );
+
+            // Snippet must contain the matched term or ellipsis
+            assert!(
+                snippet.to_lowercase().contains("project") || snippet.contains("..."),
+                "Snippet must contain matching term or context ellipsis"
+            );
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_53_many_notes_search() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_many_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Test increments specified in Task 53: 100, 500, 1000 notes
+        let targets = [100, 500, 1000];
+        let mut created = 0;
+
+        for &target in &targets {
+            let tx = conn.transaction().unwrap();
+            for i in (created + 1)..=target {
+                let note_id = format!("note-many-{}", i);
+                let title = if i % 5 == 0 {
+                    format!("Special Project Roadmap {}", i)
+                } else {
+                    format!("Standard Meeting Note {}", i)
+                };
+                let content = if i % 2 == 0 {
+                    format!("Detailed discussion about project deliverables for item {}.", i)
+                } else {
+                    format!("Regular documentation text without targets for item {}.", i)
+                };
+                let now = chrono::Utc::now().to_rfc3339();
+
+                tx.execute(
+                    "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+                     VALUES (?1, ?2, ?3, 'txt', ?4, ?4, 0, 0, 0)",
+                    params![note_id, title, content, now],
+                ).unwrap();
+            }
+            tx.commit().unwrap();
+            created = target;
+
+            // Measure search performance for 'Project'
+            let start = std::time::Instant::now();
+            let results = SearchRepository::search(&conn, "Project", None).unwrap();
+            let elapsed = start.elapsed();
+
+            // 1. Result count bounded by default limit 50
+            assert_eq!(
+                results.len(),
+                50,
+                "Result count must be bounded to default limit 50 at {} notes",
+                target
+            );
+
+            // 2. Search response must remain responsive (< 50ms)
+            assert!(
+                elapsed.as_millis() < 50,
+                "Search at {} notes must execute under 50ms (took {}ms)",
+                target,
+                elapsed.as_millis()
+            );
+
+            // 3. Result rendering & snippet reasonableness
+            for res in &results {
+                assert!(res.snippet.is_some());
+                assert!(res.snippet.as_ref().unwrap().len() < 300);
+            }
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_54_search_during_autosave_workflow() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_as_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Initial state: Note exists with baseline text
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Planning".to_string()),
+                content: Some("Initial notes on kickoff and team composition.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Search for "deadline": initial search returns 0 matches
+        let results_before = SearchRepository::search(&conn, "deadline", None).unwrap();
+        assert_eq!(results_before.len(), 0, "Term 'deadline' must not match before it is added");
+
+        // 3. User types in editor: "project deadline finalized for Q4 release."
+        // Autosave flushes update into SQLite
+        let updated = NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                content: Some("Initial notes on kickoff. Critical project deadline finalized for Q4 release.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+        assert!(updated.content.contains("deadline"));
+
+        // 4. Immediately search: "deadline"
+        let results_after = SearchRepository::search(&conn, "deadline", None).unwrap();
+        assert_eq!(results_after.len(), 1, "Search must find note immediately after autosave flush");
+        assert_eq!(results_after[0].note_id, note.id);
+        assert!(results_after[0].snippet.is_some());
+        assert!(
+            results_after[0].snippet.as_ref().unwrap().to_lowercase().contains("deadline"),
+            "Snippet must contain the freshly autosaved keyword"
+        );
+
+        // 5. Subsequent update removing keyword ensures stale matches do not linger
+        NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                content: Some("All milestones completed smoothly.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results_removed = SearchRepository::search(&conn, "deadline", None).unwrap();
+        assert_eq!(results_removed.len(), 0, "Search index must immediately clear removed term");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_55_autosave_fts_atomic_ordering() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_order_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create baseline note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Original Title".to_string()),
+                content: Some("Original Content with tokenalpha.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Perform atomic note update
+        NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                title: Some("New Title Beta".to_string()),
+                content: Some("New Content with tokenbeta replacing alpha.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Verify FTS table synchronization state directly
+        // Under SQLite triggers, notes_fts_au synchronizes atomically in the same transaction
+        let fts_count_alpha: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'tokenalpha'", [], |r| r.get(0))
+            .unwrap();
+        let fts_count_beta: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'tokenbeta'", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(fts_count_alpha, 0, "Old token must be purged from FTS5 index atomically");
+        assert_eq!(fts_count_beta, 1, "New token must be indexed in FTS5 atomically");
+
+        // 3. Rollback safety: If an update is executed within an aborted transaction,
+        // neither notes nor notes_fts may remain in a desynchronized state.
+        {
+            let tx = conn.transaction().unwrap();
+            tx.execute(
+                "UPDATE notes SET content = 'Uncommitted content with tokengamma' WHERE id = ?1",
+                params![note.id],
+            ).unwrap();
+            // Deliberately rollback the transaction
+            tx.rollback().unwrap();
+        }
+
+        let fts_count_gamma: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'tokengamma'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts_count_gamma, 0, "Rolled-back content must never pollute FTS5 index");
+
+        let fts_count_beta_after: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'tokenbeta'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts_count_beta_after, 1, "Committed token remains active in FTS5");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_56_search_during_note_switching() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_switch_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Note A open
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note A Design System".to_string()),
+                content: Some("Color palette and typography specifications for UI components.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note B exists in database
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note B Performance Roadmap".to_string()),
+                content: Some("Optimization goals for rendering large note collections.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. User edits Note A (in editor)
+        let note_a_edited_content = "Color palette and typography specifications with newly added tokens.";
+        // Autosave / note-switch flush persists Note A
+        let note_a_updated = NoteRepository::update(
+            &conn,
+            &note_a.id,
+            UpdateNoteDto {
+                content: Some(note_a_edited_content.to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. User searches: "Performance"
+        let search_results = SearchRepository::search(&conn, "Performance", None).unwrap();
+        assert_eq!(search_results.len(), 1, "Search should return Note B");
+        assert_eq!(search_results[0].note_id, note_b.id, "Search result must belong to Note B");
+        assert_eq!(search_results[0].title, "Note B Performance Roadmap");
+
+        // 4. User selects Note B: Note B opens
+        let opened_b = NoteRepository::get_by_id(&conn, &search_results[0].note_id)
+            .unwrap()
+            .expect("Note B must open correctly");
+
+        // 5. Verify:
+        // - Note A saves correctly
+        assert_eq!(note_a_updated.content, note_a_edited_content);
+        let note_a_in_db = NoteRepository::get_by_id(&conn, &note_a.id).unwrap().unwrap();
+        assert_eq!(note_a_in_db.content, note_a_edited_content);
+
+        // - Note B opens correctly
+        assert_eq!(opened_b.id, note_b.id);
+        assert_eq!(opened_b.title, "Note B Performance Roadmap");
+        assert_eq!(opened_b.content, "Optimization goals for rendering large note collections.");
+
+        // - Search result belongs to B
+        assert_eq!(search_results[0].note_id, note_b.id);
+
+        // - No stale content appears (Note B does not contain Note A's content)
+        assert!(!opened_b.content.contains("typography"));
+        assert!(!opened_b.content.contains("tokens"));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_57_search_result_metadata() {
+        use crate::storage::models::CreateNotebookDto;
+        use crate::storage::repositories::NotebookRepository;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_meta_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create a notebook for metadata context
+        let notebook = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Projects".to_string(),
+                parent_id: None,
+            },
+        ).unwrap();
+
+        // 2. Create Note with full metadata: title, content, notebook_id, favorite = true
+        let note_full = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Metadata Test Full Note".to_string()),
+                content: Some("Testing presence of full metadata in search results payload.".to_string()),
+                notebook_id: Some(notebook.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Create Note with minimal metadata: no notebook, favorite = false
+        let note_min = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Metadata Test Minimal Note".to_string()),
+                content: Some("Testing minimal metadata presence with unfiled status.".to_string()),
+                notebook_id: None,
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results = SearchRepository::search(&conn, "Metadata Test", None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let res_full = results.iter().find(|r| r.note_id == note_full.id).expect("Full note must be found");
+        let res_min = results.iter().find(|r| r.note_id == note_min.id).expect("Minimal note must be found");
+
+        // Verify minimum required fields (title, snippet, modified_at)
+        assert_eq!(res_full.title, "Metadata Test Full Note");
+        assert!(res_full.snippet.is_some());
+        assert!(!res_full.snippet.as_ref().unwrap().is_empty());
+        assert!(!res_full.modified_at.is_empty());
+
+        // Verify optional metadata fields (favorite, notebook_id)
+        assert_eq!(res_full.favorite, true);
+        assert_eq!(res_full.notebook_id, Some(notebook.id));
+
+        assert_eq!(res_min.title, "Metadata Test Minimal Note");
+        assert!(res_min.snippet.is_some());
+        assert_eq!(res_min.favorite, false);
+        assert_eq!(res_min.notebook_id, None);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_58_search_result_favorite_indicator() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_fav_ind_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create favorited note
+        let note_fav = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Starred Architecture Roadmap".to_string()),
+                content: Some("Key deliverables with priority milestones.".to_string()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Create unfavorited note
+        let note_reg = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Standard Operational Roadmap".to_string()),
+                content: Some("General day to day operational tasks.".to_string()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Search for "Roadmap"
+        let results = SearchRepository::search(&conn, "Roadmap", None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        let res_fav = results.iter().find(|r| r.note_id == note_fav.id).unwrap();
+        let res_reg = results.iter().find(|r| r.note_id == note_reg.id).unwrap();
+
+        // Verify favorite indicator state on search results
+        assert!(res_fav.favorite, "Favorited note must return favorite = true");
+        assert!(!res_reg.favorite, "Regular note must return favorite = false");
+
+        // 4. Toggle favorite status on regular note
+        NoteRepository::set_favorite(&conn, &note_reg.id, true).unwrap();
+
+        let updated_results = SearchRepository::search(&conn, "Roadmap", None).unwrap();
+        let updated_reg = updated_results.iter().find(|r| r.note_id == note_reg.id).unwrap();
+        assert!(updated_reg.favorite, "Favorite indicator must immediately update in search results");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_59_search_result_notebook_context() {
+        use crate::storage::models::CreateNotebookDto;
+        use crate::storage::repositories::NotebookRepository;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_nb_ctx_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create hierarchical notebooks: Work -> Projects
+        let nb_work = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).unwrap();
+
+        let nb_projects = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: Some(nb_work.id.clone()),
+            },
+        ).unwrap();
+
+        let nb_personal = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Personal".to_string(),
+                parent_id: None,
+            },
+        ).unwrap();
+
+        // 2. Create three notes with identical titles to verify distinguishing similar notes
+        let note_work = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Roadmap 2026".to_string()),
+                content: Some("Engineering project timeline and delivery milestones.".to_string()),
+                notebook_id: Some(nb_projects.id.clone()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note_pers = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Roadmap 2026".to_string()),
+                content: Some("Personal health and travel goals for the coming year.".to_string()),
+                notebook_id: Some(nb_personal.id.clone()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note_unfiled = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Roadmap 2026".to_string()),
+                content: Some("Scratch brainstorm without assigned notebook.".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Search: "Roadmap 2026"
+        let results = SearchRepository::search(&conn, "Roadmap 2026", None).unwrap();
+        assert_eq!(results.len(), 3, "Must return all 3 notes with identical titles");
+
+        let res_work = results.iter().find(|r| r.note_id == note_work.id).unwrap();
+        let res_pers = results.iter().find(|r| r.note_id == note_pers.id).unwrap();
+        let res_unfiled = results.iter().find(|r| r.note_id == note_unfiled.id).unwrap();
+
+        // 4. Verify notebook references
+        assert_eq!(res_work.notebook_id, Some(nb_projects.id));
+        assert_eq!(res_pers.notebook_id, Some(nb_personal.id));
+        assert_eq!(res_unfiled.notebook_id, None);
+
+        // Titles and snippets do not contain raw notebook IDs
+        for res in &results {
+            assert!(!res.title.contains(&nb_work.id));
+            if let Some(ref snip) = res.snippet {
+                assert!(!snip.contains(&nb_work.id));
+            }
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_60_search_result_tags() {
+        use crate::storage::repositories::TagRepository;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_tags_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create tags
+        let tag_work = TagRepository::create(&conn, "work").unwrap();
+        let tag_important = TagRepository::create(&conn, "important").unwrap();
+        let tag_q4 = TagRepository::create(&conn, "q4").unwrap();
+
+        // 2. Create notes matching "Task60"
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Task60 Deliverables".to_string()),
+                content: Some("Engineering specs and architecture reviews.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Task60 Meeting Notes".to_string()),
+                content: Some("Weekly status updates and blocker discussions.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note_c = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Task60 Unclassified Note".to_string()),
+                content: Some("General draft without assigned tags.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 3. Assign tags to Note A and Note B
+        TagRepository::add_tag_to_note(&conn, &note_a.id, &tag_work.id).unwrap();
+        TagRepository::add_tag_to_note(&conn, &note_a.id, &tag_important.id).unwrap();
+        TagRepository::add_tag_to_note(&conn, &note_a.id, &tag_q4.id).unwrap();
+
+        TagRepository::add_tag_to_note(&conn, &note_b.id, &tag_work.id).unwrap();
+
+        // 4. Perform search
+        let results = SearchRepository::search(&conn, "Task60", None).unwrap();
+        assert_eq!(results.len(), 3, "Search should return all 3 notes");
+
+        // 5. Batch load tags for the search results in a SINGLE query (Task 60, Task 61 - Avoid N+1 queries)
+        let result_note_ids: Vec<String> = results.iter().map(|r| r.note_id.clone()).collect();
+        let batch_tags = TagRepository::get_tags_for_notes(&conn, &result_note_ids).unwrap();
+
+        // Verify Note A tags: ["important", "q4", "work"]
+        let tags_a = batch_tags.get(&note_a.id).expect("Note A tags must be present in batch map");
+        assert_eq!(tags_a.len(), 3);
+        assert_eq!(tags_a, &vec!["important".to_string(), "q4".to_string(), "work".to_string()]);
+
+        // Verify Note B tags: ["work"]
+        let tags_b = batch_tags.get(&note_b.id).expect("Note B tags must be present in batch map");
+        assert_eq!(tags_b.len(), 1);
+        assert_eq!(tags_b, &vec!["work".to_string()]);
+
+        // Verify Note C has no tags in map
+        assert_eq!(batch_tags.get(&note_c.id), None);
+
+        // 6. Also verify get_all_notes_tag_names produces consistent batch results in 1 query
+        let all_tags_map = TagRepository::get_all_notes_tag_names(&conn).unwrap();
+        assert_eq!(all_tags_map.get(&note_a.id), Some(tags_a));
+        assert_eq!(all_tags_map.get(&note_b.id), Some(tags_b));
+        assert_eq!(all_tags_map.get(&note_c.id), None);
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

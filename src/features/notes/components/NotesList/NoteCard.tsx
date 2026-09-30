@@ -52,8 +52,8 @@ export const NoteCard: React.FC<NoteCardProps> = ({
         <button
           type="button"
           className={`note-card-favorite-btn ${note.isFavorite ? "is-favorite" : ""}`}
-          title={note.isFavorite ? "Remove from favorites" : "Add to favorites"}
-          aria-label={note.isFavorite ? "Remove from favorites" : "Add to favorites"}
+          title={note.isFavorite ? "Favorite note" : "Add to favorites"}
+          aria-label={note.isFavorite ? "Favorite note" : "Add to favorites"}
           aria-pressed={!!note.isFavorite}
           onClick={(e) => {
             e.stopPropagation();
@@ -62,6 +62,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({
             }
           }}
         >
+          {note.isFavorite && <span className="sr-only">Favorite note</span>}
           <svg
             width="13"
             height="13"

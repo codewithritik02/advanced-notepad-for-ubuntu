@@ -6,6 +6,11 @@ import { sanitizeSearchError } from "./utils";
 export interface UseSearchOptions {
   debounceMs?: number;
   limit?: number;
+  /**
+   * Task 54: Optional callback executed before search queries run against the database.
+   * Flushes any pending autosaves in the note editor to ensure FTS index consistency.
+   */
+  onBeforeSearch?: () => Promise<void> | void;
 }
 
 export interface UseSearchResult {
@@ -28,6 +33,7 @@ export interface UseSearchResult {
  * - Immediate Enter execution (Task 19)
  * - Stale request cancellation via monotonically incrementing request IDs (Task 20)
  * - Explicit tagged union state machine (Task 21)
+ * - Autosave flush consistency before search (Task 54)
  */
 export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
   const debounceMs = Math.max(0, options.debounceMs ?? 200);
@@ -38,6 +44,11 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
 
   const requestIdRef = useRef<number>(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onBeforeSearchRef = useRef(options.onBeforeSearch);
+  useEffect(() => {
+    onBeforeSearchRef.current = options.onBeforeSearch;
+  }, [options.onBeforeSearch]);
 
   const isSearchActive = query.trim().length > 0;
 
@@ -50,6 +61,15 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
         requestIdRef.current += 1; // Invalidate any pending in-flight requests
         setSearchState({ status: "idle" });
         return;
+      }
+
+      // Task 54: Flush pending autosaves before searching to ensure FTS consistency
+      if (onBeforeSearchRef.current) {
+        try {
+          await onBeforeSearchRef.current();
+        } catch (flushErr) {
+          console.warn("Failed to flush pending autosave before search:", flushErr);
+        }
       }
 
       const currentReqId = ++requestIdRef.current;

@@ -54,6 +54,7 @@ pub fn run() {
             commands::get_notes_for_tag,
             commands::get_tag_note_counts,
             commands::get_all_notes_tags,
+            commands::get_tags_for_notes,
             commands::get_note_metadata,
             commands::get_note_notebook_path,
             commands::get_setting,

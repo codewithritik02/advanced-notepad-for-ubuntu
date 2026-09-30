@@ -33,9 +33,10 @@ export function searchResultToNoteListItem(
   tags?: string[]
 ): NoteListItem {
   let updatedAt = "Recently";
-  if (result.modifiedAt) {
+  const modDate = result.modifiedAt || (result as unknown as { modified_at?: string }).modified_at;
+  if (modDate) {
     try {
-      const date = new Date(result.modifiedAt);
+      const date = new Date(modDate);
       if (!isNaN(date.getTime())) {
         updatedAt = date.toLocaleDateString(undefined, {
           month: "short",
@@ -47,13 +48,14 @@ export function searchResultToNoteListItem(
     }
   }
 
+  const raw = result as unknown as { note_id?: string; notebook_id?: string | null };
   return {
-    id: result.noteId,
+    id: result.noteId || raw.note_id || "",
     title: result.title || "Untitled Note",
     preview: result.snippet || "No snippet available",
     updatedAt,
     isFavorite: result.favorite,
-    notebookId: result.notebookId ?? undefined,
+    notebookId: (result.notebookId ?? raw.notebook_id) ?? undefined,
     notebookPath: notebookPath && notebookPath !== "Unfiled" ? notebookPath : undefined,
     tags,
   };
