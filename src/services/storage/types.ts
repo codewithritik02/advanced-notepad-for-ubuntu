@@ -101,6 +101,20 @@ export interface SetNoteTagsInput {
   tag_ids: string[];
 }
 
+export interface SearchQuery {
+  query: string;
+  limit?: number;
+}
+
+export interface SearchResult {
+  noteId: string;
+  title: string;
+  snippet?: string;
+  modifiedAt: string;
+  notebookId: string | null;
+  favorite: boolean;
+}
+
 export interface Attachment {
   id: string;
   note_id: string;

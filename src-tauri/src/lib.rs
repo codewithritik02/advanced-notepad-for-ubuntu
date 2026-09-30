@@ -58,6 +58,7 @@ pub fn run() {
             commands::get_note_notebook_path,
             commands::get_setting,
             commands::set_setting,
+            commands::search_notes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,6 +4,7 @@ import { notesStorage } from "./notes";
 import { notebooksStorage } from "./notebooks";
 import { tagsStorage } from "./tags";
 import { settingsStorage } from "./settings";
+import { searchStorage } from "./search";
 
 export const storageService = {
   /**
@@ -17,6 +18,7 @@ export const storageService = {
   notebooks: notebooksStorage,
   tags: tagsStorage,
   settings: settingsStorage,
+  search: searchStorage,
 };
 
 export * from "./types";
@@ -24,4 +26,5 @@ export { notesStorage } from "./notes";
 export { notebooksStorage } from "./notebooks";
 export { tagsStorage } from "./tags";
 export { settingsStorage } from "./settings";
+export { searchStorage } from "./search";
 export default storageService;

@@ -1,10 +1,12 @@
 pub mod notebooks;
 pub mod notes;
+pub mod search;
 pub mod settings;
 pub mod tags;
 
 pub use notebooks::NotebookRepository;
 pub use notes::NoteRepository;
+pub use search::SearchRepository;
 pub use settings::SettingsRepository;
 pub use tags::TagRepository;
 
