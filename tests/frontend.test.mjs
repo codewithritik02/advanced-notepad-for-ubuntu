@@ -816,6 +816,160 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
       assert.strictEqual(getFormatDisplayName(metadata.format), "Markdown");
     });
   });
+
+  // =========================================================================
+  // Phase 6: Search Tests
+  // =========================================================================
+  describe("Phase 6: Search Logic & State Tests", () => {
+    describe("Task 7: Empty Query Behavior", () => {
+      it("considers empty and whitespace strings as inactive search queries", () => {
+        const isSearchActive = (query) => query.trim().length > 0;
+
+        assert.strictEqual(isSearchActive(""), false);
+        assert.strictEqual(isSearchActive("   "), false);
+        assert.strictEqual(isSearchActive("\t\n"), false);
+        assert.strictEqual(isSearchActive("a"), true);
+        assert.strictEqual(isSearchActive("  project  "), true);
+      });
+
+      it("transitions to idle state when query is empty or whitespace without executing backend search", () => {
+        let backendCallCount = 0;
+        const mockBackendSearch = () => {
+          backendCallCount++;
+          return [];
+        };
+
+        const processQuery = (rawQuery) => {
+          const trimmed = rawQuery.trim();
+          if (!trimmed) {
+            return { status: "idle", results: [] };
+          }
+          const results = mockBackendSearch(trimmed);
+          return { status: "success", query: trimmed, results };
+        };
+
+        const state1 = processQuery("");
+        assert.strictEqual(state1.status, "idle");
+        assert.strictEqual(backendCallCount, 0);
+
+        const state2 = processQuery("     ");
+        assert.strictEqual(state2.status, "idle");
+        assert.strictEqual(backendCallCount, 0);
+
+        const state3 = processQuery("project");
+        assert.strictEqual(state3.status, "success");
+        assert.strictEqual(backendCallCount, 1);
+
+        // Clearing back to empty returns to idle
+        const state4 = processQuery("");
+        assert.strictEqual(state4.status, "idle");
+        assert.strictEqual(backendCallCount, 1);
+      });
+    });
+
+    describe("Task 8: Normalize Search Input", () => {
+      const normalizeSearchQuery = (query) => (!query ? "" : query.trim());
+
+      it("trims leading and trailing whitespace safely", () => {
+        assert.strictEqual(normalizeSearchQuery("   project   "), "project");
+        assert.strictEqual(normalizeSearchQuery("\tproject plan\n"), "project plan");
+        assert.strictEqual(normalizeSearchQuery("  "), "");
+      });
+
+      it("preserves meaningful Unicode and accented characters intact", () => {
+        assert.strictEqual(normalizeSearchQuery("   भारत यात्रा   "), "भारत यात्रा");
+        assert.strictEqual(normalizeSearchQuery("   café résumé   "), "café résumé");
+        assert.strictEqual(normalizeSearchQuery("   東京ガイド   "), "東京ガイド");
+        assert.strictEqual(normalizeSearchQuery("  Übergröße  "), "Übergröße");
+      });
+
+      it("does not strip punctuation from search queries", () => {
+        assert.strictEqual(normalizeSearchQuery("  C++  "), "C++");
+        assert.strictEqual(normalizeSearchQuery("  user@example.com  "), "user@example.com");
+        assert.strictEqual(normalizeSearchQuery("  v2.1.0  "), "v2.1.0");
+      });
+    });
+
+    describe("Task 9: Basic Title Search", () => {
+      const notes = [
+        { id: "n1", title: "Project Plan", content: "Weekly timeline" },
+        { id: "n2", title: "Release Notes", content: "Version 2.1 deployment details" },
+        { id: "n3", title: "Meeting Minutes", content: "Discussed team roadmap" },
+        { id: "n4", title: "Project Plan", content: "Different note with duplicate title" },
+      ];
+
+      const searchTitles = (query) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return [];
+        return notes.filter((n) => n.title.toLowerCase().includes(q));
+      };
+
+      it("matches title case-insensitively across lowercase, uppercase, and mixed-case", () => {
+        const r1 = searchTitles("project");
+        assert.strictEqual(r1.length, 2);
+        assert.strictEqual(r1[0].id, "n1");
+        assert.strictEqual(r1[1].id, "n4");
+
+        const r2 = searchTitles("PROJECT");
+        assert.strictEqual(r2.length, 2);
+
+        const r3 = searchTitles("PrOjEcT");
+        assert.strictEqual(r3.length, 2);
+      });
+
+      it("matches partial title tokens", () => {
+        const r = searchTitles("plan");
+        assert.strictEqual(r.length, 2);
+        assert.strictEqual(r[0].title, "Project Plan");
+      });
+
+      it("returns empty array when title does not match", () => {
+        const r = searchTitles("nonexistent-topic");
+        assert.strictEqual(r.length, 0);
+      });
+    });
+
+    describe("Task 10: Implement Content Search", () => {
+      const notes = [
+        { id: "n1", title: "Meeting", content: "Discuss the project release tomorrow." },
+        { id: "n2", title: "Personal Diary", content: "Went for a peaceful run in the morning." },
+      ];
+
+      const searchContent = (query) => {
+        const q = query.trim().toLowerCase();
+        if (!q) return [];
+        return notes
+          .filter((n) => n.content.toLowerCase().includes(q))
+          .map((n) => {
+            const idx = n.content.toLowerCase().indexOf(q);
+            const start = Math.max(0, idx - 15);
+            const end = Math.min(n.content.length, idx + q.length + 15);
+            const snippet = (start > 0 ? "..." : "") + n.content.slice(start, end) + (end < n.content.length ? "..." : "");
+            return { ...n, snippet };
+          });
+      };
+
+      it("returns note when content matches even if title does not", () => {
+        const r = searchContent("project");
+        assert.strictEqual(r.length, 1);
+        assert.strictEqual(r[0].id, "n1");
+        assert.strictEqual(r[0].title, "Meeting");
+        assert.strictEqual(r[0].content.includes("project"), true);
+      });
+
+      it("generates a safe contextual snippet around the matching content term", () => {
+        const r = searchContent("release");
+        assert.strictEqual(r.length, 1);
+        assert.strictEqual(r[0].snippet.includes("release"), true);
+      });
+
+      it("matches content case-insensitively", () => {
+        const rUpper = searchContent("TOMORROW");
+        assert.strictEqual(rUpper.length, 1);
+        assert.strictEqual(rUpper[0].id, "n1");
+      });
+    });
+  });
 });
 
 

@@ -163,3 +163,15 @@ pub fn format_display_name(format: &str) -> &'static str {
     }
 }
 
+/// Canonical Search Result model (Phase 6, Task 4, 12, 13)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    pub note_id: String,
+    pub title: String,
+    pub snippet: Option<String>,
+    pub modified_at: String,
+    pub notebook_id: Option<String>,
+    pub favorite: bool,
+}
+

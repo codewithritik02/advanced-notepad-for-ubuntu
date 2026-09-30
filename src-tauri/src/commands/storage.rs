@@ -2,10 +2,12 @@ use serde::Serialize;
 use tauri::State;
 use crate::storage::{
     models::{
-        CreateNotebookDto, CreateNoteDto, Note, Notebook, Tag, UpdateNoteDto, UpdateNotebookDto,
-        UpdateTagDto,
+        CreateNotebookDto, CreateNoteDto, Note, Notebook, SearchResult, Tag, UpdateNoteDto,
+        UpdateNotebookDto, UpdateTagDto,
     },
-    repositories::{NotebookRepository, NoteRepository, SettingsRepository, TagRepository},
+    repositories::{
+        NotebookRepository, NoteRepository, SearchRepository, SettingsRepository, TagRepository,
+    },
     Database, StoragePaths,
 };
 
@@ -280,4 +282,14 @@ pub fn set_setting(
 ) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     SettingsRepository::set(&conn, &key, &value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn search_notes(
+    db: State<'_, Database>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    SearchRepository::search(&conn, &query, limit).map_err(|e| e.user_friendly_message())
 }
