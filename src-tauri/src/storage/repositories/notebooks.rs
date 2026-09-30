@@ -139,6 +139,35 @@ impl NotebookRepository {
 
         Ok(rows_affected > 0)
     }
+
+    /// Reconstructs the human-readable hierarchy path (e.g. "Work / Projects") for a notebook.
+    /// Traverses parent references up to the root, defending against cycles.
+    pub fn get_hierarchy_path(conn: &Connection, id: &str) -> Result<String, StorageError> {
+        let mut segments = Vec::new();
+        let mut current_id = Some(id.to_string());
+        let mut visited = std::collections::HashSet::new();
+
+        while let Some(cid) = current_id {
+            if visited.contains(&cid) {
+                break; // Defensive cycle prevention
+            }
+            visited.insert(cid.clone());
+
+            if let Some(nb) = Self::get_by_id(conn, &cid)? {
+                segments.push(nb.name);
+                current_id = nb.parent_id;
+            } else {
+                break;
+            }
+        }
+
+        segments.reverse();
+        if segments.is_empty() {
+            Ok("Unfiled".to_string())
+        } else {
+            Ok(segments.join(" / "))
+        }
+    }
 }
 
 #[cfg(test)]

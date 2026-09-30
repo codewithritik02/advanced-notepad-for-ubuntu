@@ -1,6 +1,6 @@
 use personal_notepad_lib::storage::{
     init_connection, run_migrations,
-    models::{CreateNotebookDto, UpdateNotebookDto, CreateNoteDto, UpdateNoteDto},
+    models::{CreateNotebookDto, UpdateNotebookDto, CreateNoteDto, UpdateNoteDto, UpdateTagDto},
     repositories::{NotebookRepository, NoteRepository, SettingsRepository, TagRepository},
     StorageError, StoragePaths,
 };
@@ -3135,4 +3135,3870 @@ fn test_task_45_application_restart_full_regression_lifecycle() {
         assert_eq!(unfiled_notes.len(), 0);
     }
 }
+
+#[test]
+fn test_task_15_backend_note_tag_commands_lifecycle() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create tags with various names and Unicode
+        let tag_work = TagRepository::create(&conn, "Work").expect("Create Work tag");
+        let tag_urgent = TagRepository::create(&conn, "Urgent 🚨").expect("Create Urgent tag");
+        let tag_proj = TagRepository::create(&conn, "Alpha Project").expect("Create Alpha Project tag");
+
+        // 2. Create note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Tagged Note Spec".to_string()),
+                content: Some("Note content testing tag associations".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note");
+
+        // 3. Add tag to note (idempotent)
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("Add tag");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("Add same tag again (idempotent)");
+
+        let tags_1 = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags");
+        assert_eq!(tags_1.len(), 1, "Idempotent add must not duplicate rows");
+        assert_eq!(tags_1[0].id, tag_work.id);
+
+        // 4. Add more tags and check alphabetical order
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_urgent.id).expect("Add urgent");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_proj.id).expect("Add proj");
+
+        let tags_3 = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags");
+        assert_eq!(tags_3.len(), 3);
+        // Ordered by name ASC: "Alpha Project", "Urgent 🚨", "Work"
+        assert_eq!(tags_3[0].name, "Alpha Project");
+        assert_eq!(tags_3[1].name, "Urgent 🚨");
+        assert_eq!(tags_3[2].name, "Work");
+
+        // 5. Remove tag from note
+        TagRepository::remove_tag_from_note(&conn, &note.id, &tag_urgent.id).expect("Remove urgent");
+        let tags_after_remove = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags");
+        assert_eq!(tags_after_remove.len(), 2);
+        assert!(!tags_after_remove.iter().any(|t| t.id == tag_urgent.id));
+
+        // 6. Remove non-existent tag association (safe no-op)
+        TagRepository::remove_tag_from_note(&conn, &note.id, "non_existent_tag_id").expect("Safe no-op");
+        let tags_safe = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags");
+        assert_eq!(tags_safe.len(), 2);
+
+        // 7. Atomic batch set (replace all tags with tag_urgent)
+        let updated_tags = TagRepository::set_tags_for_note(&mut conn, &note.id, std::slice::from_ref(&tag_urgent.id))
+            .expect("Batch set tags");
+        assert_eq!(updated_tags.len(), 1);
+        assert_eq!(updated_tags[0].id, tag_urgent.id);
+
+        // 8. Reopen database and verify note-tag associations persist
+        drop(conn);
+        let reopened_conn = init_connection(&env.paths.database_file).expect("Reopen failed");
+        let persistent_tags = TagRepository::get_tags_for_note(&reopened_conn, &note.id)
+            .expect("Get tags after reopen");
+        assert_eq!(persistent_tags.len(), 1);
+        assert_eq!(persistent_tags[0].id, tag_urgent.id);
+        assert_eq!(persistent_tags[0].name, "Urgent 🚨");
+
+        // Note content is completely preserved
+        let persistent_note = NoteRepository::get_by_id(&reopened_conn, &note.id)
+            .expect("Get note")
+            .expect("Must exist");
+        assert_eq!(persistent_note.title, "Tagged Note Spec");
+    }
+
+    #[test]
+    fn test_task_18_multi_tag_support_lifecycle_and_isolation() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create tags: work, planning, important, personal
+        let tag_work = TagRepository::create(&conn, "work").expect("Create work");
+        let tag_planning = TagRepository::create(&conn, "planning").expect("Create planning");
+        let tag_important = TagRepository::create(&conn, "important").expect("Create important");
+        let tag_personal = TagRepository::create(&conn, "personal").expect("Create personal");
+
+        // 2. Create note: "Project Plan"
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Plan".to_string()),
+                content: Some("Multi-tag project plan description".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+
+        // Create second note to verify multi-note isolation
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Personal Diary".to_string()),
+                content: Some("Private thoughts".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+
+        // 3. Add 'work' to note 1 -> exactly 1 tag
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_work.id).expect("Add work");
+        let tags_step1 = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get tags");
+        assert_eq!(tags_step1.len(), 1);
+        assert_eq!(tags_step1[0].name, "work");
+
+        // 4. Add 'planning' to note 1 -> existing 'work' tag is preserved!
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_planning.id).expect("Add planning");
+        let tags_step2 = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get tags");
+        assert_eq!(tags_step2.len(), 2);
+        let names_step2: Vec<_> = tags_step2.iter().map(|t| t.name.as_str()).collect();
+        assert!(names_step2.contains(&"work"), "work must be retained");
+        assert!(names_step2.contains(&"planning"), "planning must be added");
+
+        // 5. Add 'important' to note 1 -> all 3 tags are present
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_important.id).expect("Add important");
+        let tags_step3 = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get tags");
+        assert_eq!(tags_step3.len(), 3);
+        let names_step3: Vec<_> = tags_step3.iter().map(|t| t.name.as_str()).collect();
+        assert!(names_step3.contains(&"work"));
+        assert!(names_step3.contains(&"planning"));
+        assert!(names_step3.contains(&"important"));
+
+        // 6. Assign 'personal' to note 2 -> note 1 is unaffected
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag_personal.id).expect("Add personal to note 2");
+        let note2_tags = TagRepository::get_tags_for_note(&conn, &note2.id).expect("Get note 2 tags");
+        assert_eq!(note2_tags.len(), 1);
+        assert_eq!(note2_tags[0].name, "personal");
+
+        let note1_tags_isolated = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get note 1 tags");
+        assert_eq!(note1_tags_isolated.len(), 3, "Note 1 must retain its 3 tags");
+
+        // 7. Removing 'work' from note 1 must NOT remove 'planning' or 'important'
+        TagRepository::remove_tag_from_note(&conn, &note1.id, &tag_work.id).expect("Remove work from note 1");
+        let tags_after_remove = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get tags");
+        assert_eq!(tags_after_remove.len(), 2, "Note 1 must have 2 tags remaining");
+        let names_after_remove: Vec<_> = tags_after_remove.iter().map(|t| t.name.as_str()).collect();
+        assert!(!names_after_remove.contains(&"work"), "work must be removed");
+        assert!(names_after_remove.contains(&"planning"), "planning must remain");
+        assert!(names_after_remove.contains(&"important"), "important must remain");
+
+        // Note 2 tags remain unaffected
+        let note2_tags_after = TagRepository::get_tags_for_note(&conn, &note2.id).expect("Get note 2 tags");
+        assert_eq!(note2_tags_after.len(), 1);
+        assert_eq!(note2_tags_after[0].name, "personal");
+    }
+
+    #[test]
+    fn test_task_19_tag_assignment_persistence_across_restarts() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create tags: work and important
+        let tag_work = TagRepository::create(&conn, "work").expect("Create work");
+        let tag_important = TagRepository::create(&conn, "important").expect("Create important");
+
+        // 2. Create note: "Quarterly Review"
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quarterly Review".to_string()),
+                content: Some("Q3 accomplishments and goals for Q4".to_string()),
+                format: Some("md".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note");
+
+        // 3. Assign tags: add 'work', then add 'important'
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("Add work");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_important.id).expect("Add important");
+
+        let initial_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get initial tags");
+        assert_eq!(initial_tags.len(), 2);
+        assert_eq!(initial_tags[0].name, "important");
+        assert_eq!(initial_tags[1].name, "work");
+
+        // 4. Simulate app shutdown (close/drop connection)
+        drop(conn);
+
+        // 5. Simulate app reopen (fresh connection from same SQLite db file)
+        let conn2 = init_connection(&env.paths.database_file).expect("Reopen failed");
+        let reopened_tags = TagRepository::get_tags_for_note(&conn2, &note.id).expect("Get reopened tags");
+
+        // Expected: work and important both preserved in SQLite
+        assert_eq!(reopened_tags.len(), 2, "Tags must survive app restart");
+        assert_eq!(reopened_tags[0].id, tag_important.id);
+        assert_eq!(reopened_tags[0].name, "important");
+        assert_eq!(reopened_tags[1].id, tag_work.id);
+        assert_eq!(reopened_tags[1].name, "work");
+
+        // Note content is fully preserved
+        let reopened_note = NoteRepository::get_by_id(&conn2, &note.id)
+            .expect("Get note")
+            .expect("Note must exist");
+        assert_eq!(reopened_note.title, "Quarterly Review");
+        assert_eq!(reopened_note.content, "Q3 accomplishments and goals for Q4");
+        assert_eq!(reopened_note.format, "md");
+
+        // 6. Mutate tags after restart: add 'planning'
+        let tag_planning = TagRepository::create(&conn2, "planning").expect("Create planning");
+        TagRepository::add_tag_to_note(&conn2, &note.id, &tag_planning.id).expect("Add planning");
+
+        // 7. Second restart simulation
+        drop(conn2);
+        let conn3 = init_connection(&env.paths.database_file).expect("Second reopen failed");
+        let restart2_tags = TagRepository::get_tags_for_note(&conn3, &note.id).expect("Get tags after 2nd reopen");
+        assert_eq!(restart2_tags.len(), 3, "All 3 tags must survive second restart");
+        let names: Vec<_> = restart2_tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["important", "planning", "work"]);
+    }
+
+    #[test]
+    fn test_task_20_favorites_backend_support_lifecycle_and_persistence() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a note (defaults to is_favorite = false)
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Important Project Spec".to_string()),
+                content: Some("Architecture notes".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+        assert!(!note1.is_favorite);
+
+        // 2. Mark note as favorite using set_favorite
+        let fav_note = NoteRepository::set_favorite(&conn, &note1.id, true)
+            .expect("Set favorite true");
+        assert!(fav_note.is_favorite);
+
+        // 3. Query list_favorites -> note1 must be returned
+        let favs = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs.len(), 1);
+        assert_eq!(favs[0].id, note1.id);
+        assert_eq!(favs[0].title, "Important Project Spec");
+
+        // 4. Create second note (not favorite)
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Draft Idea".to_string()),
+                content: Some("Unfinished thought".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+        assert!(!note2.is_favorite);
+
+        let favs_after_second = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_after_second.len(), 1, "Only favorited notes must appear in favorites");
+
+        // 5. Toggle favorite on note 1 -> should become false
+        let unfav_note = NoteRepository::toggle_favorite(&conn, &note1.id)
+            .expect("Toggle favorite to false");
+        assert!(!unfav_note.is_favorite);
+
+        let favs_empty = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_empty.len(), 0);
+
+        // 6. Set favorite true again
+        NoteRepository::set_favorite(&conn, &note1.id, true).expect("Re-favorite");
+
+        // 7. Reopen database and verify favorite state persists
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("Reopen failed");
+        let persistent_favs = NoteRepository::list_favorites(&conn2).expect("List favs after reopen");
+        assert_eq!(persistent_favs.len(), 1);
+        assert_eq!(persistent_favs[0].id, note1.id);
+        assert!(persistent_favs[0].is_favorite);
+
+        // 8. Soft-delete favorite note -> must be excluded from list_favorites
+        NoteRepository::delete(&conn2, &note1.id, true).expect("Soft delete");
+        let favs_after_delete = NoteRepository::list_favorites(&conn2).expect("List favs after delete");
+        assert_eq!(favs_after_delete.len(), 0, "Soft deleted notes must not appear in favorites");
+    }
+
+    #[test]
+    fn test_phase5_task_22_favorite_persistence_across_restarts() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a note (starts as favorite = false)
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Persistent Favorite Note".to_string()),
+                content: Some("Favorite content testing restart persistence".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note");
+        assert!(!note.is_favorite);
+
+        // 2. Mark note as favorite
+        let fav = NoteRepository::set_favorite(&conn, &note.id, true).expect("Set favorite true");
+        assert!(fav.is_favorite);
+
+        // 3. Close app (drop connection) -> reopen
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("Reopen 1 failed");
+
+        // 4. Expected: favorite = true
+        let fetched_reopen1 = NoteRepository::get_by_id(&conn2, &note.id)
+            .expect("Get note")
+            .expect("Note exists");
+        assert!(fetched_reopen1.is_favorite, "Expected favorite = true after restart");
+
+        let favs1 = NoteRepository::list_favorites(&conn2).expect("List favorites");
+        assert_eq!(favs1.len(), 1);
+        assert_eq!(favs1[0].id, note.id);
+
+        // 5. Unfavorite note
+        let unfav = NoteRepository::set_favorite(&conn2, &note.id, false).expect("Set favorite false");
+        assert!(!unfav.is_favorite);
+
+        // 6. Restart app again (drop connection -> reopen)
+        drop(conn2);
+        let conn3 = init_connection(&env.paths.database_file).expect("Reopen 2 failed");
+
+        // 7. Expected: favorite = false
+        let fetched_reopen2 = NoteRepository::get_by_id(&conn3, &note.id)
+            .expect("Get note")
+            .expect("Note exists");
+        assert!(!fetched_reopen2.is_favorite, "Expected favorite = false after restart");
+
+        let favs2 = NoteRepository::list_favorites(&conn3).expect("List favorites");
+        assert_eq!(favs2.len(), 0, "No notes should appear in favorites list");
+
+        // 8. Multi-note restart verification
+        let note_a = NoteRepository::create(
+            &conn3,
+            CreateNoteDto {
+                title: Some("Note A".to_string()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note A");
+
+        let _note_b = NoteRepository::create(
+            &conn3,
+            CreateNoteDto {
+                title: Some("Note B".to_string()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("Create note B");
+
+        let note_c = NoteRepository::create(
+            &conn3,
+            CreateNoteDto {
+                title: Some("Note C".to_string()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note C");
+
+        drop(conn3);
+        let conn4 = init_connection(&env.paths.database_file).expect("Reopen 3 failed");
+        let multi_favs = NoteRepository::list_favorites(&conn4).expect("List multi favorites");
+        assert_eq!(multi_favs.len(), 2, "Only Note A and Note C must be favorites");
+        let fav_ids: Vec<_> = multi_favs.iter().map(|n| n.id.as_str()).collect();
+        assert!(fav_ids.contains(&note_a.id.as_str()));
+        assert!(fav_ids.contains(&note_c.id.as_str()));
+    }
+
+    #[test]
+    fn test_task_24_tag_navigation_and_filtering() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create tags
+        let tag_work = TagRepository::create(&conn, "work").expect("Create work tag");
+        let tag_urgent = TagRepository::create(&conn, "urgent").expect("Create urgent tag");
+        let tag_personal = TagRepository::create(&conn, "personal").expect("Create personal tag");
+
+        // 2. Create notes
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Work Note 1".to_string()),
+                content: Some("First work note".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Work Note 2 (Pinned)".to_string()),
+                content: Some("Second work note, pinned".to_string()),
+                is_pinned: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Personal Note".to_string()),
+                content: Some("Personal note content".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 3");
+
+        let note4 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Urgent Work Note (To be deleted)".to_string()),
+                content: Some("Will be soft deleted".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 4");
+
+        // 3. Assign tags
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_work.id).expect("Tag note 1");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag_work.id).expect("Tag note 2");
+        TagRepository::add_tag_to_note(&conn, &note3.id, &tag_personal.id).expect("Tag note 3");
+        TagRepository::add_tag_to_note(&conn, &note4.id, &tag_work.id).expect("Tag note 4 with work");
+        TagRepository::add_tag_to_note(&conn, &note4.id, &tag_urgent.id).expect("Tag note 4 with urgent");
+
+        // 4. Verify initial tag note counts
+        let counts = TagRepository::get_tag_note_counts(&conn).expect("Get tag note counts");
+        assert_eq!(counts.get(&tag_work.id).copied().unwrap_or(0), 3);
+        assert_eq!(counts.get(&tag_urgent.id).copied().unwrap_or(0), 1);
+        assert_eq!(counts.get(&tag_personal.id).copied().unwrap_or(0), 1);
+
+        // 5. Query notes by tag_work: should return note2 (pinned), note4, note1 (ordered by is_pinned DESC, modified_at DESC)
+        let work_notes = NoteRepository::list_by_tag(&conn, &tag_work.id).expect("List notes by work tag");
+        assert_eq!(work_notes.len(), 3);
+        assert_eq!(work_notes[0].id, note2.id, "Pinned note must come first");
+        let work_ids: Vec<_> = work_notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(work_ids.contains(&note1.id.as_str()));
+        assert!(work_ids.contains(&note4.id.as_str()));
+        assert!(!work_ids.contains(&note3.id.as_str()), "Personal note must not be in work tag");
+
+        // 6. Query notes by tag_personal
+        let personal_notes = NoteRepository::list_by_tag(&conn, &tag_personal.id).expect("List notes by personal tag");
+        assert_eq!(personal_notes.len(), 1);
+        assert_eq!(personal_notes[0].id, note3.id);
+
+        // 7. Soft delete note4
+        NoteRepository::delete(&conn, &note4.id, true).expect("Soft delete note 4");
+
+        // 8. Re-query tag_work: deleted note4 must be excluded
+        let work_notes_after_delete = NoteRepository::list_by_tag(&conn, &tag_work.id).expect("List after delete");
+        assert_eq!(work_notes_after_delete.len(), 2, "Soft-deleted note must be excluded from tag navigation");
+        assert_eq!(work_notes_after_delete[0].id, note2.id);
+        assert_eq!(work_notes_after_delete[1].id, note1.id);
+
+        // 9. Re-query tag_urgent: had only note4, should now be empty
+        let urgent_notes_after_delete = NoteRepository::list_by_tag(&conn, &tag_urgent.id).expect("List urgent after delete");
+        assert_eq!(urgent_notes_after_delete.len(), 0);
+
+        // 10. Verify tag counts exclude soft-deleted notes
+        let counts_after = TagRepository::get_tag_note_counts(&conn).expect("Get tag note counts after delete");
+        assert_eq!(counts_after.get(&tag_work.id).copied().unwrap_or(0), 2);
+        assert_eq!(counts_after.get(&tag_urgent.id).copied().unwrap_or(0), 0);
+        assert_eq!(counts_after.get(&tag_personal.id).copied().unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn test_task_25_single_primary_navigation_context_isolation() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create notebooks
+        let nb_work = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Notebook".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook Work");
+
+        let nb_personal = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Personal Notebook".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook Personal");
+
+        // 2. Create tags
+        let tag_urgent = TagRepository::create(&conn, "urgent").expect("Create tag urgent");
+
+        // 3. Create notes in different contexts:
+        // Note 1: In Work notebook, tagged "urgent", NOT favorite
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Work Task".to_string()),
+                notebook_id: Some(nb_work.id.clone()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_urgent.id).expect("Add urgent tag to note 1");
+
+        // Note 2: In Personal notebook, tagged "urgent", IS favorite
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Personal Errand".to_string()),
+                notebook_id: Some(nb_personal.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag_urgent.id).expect("Add urgent tag to note 2");
+
+        // Note 3: In Work notebook, NOT tagged, IS favorite
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Work Reference".to_string()),
+                notebook_id: Some(nb_work.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note 3");
+
+        // 4. Primary Context A: Notebook Navigation (Work Notebook)
+        // Must return notes in Work Notebook (Note 1 and Note 3), isolating from tag and favorite states
+        let work_notes = NoteRepository::list_filtered(&conn, false, Some(&nb_work.id), false).expect("List by notebook");
+        assert_eq!(work_notes.len(), 2);
+        let work_ids: Vec<_> = work_notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(work_ids.contains(&note1.id.as_str()));
+        assert!(work_ids.contains(&note3.id.as_str()));
+        assert!(!work_ids.contains(&note2.id.as_str()));
+
+        // 5. Primary Context B: Tag Navigation (Tag "urgent")
+        // Must return all notes tagged "urgent" across notebooks (Note 1 and Note 2), isolating from notebook filter
+        let tag_notes = NoteRepository::list_by_tag(&conn, &tag_urgent.id).expect("List by tag");
+        assert_eq!(tag_notes.len(), 2);
+        let tag_ids: Vec<_> = tag_notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(tag_ids.contains(&note1.id.as_str()));
+        assert!(tag_ids.contains(&note2.id.as_str()));
+        assert!(!tag_ids.contains(&note3.id.as_str()));
+
+        // 6. Primary Context C: Favorites Navigation
+        // Must return all favorite notes across notebooks and tags (Note 2 and Note 3)
+        let fav_notes = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(fav_notes.len(), 2);
+        let fav_ids: Vec<_> = fav_notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(fav_ids.contains(&note2.id.as_str()));
+        assert!(fav_ids.contains(&note3.id.as_str()));
+        assert!(!fav_ids.contains(&note1.id.as_str()));
+    }
+
+    #[test]
+    fn test_task_26_tag_empty_state_and_isolation() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a tag with 0 notes
+        let empty_tag = TagRepository::create(&conn, "planning").expect("Create tag planning");
+
+        // 2. Create several unrelated notes (some unfiled, some in notebook, some tagged differently)
+        let other_tag = TagRepository::create(&conn, "other").expect("Create other tag");
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "General".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook");
+
+        let n1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Notebook Note".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+
+        let n2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Tagged Other Note".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+        TagRepository::add_tag_to_note(&conn, &n2.id, &other_tag.id).expect("Add other tag");
+
+        let _n3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Unfiled Note".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 3");
+
+        // 3. Verify empty_tag note list is completely empty and unrelated notes are never returned
+        let notes_for_empty = NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("List notes for empty tag");
+        assert_eq!(notes_for_empty.len(), 0, "Empty tag must return 0 notes");
+
+        // 4. Verify tag count is 0
+        let counts = TagRepository::get_tag_note_counts(&conn).expect("Get tag note counts");
+        assert_eq!(counts.get(&empty_tag.id).copied().unwrap_or(0), 0);
+
+        // 5. Assign note 1 to empty_tag
+        TagRepository::add_tag_to_note(&conn, &n1.id, &empty_tag.id).expect("Add tag to note 1");
+        let notes_after_assign = NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("List after assign");
+        assert_eq!(notes_after_assign.len(), 1);
+        assert_eq!(notes_after_assign[0].id, n1.id);
+
+        // 6. Remove note 1 from tag -> immediately transitions back to 0 notes (empty state)
+        TagRepository::remove_tag_from_note(&conn, &n1.id, &empty_tag.id).expect("Remove tag from note 1");
+        let notes_after_remove = NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("List after remove");
+        assert_eq!(notes_after_remove.len(), 0, "Must be empty again after tag removal");
+
+        let counts_after_remove = TagRepository::get_tag_note_counts(&conn).expect("Counts after remove");
+        assert_eq!(counts_after_remove.get(&empty_tag.id).copied().unwrap_or(0), 0);
+    }
+
+    #[test]
+    fn test_task_27_favorites_empty_state_and_lifecycle() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Initially, no notes exist -> list_favorites returns 0
+        let favs_empty = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_empty.len(), 0);
+
+        // 2. Create several non-favorite notes across notebooks and tags
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook");
+
+        let tag = TagRepository::create(&conn, "urgent").expect("Create tag");
+
+        let n1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Non-favorite in notebook".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+        TagRepository::add_tag_to_note(&conn, &n1.id, &tag.id).expect("Tag note 1");
+
+        let _n2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Non-favorite unfiled".to_string()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+
+        // 3. Favorites list must remain empty despite non-favorite notes existing
+        let favs_still_empty = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_still_empty.len(), 0, "Non-favorite notes must not appear in favorites");
+
+        // 4. Mark note 1 as favorite -> list_favorites returns exactly note 1
+        let faved = NoteRepository::set_favorite(&conn, &n1.id, true).expect("Set favorite true");
+        assert!(faved.is_favorite);
+
+        let favs_one = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_one.len(), 1);
+        assert_eq!(favs_one[0].id, n1.id);
+
+        // 5. Unfavorite note 1 -> transitions back to empty state (0 notes)
+        let unfaved = NoteRepository::set_favorite(&conn, &n1.id, false).expect("Set favorite false");
+        assert!(!unfaved.is_favorite);
+
+        let favs_back_to_empty = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_back_to_empty.len(), 0, "Must be empty again after unfavoriting");
+
+        // 6. Favorite note 1 again, then soft-delete it -> must not appear in favorites
+        NoteRepository::set_favorite(&conn, &n1.id, true).expect("Re-favorite");
+        NoteRepository::delete(&conn, &n1.id, true).expect("Soft delete favorite note");
+
+        let favs_after_soft_delete = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs_after_soft_delete.len(), 0, "Soft-deleted favorite note must not appear in favorites");
+    }
+
+    #[test]
+    fn test_task_28_tag_list_empty_state_and_full_functionality_without_tags() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Tag repository is completely empty initially
+        let tags = TagRepository::list(&conn).expect("List tags");
+        assert_eq!(tags.len(), 0, "Initial tag count must be 0");
+
+        let tag_counts = TagRepository::get_tag_note_counts(&conn).expect("Get tag note counts");
+        assert_eq!(tag_counts.len(), 0, "Tag note counts map must be empty");
+
+        // 2. Full application functionality succeeds without any tags:
+        // Create notebook hierarchy
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "General Notes".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook");
+
+        // Create notes (unfiled, inside notebook, favorite)
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note Without Tags 1".to_string()),
+                content: Some("Working with zero tags defined".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note Without Tags 2".to_string()),
+                content: Some("Unfiled note with zero tags".to_string()),
+                notebook_id: None,
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+
+        // Verify retrieval and listing
+        let all_notes = NoteRepository::list(&conn, false).expect("List notes");
+        assert_eq!(all_notes.len(), 2);
+
+        let favs = NoteRepository::list_favorites(&conn).expect("List favorites");
+        assert_eq!(favs.len(), 1);
+        assert_eq!(favs[0].id, note1.id);
+
+        let unfiled = NoteRepository::list_filtered(&conn, false, None, true).expect("List unfiled");
+        assert_eq!(unfiled.len(), 1);
+        assert_eq!(unfiled[0].id, note2.id);
+
+        // Tags for each note should return empty list
+        let n1_tags = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Get tags for note 1");
+        assert_eq!(n1_tags.len(), 0);
+
+        let n2_tags = TagRepository::get_tags_for_note(&conn, &note2.id).expect("Get tags for note 2");
+        assert_eq!(n2_tags.len(), 0);
+
+        // 3. Create a temporary tag, assign it, and then delete it
+        let temp_tag = TagRepository::create(&conn, "temporary").expect("Create temp tag");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &temp_tag.id).expect("Assign temp tag");
+
+        let tags_with_one = TagRepository::list(&conn).expect("List tags with one");
+        assert_eq!(tags_with_one.len(), 1);
+
+        // Delete tag: note must survive, and tag list must return to empty state
+        TagRepository::delete(&conn, &temp_tag.id).expect("Delete temp tag");
+
+        let tags_empty_again = TagRepository::list(&conn).expect("List tags empty again");
+        assert_eq!(tags_empty_again.len(), 0);
+
+        let note1_survived = NoteRepository::get_by_id(&conn, &note1.id).expect("Get note 1").expect("Note 1 exists");
+        assert_eq!(note1_survived.id, note1.id);
+        assert!(note1_survived.is_favorite);
+    }
+
+    #[test]
+    fn test_task_29_canonical_note_metadata_model() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a notebook and tags
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Engineering".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook");
+
+        let tag_rust = TagRepository::create(&conn, "rust").expect("Create tag 1");
+        let tag_phase5 = TagRepository::create(&conn, "phase-5").expect("Create tag 2");
+
+        // 2. Create note with multi-line, unicode text
+        let content_text = "The quick brown fox jumps over the lazy dog. हिंदी टेक्स्ट 🦊";
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Metadata Test Note".to_string()),
+                content: Some(content_text.to_string()),
+                format: Some("md".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        ).expect("Create note");
+
+        // 3. Link tags
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_rust.id).expect("Link tag rust");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_phase5.id).expect("Link tag phase5");
+
+        // 4. Retrieve canonical NoteMetadata
+        let metadata = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("Get metadata query")
+            .expect("Metadata exists");
+
+        // Verify fields
+        assert_eq!(metadata.note_id, note.id);
+        assert_eq!(metadata.format, "md");
+        assert_eq!(metadata.notebook_id, Some(nb.id));
+        assert!(metadata.is_favorite);
+        assert!(!metadata.is_pinned);
+        assert_eq!(metadata.created_at, note.created_at);
+        assert_eq!(metadata.modified_at, note.modified_at);
+
+        // Verify associated tags
+        assert_eq!(metadata.tags.len(), 2);
+        let tag_names: Vec<_> = metadata.tags.iter().map(|t| t.name.as_str()).collect();
+        assert!(tag_names.contains(&"rust"));
+        assert!(tag_names.contains(&"phase-5"));
+
+        // Verify content metrics
+        assert_eq!(metadata.character_count, content_text.chars().count());
+        assert_eq!(metadata.word_count, content_text.split_whitespace().count());
+        assert_eq!(metadata.byte_size, content_text.len());
+
+        // 5. Querying non-existent note returns None safely
+        let non_existent = NoteRepository::get_metadata(&conn, "non-existent-id")
+            .expect("Query non-existent");
+        assert!(non_existent.is_none());
+    }
+
+    #[test]
+    fn test_task_30_metadata_panel_hierarchy_path_and_format_integrity() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a 3-level notebook hierarchy: Engineering -> Backend -> Storage
+        let nb_root = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Engineering".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create root");
+
+        let nb_mid = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Backend".to_string(),
+                parent_id: Some(nb_root.id.clone()),
+            },
+        ).expect("Create mid");
+
+        let nb_leaf = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Storage".to_string(),
+                parent_id: Some(nb_mid.id.clone()),
+            },
+        ).expect("Create leaf");
+
+        // 2. Create tags
+        let tag1 = TagRepository::create(&conn, "database").expect("Tag 1");
+        let tag2 = TagRepository::create(&conn, "sqlite").expect("Tag 2");
+
+        // 3. Create note inside leaf notebook
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("SQLite Architecture".to_string()),
+                content: Some("Local first sqlite storage engine".to_string()),
+                format: Some("md".to_string()),
+                notebook_id: Some(nb_leaf.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Create note");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag1.id).expect("Add tag 1");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag2.id).expect("Add tag 2");
+
+        // 4. Retrieve metadata
+        let meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("Get metadata")
+            .expect("Metadata exists");
+        assert_eq!(meta.format, "md");
+        assert!(meta.is_favorite);
+        assert_eq!(meta.tags.len(), 2);
+
+        // 5. Test path reconstruction algorithm: leaf -> mid -> root
+        let all_notebooks = NotebookRepository::list(&conn).expect("List notebooks");
+        let mut path_segments = Vec::new();
+        let mut current_id = note.notebook_id.as_deref();
+        while let Some(id) = current_id {
+            if let Some(found) = all_notebooks.iter().find(|nb| nb.id == id) {
+                path_segments.insert(0, found.name.as_str());
+                current_id = found.parent_id.as_deref();
+            } else {
+                break;
+            }
+        }
+        let full_path = path_segments.join(" / ");
+        assert_eq!(full_path, "Engineering / Backend / Storage");
+
+        // 6. Test unfiled note path reconstruction
+        let unfiled_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Unfiled Note".to_string()),
+                content: Some("Unfiled content".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("Create unfiled");
+        let unfiled_meta = NoteRepository::get_metadata(&conn, &unfiled_note.id)
+            .expect("Get unfiled meta")
+            .expect("Unfiled meta exists");
+        assert_eq!(unfiled_meta.notebook_id, None);
+        assert_eq!(unfiled_meta.format, "txt");
+    }
+
+    #[test]
+    fn test_task_31_metadata_readonly_rules_and_immutability() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a note and capture its created_at timestamp
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Initial Title".to_string()),
+                content: Some("Initial Content".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                is_favorite: Some(false),
+                is_pinned: Some(false),
+            },
+        ).expect("Create note");
+
+        let initial_created_at = note.created_at.clone();
+
+        // 2. Perform several updates mutating editable metadata fields (title, content, format, favorite, pinned)
+        let updated1 = NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                title: Some("Modified Title 1".to_string()),
+                content: Some("Modified Content 1".to_string()),
+                format: Some("md".to_string()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("Update 1");
+
+        // Verify created_at is strictly immutable
+        assert_eq!(updated1.created_at, initial_created_at);
+        assert_eq!(updated1.title, "Modified Title 1");
+        assert_eq!(updated1.format, "md");
+        assert!(updated1.is_favorite);
+
+        // 3. Update notebook assignment (editable metadata)
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Notebook".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create notebook");
+
+        let updated2 = NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                notebook_id: Some(nb.id.clone()),
+                ..Default::default()
+            },
+        ).expect("Update 2");
+
+        assert_eq!(updated2.created_at, initial_created_at, "created_at must remain immutable across notebook moves");
+        assert_eq!(updated2.notebook_id, Some(nb.id));
+
+        // 4. Verify canonical metadata reflects read-only created_at and modified_at
+        let meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("Get metadata")
+            .expect("Metadata exists");
+        assert_eq!(meta.created_at, initial_created_at);
+        assert!(meta.is_favorite);
+    }
+
+    #[test]
+    fn test_task_32_format_display_txt_vs_md_metadata_mapping() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Direct unit check on format display mapping function
+        assert_eq!(personal_notepad_lib::storage::models::format_display_name("txt"), "Plain Text");
+        assert_eq!(personal_notepad_lib::storage::models::format_display_name("md"), "Markdown");
+        assert_eq!(personal_notepad_lib::storage::models::format_display_name("TXT"), "Plain Text");
+        assert_eq!(personal_notepad_lib::storage::models::format_display_name("MD"), "Markdown");
+        assert_eq!(personal_notepad_lib::storage::models::format_display_name("unknown"), "Plain Text");
+
+        // 2. Create note with format 'txt'
+        let txt_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Plain Note".to_string()),
+                content: Some("Simple plain text content".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("Create plain note");
+
+        let txt_meta = NoteRepository::get_metadata(&conn, &txt_note.id)
+            .expect("Get txt metadata")
+            .expect("Txt metadata exists");
+        assert_eq!(txt_meta.format, "txt");
+        assert_eq!(txt_meta.format_display(), "Plain Text");
+
+        // 3. Create note with format 'md'
+        let md_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Markdown Note".to_string()),
+                content: Some("# Header 1\n**Bold text**".to_string()),
+                format: Some("md".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("Create markdown note");
+
+        let md_meta = NoteRepository::get_metadata(&conn, &md_note.id)
+            .expect("Get md metadata")
+            .expect("Md metadata exists");
+        assert_eq!(md_meta.format, "md");
+        assert_eq!(md_meta.format_display(), "Markdown");
+
+        // 4. Switch format: 'txt' -> 'md' and verify raw text content remains unmodified
+        let original_content = txt_note.content.clone();
+        let updated_to_md = NoteRepository::update(
+            &conn,
+            &txt_note.id,
+            UpdateNoteDto {
+                format: Some("md".to_string()),
+                ..Default::default()
+            },
+        ).expect("Update format to md");
+
+        assert_eq!(updated_to_md.content, original_content, "Raw content must remain intact on format toggle");
+        assert_eq!(updated_to_md.format, "md");
+
+        let toggled_meta = NoteRepository::get_metadata(&conn, &txt_note.id)
+            .expect("Get toggled metadata")
+            .expect("Toggled metadata exists");
+        assert_eq!(toggled_meta.format, "md");
+        assert_eq!(toggled_meta.format_display(), "Markdown");
+
+        // 5. Switch back: 'md' -> 'txt'
+        let updated_back_to_txt = NoteRepository::update(
+            &conn,
+            &txt_note.id,
+            UpdateNoteDto {
+                format: Some("txt".to_string()),
+                ..Default::default()
+            },
+        ).expect("Update format back to txt");
+
+        assert_eq!(updated_back_to_txt.content, original_content);
+        assert_eq!(updated_back_to_txt.format, "txt");
+
+        let final_meta = NoteRepository::get_metadata(&conn, &txt_note.id)
+            .expect("Get final metadata")
+            .expect("Final metadata exists");
+        assert_eq!(final_meta.format, "txt");
+        assert_eq!(final_meta.format_display(), "Plain Text");
+    }
+
+    #[test]
+    fn test_task_33_notebook_metadata_integration_hierarchy_path() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a 3-level notebook hierarchy: Work -> Projects -> Releases
+        let work = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).expect("Create Work");
+
+        let projects = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: Some(work.id.clone()),
+            },
+        ).expect("Create Projects");
+
+        let releases = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Releases".to_string(),
+                parent_id: Some(projects.id.clone()),
+            },
+        ).expect("Create Releases");
+
+        // 2. Validate NotebookRepository::get_hierarchy_path for all 3 levels
+        assert_eq!(
+            NotebookRepository::get_hierarchy_path(&conn, &work.id).expect("work path"),
+            "Work"
+        );
+        assert_eq!(
+            NotebookRepository::get_hierarchy_path(&conn, &projects.id).expect("projects path"),
+            "Work / Projects"
+        );
+        assert_eq!(
+            NotebookRepository::get_hierarchy_path(&conn, &releases.id).expect("releases path"),
+            "Work / Projects / Releases"
+        );
+
+        // 3. Create a note inside "Releases"
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("v1.0 Launch Checklist".to_string()),
+                content: Some("Checklist content".to_string()),
+                format: Some("md".to_string()),
+                notebook_id: Some(releases.id.clone()),
+                ..Default::default()
+            },
+        ).expect("Create note in releases");
+
+        // Validate NoteRepository::get_notebook_path
+        let note_path = NoteRepository::get_notebook_path(&conn, &note.id).expect("note path");
+        assert_eq!(note_path, "Work / Projects / Releases");
+        assert!(!note_path.contains(&releases.id), "Must not expose internal ID");
+
+        // Validate NoteRepository::get_metadata includes human-readable path
+        let meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("get metadata")
+            .expect("metadata exists");
+        assert_eq!(meta.notebook_id, Some(releases.id.clone()));
+        assert_eq!(meta.notebook_path, Some("Work / Projects / Releases".to_string()));
+
+        // 4. Move note to "Work" and verify updated metadata path
+        NoteRepository::move_to_notebook(&conn, &note.id, Some(&work.id)).expect("Move to Work");
+
+        let work_meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("get work meta")
+            .expect("meta exists");
+        assert_eq!(work_meta.notebook_id, Some(work.id.clone()));
+        assert_eq!(work_meta.notebook_path, Some("Work".to_string()));
+        assert_eq!(NoteRepository::get_notebook_path(&conn, &note.id).expect("work path"), "Work");
+
+        // 5. Unfile note and verify path is None in metadata and "Unfiled" from get_notebook_path
+        NoteRepository::move_to_notebook(&conn, &note.id, None).expect("Move to Unfiled");
+
+        let unfiled_meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("get unfiled meta")
+            .expect("meta exists");
+        assert_eq!(unfiled_meta.notebook_id, None);
+        assert_eq!(unfiled_meta.notebook_path, None);
+        assert_eq!(NoteRepository::get_notebook_path(&conn, &note.id).expect("unfiled path"), "Unfiled");
+    }
+
+    #[test]
+    fn test_task_34_tag_display_multi_tag_tokens_and_order() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create tags from the spec example: work, important, planning
+        let t_work = TagRepository::create(&conn, "work").expect("create work");
+        let t_important = TagRepository::create(&conn, "important").expect("create important");
+        let t_planning = TagRepository::create(&conn, "planning").expect("create planning");
+
+        // 2. Create note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Launch".to_string()),
+                content: Some("Launch tasks".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("create note");
+
+        // 3. Assign all three tags: [work] [important] [planning]
+        TagRepository::add_tag_to_note(&conn, &note.id, &t_work.id).expect("add work");
+        TagRepository::add_tag_to_note(&conn, &note.id, &t_important.id).expect("add important");
+        TagRepository::add_tag_to_note(&conn, &note.id, &t_planning.id).expect("add planning");
+
+        // 4. Retrieve note metadata and verify all 3 tags are present
+        let meta = NoteRepository::get_metadata(&conn, &note.id)
+            .expect("get metadata")
+            .expect("meta exists");
+
+        let tag_names: Vec<String> = meta.tags.iter().map(|t| t.name.clone()).collect();
+        assert_eq!(tag_names.len(), 3);
+        assert!(tag_names.contains(&"work".to_string()));
+        assert!(tag_names.contains(&"important".to_string()));
+        assert!(tag_names.contains(&"planning".to_string()));
+
+        // 5. Verify tags persist across fresh connection
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen failed");
+        let tags_after_reopen = TagRepository::get_tags_for_note(&conn2, &note.id).expect("get tags");
+        assert_eq!(tags_after_reopen.len(), 3);
+    }
+
+    #[test]
+    fn test_task_35_tag_removal_preserves_content_title_notebook_favorite() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a notebook "Architecture"
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Architecture".to_string(),
+                parent_id: None,
+            },
+        ).expect("create notebook");
+
+        // 2. Create note with title, content, format, notebook, favorite
+        let initial_title = "Important Architecture Document".to_string();
+        let initial_content = "Detailed architectural specifications and system designs.".to_string();
+        let initial_format = "md".to_string();
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some(initial_title.clone()),
+                content: Some(initial_content.clone()),
+                format: Some(initial_format.clone()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        ).expect("create note");
+
+        assert_eq!(note.title, initial_title);
+        assert_eq!(note.content, initial_content);
+        assert_eq!(note.format, initial_format);
+        assert_eq!(note.notebook_id, Some(nb.id.clone()));
+        assert!(note.is_favorite);
+
+        // 3. Create tags and assign: [work] [planning]
+        let tag_work = TagRepository::create(&conn, "work").expect("create work");
+        let tag_planning = TagRepository::create(&conn, "planning").expect("create planning");
+
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("add work");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_planning.id).expect("add planning");
+
+        let tags_before = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags");
+        assert_eq!(tags_before.len(), 2);
+
+        // 4. Remove tag "planning" (simulating [planning ×])
+        TagRepository::remove_tag_from_note(&conn, &note.id, &tag_planning.id).expect("remove planning");
+
+        // Verify tags list
+        let tags_after_1 = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after 1");
+        assert_eq!(tags_after_1.len(), 1);
+        assert_eq!(tags_after_1[0].name, "work");
+
+        // Invariants check: note content, title, notebook, favorite must NOT be modified
+        let note_check_1 = NoteRepository::get_by_id(&conn, &note.id)
+            .expect("fetch note")
+            .expect("note exists");
+
+        assert_eq!(note_check_1.title, initial_title, "Title must not be modified by tag removal");
+        assert_eq!(note_check_1.content, initial_content, "Content must not be modified by tag removal");
+        assert_eq!(note_check_1.format, initial_format, "Format must not be modified by tag removal");
+        assert_eq!(note_check_1.notebook_id, Some(nb.id.clone()), "Notebook must not be modified by tag removal");
+        assert!(note_check_1.is_favorite, "Favorite state must not be modified by tag removal");
+
+        // 5. Remove tag "work" (simulating [work ×])
+        TagRepository::remove_tag_from_note(&conn, &note.id, &tag_work.id).expect("remove work");
+
+        let tags_after_2 = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after 2");
+        assert_eq!(tags_after_2.len(), 0);
+
+        // Invariants check after removing all tags
+        let note_check_2 = NoteRepository::get_by_id(&conn, &note.id)
+            .expect("fetch note")
+            .expect("note exists");
+
+        assert_eq!(note_check_2.title, initial_title);
+        assert_eq!(note_check_2.content, initial_content);
+        assert_eq!(note_check_2.format, initial_format);
+        assert_eq!(note_check_2.notebook_id, Some(nb.id.clone()));
+        assert!(note_check_2.is_favorite);
+
+        // 6. Persistence across connection restart
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let note_final = NoteRepository::get_by_id(&conn2, &note.id)
+            .expect("fetch")
+            .expect("exists");
+        assert_eq!(note_final.title, initial_title);
+        assert_eq!(note_final.content, initial_content);
+        assert_eq!(note_final.notebook_id, Some(nb.id));
+        assert!(note_final.is_favorite);
+
+        let tags_final = TagRepository::get_tags_for_note(&conn2, &note.id).expect("get tags");
+        assert_eq!(tags_final.len(), 0);
+    }
+
+    #[test]
+    fn test_task_36_tag_creation_from_note_editor_and_immediate_assignment() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Seed existing tags per spec: work, important, planning
+        let _ = TagRepository::create(&conn, "work").expect("create work");
+        let _ = TagRepository::create(&conn, "important").expect("create important");
+        let _ = TagRepository::create(&conn, "planning").expect("create planning");
+
+        let existing_tags = TagRepository::list(&conn).expect("list tags");
+        assert_eq!(existing_tags.len(), 3);
+
+        // 2. Create a note without tags
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quantum Computing Overview".to_string()),
+                content: Some("Introductory notes".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("create note");
+
+        assert_eq!(TagRepository::get_tags_for_note(&conn, &note.id).expect("tags").len(), 0);
+
+        // 3. User types "research" into tag picker search input (exactMatchExists == false)
+        // and triggers createAndAssign -> TagRepository::create("research") followed by add_tag_to_note
+        let created_tag = TagRepository::create(&conn, "research").expect("create research");
+        assert_eq!(created_tag.name, "research");
+
+        TagRepository::add_tag_to_note(&conn, &note.id, &created_tag.id).expect("assign research");
+
+        // 4. Verify note now has 1 assigned tag: "research"
+        let note_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("get note tags");
+        assert_eq!(note_tags.len(), 1);
+        assert_eq!(note_tags[0].name, "research");
+        assert_eq!(note_tags[0].id, created_tag.id);
+
+        // 5. Verify total tags in system is now 4
+        let all_tags = TagRepository::list(&conn).expect("list all tags");
+        assert_eq!(all_tags.len(), 4);
+
+        // 6. Verify in-memory tag list filtering behavior (not full-text search)
+        let query = "res";
+        let matched: Vec<&str> = all_tags.iter()
+            .filter(|t| t.name.to_lowercase().contains(query))
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(matched, vec!["research"]);
+
+        // 7. Verify persistent state after reopening connection
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let persisted_meta = NoteRepository::get_metadata(&conn2, &note.id)
+            .expect("metadata")
+            .expect("exists");
+        assert_eq!(persisted_meta.tags.len(), 1);
+        assert_eq!(persisted_meta.tags[0].name, "research");
+    }
+
+    #[test]
+    fn test_task_37_prevent_duplicate_tag_assignment_database_and_repository() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a note and a tag "work"
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Duplicate Prevention Test".to_string()),
+                content: Some("Testing uniqueness".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                ..Default::default()
+            },
+        ).expect("create note");
+
+        let tag_work = TagRepository::create(&conn, "work").expect("create work");
+
+        // 2. Assign "work" tag for the first time
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("first assign");
+        let initial_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags");
+        assert_eq!(initial_tags.len(), 1);
+        assert_eq!(initial_tags[0].name, "work");
+
+        // 3. Attempt to assign "work" a second time (simulating user selecting it again)
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("second assign must succeed idempotently");
+
+        // Verify the note still only has 1 tag, NOT ["work", "work"]
+        let tags_after_second = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after second");
+        assert_eq!(tags_after_second.len(), 1, "Duplicate tag assignment must never produce duplicate tags");
+        assert_eq!(tags_after_second[0].name, "work");
+
+        // 4. Verify SQLite composite primary key on note_tags (note_id, tag_id)
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE note_id = ?1 AND tag_id = ?2",
+            rusqlite::params![&note.id, &tag_work.id],
+            |r| r.get(0),
+        ).expect("count query");
+        assert_eq!(count, 1, "note_tags must contain exactly 1 row for (note_id, tag_id)");
+
+        // Direct raw insert without IGNORE must trigger a UNIQUE / PRIMARY KEY failure
+        let duplicate_insert_err = conn.execute(
+            "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+            rusqlite::params![&note.id, &tag_work.id],
+        ).expect_err("Raw duplicate insert into note_tags must fail due to PRIMARY KEY");
+        assert!(duplicate_insert_err.to_string().to_lowercase().contains("unique"));
+
+        // 5. Verify set_tags_for_note with duplicate tag IDs in input list
+        let mut conn_mut = conn;
+        let batch_result = TagRepository::set_tags_for_note(
+            &mut conn_mut,
+            &note.id,
+            &[tag_work.id.clone(), tag_work.id.clone(), tag_work.id.clone()],
+        ).expect("set_tags_for_note");
+        assert_eq!(batch_result.len(), 1, "Batch assignment must filter out duplicates");
+
+        // 6. Verify persistence across connection reopen
+        drop(conn_mut);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let reopened_tags = TagRepository::get_tags_for_note(&conn2, &note.id).expect("get tags after reopen");
+        assert_eq!(reopened_tags.len(), 1);
+        assert_eq!(reopened_tags[0].name, "work");
+    }
+
+    #[test]
+    fn test_task_38_tag_rename_propagation_across_multiple_notes() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a tag "work"
+        let tag = TagRepository::create(&conn, "work").expect("create work tag");
+        let tag_id = tag.id.clone();
+
+        // 2. Create 20 notes and assign "work" to all of them
+        let mut note_ids = Vec::new();
+        for i in 1..=20 {
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some(format!("Work Task Note #{i}")),
+                    content: Some(format!("Content of task {i}")),
+                    format: Some("txt".to_string()),
+                    notebook_id: None,
+                    ..Default::default()
+                },
+            ).expect("create note");
+
+            TagRepository::add_tag_to_note(&conn, &note.id, &tag_id).expect("add tag to note");
+            note_ids.push(note.id);
+        }
+
+        // Verify initial assignments
+        let initial_junction_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE tag_id = ?1",
+            rusqlite::params![&tag_id],
+            |r| r.get(0),
+        ).expect("query junction count");
+        assert_eq!(initial_junction_count, 20);
+
+        for nid in &note_ids {
+            let tags = TagRepository::get_tags_for_note(&conn, nid).expect("get tags");
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "work");
+        }
+
+        // 3. Rename tag: work -> projects (Task 38)
+        let updated_tag = TagRepository::update(
+            &conn,
+            &tag_id,
+            personal_notepad_lib::storage::models::UpdateTagDto {
+                name: "projects".to_string(),
+            },
+        ).expect("rename tag to projects");
+        assert_eq!(updated_tag.id, tag_id, "Tag ID must remain completely unchanged");
+        assert_eq!(updated_tag.name, "projects");
+
+        // 4. Invariant check: relationship remains note_tags.tag_id = tag_id; zero duplicate rows created
+        let junction_count_after: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE tag_id = ?1",
+            rusqlite::params![&tag_id],
+            |r| r.get(0),
+        ).expect("query junction count after");
+        assert_eq!(junction_count_after, 20, "Total assignments must remain exactly 20 without duplicates");
+
+        let total_junction_rows: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags",
+            [],
+            |r| r.get(0),
+        ).expect("total junction rows");
+        assert_eq!(total_junction_rows, 20);
+
+        // 5. Verify all 20 notes automatically reflect updated tag name "projects"
+        for nid in &note_ids {
+            let tags = TagRepository::get_tags_for_note(&conn, nid).expect("get tags");
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "projects", "Note must automatically show updated name 'projects'");
+            assert_eq!(tags[0].id, tag_id);
+
+            let meta = NoteRepository::get_metadata(&conn, nid).expect("get meta").expect("meta exists");
+            assert_eq!(meta.tags.len(), 1);
+            assert_eq!(meta.tags[0].name, "projects");
+        }
+
+        // Verify get_all_notes_tag_names reflects "projects"
+        let all_notes_map = TagRepository::get_all_notes_tag_names(&conn).expect("get all notes tags map");
+        for nid in &note_ids {
+            assert_eq!(all_notes_map.get(nid), Some(&vec!["projects".to_string()]));
+        }
+
+        // Verify list_by_tag still finds all 20 notes
+        let notes_for_tag = NoteRepository::list_by_tag(&conn, &tag_id).expect("list by tag");
+        assert_eq!(notes_for_tag.len(), 20);
+
+        // 6. Verify persistence across connection reopen
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        for nid in &note_ids {
+            let tags = TagRepository::get_tags_for_note(&conn2, nid).expect("get tags reopen");
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "projects");
+        }
+    }
+
+    #[test]
+    fn test_task_39_tag_delete_propagation_notes_untouched_assignments_disappear() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a tag "work"
+        let tag = TagRepository::create(&conn, "work").expect("create work tag");
+        let tag_id = tag.id.clone();
+
+        // Create a notebook for testing notebook assignment preservation
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Notebook".to_string(),
+                parent_id: None,
+            },
+        ).expect("create notebook");
+
+        // 2. Create 25 notes with varied metadata (favorites, notebooks, unfiled)
+        let mut created_notes = Vec::new();
+        for i in 1..=25 {
+            let is_fav = i % 2 == 0;
+            let nb_id = if i % 3 == 0 { Some(nb.id.clone()) } else { None };
+
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some(format!("Project Document #{i}")),
+                    content: Some(format!("Detailed specs and requirements for phase {i}")),
+                    format: Some(if i % 2 == 0 { "md".to_string() } else { "txt".to_string() }),
+                    notebook_id: nb_id,
+                    is_favorite: Some(is_fav),
+                    is_pinned: Some(false),
+                },
+            ).expect("create note");
+
+            // Assign "work" to all 25 notes
+            TagRepository::add_tag_to_note(&conn, &note.id, &tag_id).expect("add tag");
+            created_notes.push(note);
+        }
+
+        // Verify initial state: 25 notes exist and all 25 have tag "work"
+        assert_eq!(NoteRepository::list(&conn, false).expect("list notes").len(), 25);
+        let initial_junction_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE tag_id = ?1",
+            rusqlite::params![&tag_id],
+            |r| r.get(0),
+        ).expect("junction count");
+        assert_eq!(initial_junction_count, 25);
+
+        // 3. Delete tag "work" (Task 39)
+        let deleted = TagRepository::delete(&conn, &tag_id).expect("delete tag");
+        assert!(deleted, "Tag deletion should succeed");
+
+        // 4. Verify tag is gone from tags table
+        assert!(TagRepository::get_by_id(&conn, &tag_id).expect("get by id").is_none());
+
+        // 5. Invariant check: all 25 notes remain in the database, not deleted
+        let notes_after = NoteRepository::list(&conn, false).expect("list notes after");
+        assert_eq!(notes_after.len(), 25, "All 25 notes must remain in the database");
+
+        // 6. Invariant check: all 25 tag assignments in note_tags disappeared
+        let junction_count_after: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE tag_id = ?1",
+            rusqlite::params![&tag_id],
+            |r| r.get(0),
+        ).expect("junction count after");
+        assert_eq!(junction_count_after, 0, "All 25 tag assignments must disappear from note_tags");
+
+        let total_junction_rows: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags",
+            [],
+            |r| r.get(0),
+        ).expect("total junction rows");
+        assert_eq!(total_junction_rows, 0);
+
+        // 7. Verify each individual note's content, title, notebook, favorite are 100% intact
+        for original in &created_notes {
+            let note = NoteRepository::get_by_id(&conn, &original.id)
+                .expect("fetch note")
+                .expect("note must exist");
+
+            assert_eq!(note.title, original.title);
+            assert_eq!(note.content, original.content);
+            assert_eq!(note.format, original.format);
+            assert_eq!(note.notebook_id, original.notebook_id);
+            assert_eq!(note.is_favorite, original.is_favorite);
+            assert!(!note.is_deleted);
+
+            let meta = NoteRepository::get_metadata(&conn, &original.id)
+                .expect("get metadata")
+                .expect("metadata exists");
+            assert_eq!(meta.tags.len(), 0, "Note must have 0 tags after tag deletion");
+        }
+
+        // 8. Verify persistence across restart
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        assert_eq!(NoteRepository::list(&conn2, false).expect("reopen notes list").len(), 25);
+        assert!(TagRepository::get_by_id(&conn2, &tag_id).expect("reopen tag query").is_none());
+    }
+
+    #[test]
+    fn test_task_40_favorite_tag_notebook_simultaneous_interaction_and_coherence() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a notebook "Projects"
+        let projects = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: None,
+            },
+        ).expect("create Projects notebook");
+
+        let personal = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Personal".to_string(),
+                parent_id: None,
+            },
+        ).expect("create Personal notebook");
+
+        // 2. Create tags: "work" and "important"
+        let tag_work = TagRepository::create(&conn, "work").expect("create work");
+        let tag_important = TagRepository::create(&conn, "important").expect("create important");
+
+        // 3. Create note with: Favorite = true, Notebook = Projects
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Strategic Roadmap 2026".to_string()),
+                content: Some("# Key Milestones\n1. Launch v1\n2. User Feedback".to_string()),
+                format: Some("md".to_string()),
+                notebook_id: Some(projects.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        ).expect("create note");
+
+        // 4. Assign tags = work, important
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_work.id).expect("add work");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag_important.id).expect("add important");
+
+        // 5. Invariant check: These metadata properties must not conflict!
+        // - "Favorites" view MUST show the note
+        let fav_notes = NoteRepository::list_favorites(&conn).expect("list favorites");
+        assert!(fav_notes.iter().any(|n| n.id == note.id), "Favorites must show note");
+
+        // - "# work" tag view MUST show the note
+        let work_notes = NoteRepository::list_by_tag(&conn, &tag_work.id).expect("list by work tag");
+        assert!(work_notes.iter().any(|n| n.id == note.id), "# work must show note");
+
+        // - "# important" tag view MUST show the note
+        let important_notes = NoteRepository::list_by_tag(&conn, &tag_important.id).expect("list by important tag");
+        assert!(important_notes.iter().any(|n| n.id == note.id), "# important must show note");
+
+        // - "Projects" notebook view MUST show the note
+        let project_notes = NoteRepository::list_by_notebook(&conn, &projects.id).expect("list by projects notebook");
+        assert!(project_notes.iter().any(|n| n.id == note.id), "Projects notebook must show note");
+
+        // - "All Notes" view MUST show the note
+        let all_notes = NoteRepository::list(&conn, false).expect("list all notes");
+        assert!(all_notes.iter().any(|n| n.id == note.id), "All notes must show note");
+
+        // - "Unfiled" view MUST NOT show the note
+        let unfiled_notes = NoteRepository::list_unfiled(&conn).expect("list unfiled");
+        assert!(!unfiled_notes.iter().any(|n| n.id == note.id), "Unfiled must NOT show note");
+
+        // 6. Check canonical NoteMetadata reflects all properties simultaneously
+        let meta = NoteRepository::get_metadata(&conn, &note.id).expect("get meta").expect("meta exists");
+        assert!(meta.is_favorite);
+        assert_eq!(meta.notebook_id, Some(projects.id.clone()));
+        assert_eq!(meta.notebook_path, Some("Projects".to_string()));
+        assert_eq!(meta.tags.len(), 2);
+        let tag_names: Vec<String> = meta.tags.iter().map(|t| t.name.clone()).collect();
+        assert!(tag_names.contains(&"work".to_string()));
+        assert!(tag_names.contains(&"important".to_string()));
+
+        // 7. Toggle favorite to false: tags and notebook MUST remain completely unchanged
+        let unfav_note = NoteRepository::set_favorite(&conn, &note.id, false).expect("unfavorite");
+        assert!(!unfav_note.is_favorite);
+        assert_eq!(unfav_note.notebook_id, Some(projects.id.clone()));
+
+        let work_notes_after_unfav = NoteRepository::list_by_tag(&conn, &tag_work.id).expect("work after unfav");
+        assert!(work_notes_after_unfav.iter().any(|n| n.id == note.id), "Tag view still shows unfavorited note");
+
+        let project_notes_after_unfav = NoteRepository::list_by_notebook(&conn, &projects.id).expect("projects after unfav");
+        assert!(project_notes_after_unfav.iter().any(|n| n.id == note.id), "Notebook still shows unfavorited note");
+
+        let fav_notes_after_unfav = NoteRepository::list_favorites(&conn).expect("favs after unfav");
+        assert!(!fav_notes_after_unfav.iter().any(|n| n.id == note.id), "Favorites must no longer show unfavorited note");
+
+        // 8. Re-favorite: note reappears in favorites
+        let refav_note = NoteRepository::set_favorite(&conn, &note.id, true).expect("refavorite");
+        assert!(refav_note.is_favorite);
+
+        // 9. Move note from Projects -> Personal: favorite and tags remain intact
+        let moved_note = NoteRepository::move_to_notebook(&conn, &note.id, Some(&personal.id)).expect("move note");
+        assert_eq!(moved_note.notebook_id, Some(personal.id.clone()));
+        assert!(moved_note.is_favorite);
+
+        let personal_notes = NoteRepository::list_by_notebook(&conn, &personal.id).expect("personal notes");
+        assert!(personal_notes.iter().any(|n| n.id == note.id));
+
+        let fav_notes_after_move = NoteRepository::list_favorites(&conn).expect("favs after move");
+        assert!(fav_notes_after_move.iter().any(|n| n.id == note.id));
+
+        let work_notes_after_move = NoteRepository::list_by_tag(&conn, &tag_work.id).expect("work after move");
+        assert!(work_notes_after_move.iter().any(|n| n.id == note.id));
+
+        // 10. Persistence across connection restart
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let meta_reopen = NoteRepository::get_metadata(&conn2, &note.id).expect("meta reopen").expect("exists");
+        assert!(meta_reopen.is_favorite);
+        assert_eq!(meta_reopen.notebook_id, Some(personal.id));
+        assert_eq!(meta_reopen.tags.len(), 2);
+    }
+
+    #[test]
+    fn test_task_41_soft_deleted_notes_excluded_across_all_views() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a notebook "Work"
+        let work = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).expect("create Work notebook");
+
+        // 2. Create tags: "rust" and "security"
+        let tag_rust = TagRepository::create(&conn, "rust").expect("create rust");
+        let tag_sec = TagRepository::create(&conn, "security").expect("create security");
+
+        // 3. Create 3 notes:
+        // - Note A: inside Work, Favorite=true, tags=[rust, security]
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note A (Work Fav)".to_string()),
+                content: Some("Content A".to_string()),
+                notebook_id: Some(work.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note A");
+        TagRepository::add_tag_to_note(&conn, &note_a.id, &tag_rust.id).expect("tag note A rust");
+        TagRepository::add_tag_to_note(&conn, &note_a.id, &tag_sec.id).expect("tag note A sec");
+
+        // - Note B: unfiled, Favorite=false, tags=[rust]
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note B (Unfiled NonFav)".to_string()),
+                content: Some("Content B".to_string()),
+                notebook_id: None,
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("create note B");
+        TagRepository::add_tag_to_note(&conn, &note_b.id, &tag_rust.id).expect("tag note B rust");
+
+        // - Note C: inside Work, Favorite=true, tags=[security]
+        let note_c = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note C (Work Fav)".to_string()),
+                content: Some("Content C".to_string()),
+                notebook_id: Some(work.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note C");
+        TagRepository::add_tag_to_note(&conn, &note_c.id, &tag_sec.id).expect("tag note C sec");
+
+        // 4. Baseline assertions before deletion
+        assert_eq!(NoteRepository::list(&conn, false).expect("list all").len(), 3);
+        assert_eq!(NoteRepository::list_favorites(&conn).expect("list fav").len(), 2);
+        assert_eq!(NoteRepository::list_by_notebook(&conn, &work.id).expect("list work").len(), 2);
+        assert_eq!(NoteRepository::list_unfiled(&conn).expect("list unfiled").len(), 1);
+        assert_eq!(NoteRepository::list_by_tag(&conn, &tag_rust.id).expect("list rust").len(), 2);
+        assert_eq!(NoteRepository::list_by_tag(&conn, &tag_sec.id).expect("list sec").len(), 2);
+
+        let counts_before = TagRepository::get_tag_note_counts(&conn).expect("counts before");
+        assert_eq!(counts_before.get(&tag_rust.id).copied().unwrap_or(0), 2);
+        assert_eq!(counts_before.get(&tag_sec.id).copied().unwrap_or(0), 2);
+
+        let batch_tags_before = TagRepository::get_all_notes_tag_names(&conn).expect("batch before");
+        assert_eq!(batch_tags_before.get(&note_a.id).map(|v| v.len()).unwrap_or(0), 2);
+        assert_eq!(batch_tags_before.get(&note_b.id).map(|v| v.len()).unwrap_or(0), 1);
+        assert_eq!(batch_tags_before.get(&note_c.id).map(|v| v.len()).unwrap_or(0), 1);
+
+        // 5. Soft-delete Note A
+        let deleted = NoteRepository::delete(&conn, &note_a.id, true).expect("soft delete Note A");
+        assert!(deleted, "Soft delete must report true");
+
+        // 6. Invariant verification: Note A must be excluded across ALL views!
+        // - All Notes: excludes Note A (only B and C returned)
+        let all_after = NoteRepository::list(&conn, false).expect("list all after delete");
+        assert_eq!(all_after.len(), 2);
+        assert!(!all_after.iter().any(|n| n.id == note_a.id), "All Notes must exclude soft-deleted Note A");
+
+        // - Favorites: excludes Note A (only C returned)
+        let favs_after = NoteRepository::list_favorites(&conn).expect("list fav after delete");
+        assert_eq!(favs_after.len(), 1);
+        assert_eq!(favs_after[0].id, note_c.id);
+        assert!(!favs_after.iter().any(|n| n.id == note_a.id), "Favorites must exclude soft-deleted Note A");
+
+        // - Notebook "Work": excludes Note A (only C returned)
+        let work_after = NoteRepository::list_by_notebook(&conn, &work.id).expect("list work after delete");
+        assert_eq!(work_after.len(), 1);
+        assert_eq!(work_after[0].id, note_c.id);
+        assert!(!work_after.iter().any(|n| n.id == note_a.id), "Notebook view must exclude soft-deleted Note A");
+
+        // - Tag "rust": excludes Note A (only B returned)
+        let rust_after = NoteRepository::list_by_tag(&conn, &tag_rust.id).expect("list rust after delete");
+        assert_eq!(rust_after.len(), 1);
+        assert_eq!(rust_after[0].id, note_b.id);
+        assert!(!rust_after.iter().any(|n| n.id == note_a.id), "Tag rust view must exclude soft-deleted Note A");
+
+        // - Tag "security": excludes Note A (only C returned)
+        let sec_after = NoteRepository::list_by_tag(&conn, &tag_sec.id).expect("list sec after delete");
+        assert_eq!(sec_after.len(), 1);
+        assert_eq!(sec_after[0].id, note_c.id);
+        assert!(!sec_after.iter().any(|n| n.id == note_a.id), "Tag security view must exclude soft-deleted Note A");
+
+        // - Tag note counts: Note A excluded from counts (rust=1, sec=1)
+        let counts_after = TagRepository::get_tag_note_counts(&conn).expect("counts after delete");
+        assert_eq!(counts_after.get(&tag_rust.id).copied().unwrap_or(0), 1);
+        assert_eq!(counts_after.get(&tag_sec.id).copied().unwrap_or(0), 1);
+
+        // - Batch note tag names: Note A excluded from active note-tag batch
+        let batch_after = TagRepository::get_all_notes_tag_names(&conn).expect("batch after delete");
+        assert!(!batch_after.contains_key(&note_a.id), "Batch tag names must exclude soft-deleted Note A");
+
+        // - Direct query by ID: returns note with is_deleted = true and valid deleted_at
+        let direct_a = NoteRepository::get_by_id(&conn, &note_a.id).expect("get by id").expect("exists");
+        assert!(direct_a.is_deleted);
+        assert!(direct_a.deleted_at.is_some());
+
+        // - Include deleted query: returns all 3 notes
+        let with_deleted = NoteRepository::list(&conn, true).expect("list with deleted");
+        assert_eq!(with_deleted.len(), 3);
+
+        // 7. Verify persistence across connection restart
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        assert_eq!(NoteRepository::list(&conn2, false).expect("reopen list").len(), 2);
+        assert_eq!(NoteRepository::list_favorites(&conn2).expect("reopen favs").len(), 1);
+        assert_eq!(NoteRepository::list_by_notebook(&conn2, &work.id).expect("reopen work").len(), 1);
+        assert_eq!(NoteRepository::list_by_tag(&conn2, &tag_rust.id).expect("reopen rust").len(), 1);
+        assert_eq!(NoteRepository::list_by_tag(&conn2, &tag_sec.id).expect("reopen sec").len(), 1);
+
+        // 8. Restore Note A
+        let restored_a = NoteRepository::restore(&conn2, &note_a.id).expect("restore Note A");
+        assert!(!restored_a.is_deleted);
+        assert!(restored_a.deleted_at.is_none());
+        assert!(restored_a.is_favorite, "Favorite status must be preserved upon restore");
+        assert_eq!(restored_a.notebook_id, Some(work.id.clone()), "Notebook must be preserved upon restore");
+
+        // All views reflect restored Note A immediately
+        assert_eq!(NoteRepository::list(&conn2, false).expect("list restored").len(), 3);
+        assert_eq!(NoteRepository::list_favorites(&conn2).expect("favs restored").len(), 2);
+        assert_eq!(NoteRepository::list_by_notebook(&conn2, &work.id).expect("work restored").len(), 2);
+        assert_eq!(NoteRepository::list_by_tag(&conn2, &tag_rust.id).expect("rust restored").len(), 2);
+        assert_eq!(NoteRepository::list_by_tag(&conn2, &tag_sec.id).expect("sec restored").len(), 2);
+
+        let restored_counts = TagRepository::get_tag_note_counts(&conn2).expect("counts restored");
+        assert_eq!(restored_counts.get(&tag_rust.id).copied().unwrap_or(0), 2);
+        assert_eq!(restored_counts.get(&tag_sec.id).copied().unwrap_or(0), 2);
+
+        // Canonical metadata after restore has everything intact
+        let meta_restored = NoteRepository::get_metadata(&conn2, &note_a.id).expect("meta").expect("meta exists");
+        assert!(meta_restored.is_favorite);
+        assert_eq!(meta_restored.notebook_path, Some("Work".to_string()));
+        assert_eq!(meta_restored.tags.len(), 2);
+
+        // 9. Soft-delete unfiled Note B
+        NoteRepository::delete(&conn2, &note_b.id, true).expect("soft delete unfiled Note B");
+        assert_eq!(NoteRepository::list_unfiled(&conn2).expect("unfiled after B deleted").len(), 0);
+        assert_eq!(NoteRepository::list_by_tag(&conn2, &tag_rust.id).expect("rust after B deleted").len(), 1);
+
+        // 10. Hard-delete Note B (soft = false): cascade removes from note_tags, leaves tags intact
+        let hard_deleted = NoteRepository::delete(&conn2, &note_b.id, false).expect("hard delete Note B");
+        assert!(hard_deleted);
+        assert!(NoteRepository::get_by_id(&conn2, &note_b.id).expect("get Note B").is_none());
+
+        // Tag "rust" itself is preserved
+        assert!(TagRepository::get_by_id(&conn2, &tag_rust.id).expect("tag rust").is_some());
+    }
+
+    #[test]
+    fn test_phase5_task_42_note_list_metadata_indicators_and_batch_resolution() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create hierarchy: Work -> Projects
+        let work = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).expect("create Work");
+
+        let projects = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: Some(work.id.clone()),
+            },
+        ).expect("create Projects");
+
+        // 2. Create 4 tags
+        let tag_backend = TagRepository::create(&conn, "backend").expect("create backend");
+        let tag_critical = TagRepository::create(&conn, "critical").expect("create critical");
+        let tag_db = TagRepository::create(&conn, "database").expect("create database");
+        let tag_ui = TagRepository::create(&conn, "ui").expect("create ui");
+
+        // 3. Create notes
+        // Note 1: in Projects, favorite = true, 4 tags (exceeds 3, testing +1 overflow)
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Architecture Spec".to_string()),
+                content: Some("Full system architecture design document with schemas.".to_string()),
+                notebook_id: Some(projects.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note 1");
+
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_backend.id).expect("add backend");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_critical.id).expect("add critical");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_db.id).expect("add database");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_ui.id).expect("add ui");
+
+        // Note 2: in Work, favorite = false, 1 tag
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Team Standup Notes".to_string()),
+                content: Some("Weekly team coordination notes.".to_string()),
+                notebook_id: Some(work.id.clone()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("create note 2");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag_ui.id).expect("add ui to note 2");
+
+        // Note 3: unfiled, favorite = true, 0 tags
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quick Thought".to_string()),
+                content: Some("Remember to submit report.".to_string()),
+                notebook_id: None,
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note 3");
+
+        // 4. Batch tags mapping for note list cards
+        let all_tags_map = TagRepository::get_all_notes_tag_names(&conn).expect("get all notes tags");
+
+        // Note 1 must have exactly 4 tags, sorted alphabetically
+        let note1_tags = all_tags_map.get(&note1.id).expect("note 1 tags");
+        assert_eq!(note1_tags.len(), 4);
+        assert_eq!(note1_tags, &vec!["backend", "critical", "database", "ui"]);
+
+        // Note 2 must have 1 tag
+        let note2_tags = all_tags_map.get(&note2.id).expect("note 2 tags");
+        assert_eq!(note2_tags, &vec!["ui"]);
+
+        // Note 3 has 0 tags
+        assert!(!all_tags_map.contains_key(&note3.id));
+
+        // 5. Notebook paths for note cards
+        assert_eq!(
+            NoteRepository::get_notebook_path(&conn, &note1.id).expect("path note 1"),
+            "Work / Projects"
+        );
+        assert_eq!(
+            NoteRepository::get_notebook_path(&conn, &note2.id).expect("path note 2"),
+            "Work"
+        );
+        assert_eq!(
+            NoteRepository::get_notebook_path(&conn, &note3.id).expect("path note 3"),
+            "Unfiled"
+        );
+
+        // 6. Favorite indicators
+        let favs = NoteRepository::list_favorites(&conn).expect("favs");
+        let fav_ids: Vec<_> = favs.iter().map(|n| n.id.as_str()).collect();
+        assert!(fav_ids.contains(&note1.id.as_str()));
+        assert!(!fav_ids.contains(&note2.id.as_str()));
+        assert!(fav_ids.contains(&note3.id.as_str()));
+
+        // 7. Toggle favorite on note 2 -> reflects in favorite indicators immediately
+        NoteRepository::set_favorite(&conn, &note2.id, true).expect("favorite note 2");
+        let favs_after = NoteRepository::list_favorites(&conn).expect("favs after");
+        assert!(favs_after.iter().any(|n| n.id == note2.id));
+
+        // 8. Reopen DB and verify persistence
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let tags_reopen = TagRepository::get_all_notes_tag_names(&conn2).expect("tags reopen");
+        assert_eq!(tags_reopen.get(&note1.id).unwrap().len(), 4);
+        assert_eq!(
+            NoteRepository::get_notebook_path(&conn2, &note1.id).expect("path reopen"),
+            "Work / Projects"
+        );
+    }
+
+    #[test]
+    fn test_phase5_task_43_sorting_retains_modified_at_desc_and_pinned_across_all_views() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create notebook and tag
+        let projects = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: None,
+            },
+        ).expect("create Projects");
+
+        let tag_specs = TagRepository::create(&conn, "specs").expect("create specs tag");
+
+        // 2. Create 4 notes with distinctly increasing timestamps
+        // Note 1: oldest
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 1".to_string()),
+                notebook_id: Some(projects.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note 1");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_specs.id).expect("tag 1");
+
+        std::thread::sleep(std::time::Duration::from_millis(15));
+
+        // Note 2: next
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 2".to_string()),
+                notebook_id: Some(projects.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note 2");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag_specs.id).expect("tag 2");
+
+        std::thread::sleep(std::time::Duration::from_millis(15));
+
+        // Note 3: next (not favorite)
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 3".to_string()),
+                notebook_id: Some(projects.id.clone()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        ).expect("create note 3");
+        TagRepository::add_tag_to_note(&conn, &note3.id, &tag_specs.id).expect("tag 3");
+
+        std::thread::sleep(std::time::Duration::from_millis(15));
+
+        // Note 4: newest (unfiled)
+        let note4 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 4".to_string()),
+                notebook_id: None,
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        ).expect("create note 4");
+        TagRepository::add_tag_to_note(&conn, &note4.id, &tag_specs.id).expect("tag 4");
+
+        // 3. Verify strict modified_at DESC ordering across ALL views:
+        // - All Notes: [Note 4, Note 3, Note 2, Note 1]
+        let all_notes = NoteRepository::list(&conn, false).expect("list all");
+        let all_ids: Vec<_> = all_notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(all_ids, vec![note4.id.as_str(), note3.id.as_str(), note2.id.as_str(), note1.id.as_str()]);
+
+        // - Favorites: [Note 4, Note 2, Note 1]
+        let fav_notes = NoteRepository::list_favorites(&conn).expect("list favs");
+        let fav_ids: Vec<_> = fav_notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(fav_ids, vec![note4.id.as_str(), note2.id.as_str(), note1.id.as_str()]);
+
+        // - Tag specs: [Note 4, Note 3, Note 2, Note 1]
+        let tag_notes = NoteRepository::list_by_tag(&conn, &tag_specs.id).expect("list by tag");
+        let tag_note_ids: Vec<_> = tag_notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(tag_note_ids, vec![note4.id.as_str(), note3.id.as_str(), note2.id.as_str(), note1.id.as_str()]);
+
+        // - Notebook Projects: [Note 3, Note 2, Note 1]
+        let project_notes = NoteRepository::list_by_notebook(&conn, &projects.id).expect("list by notebook");
+        let project_ids: Vec<_> = project_notes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(project_ids, vec![note3.id.as_str(), note2.id.as_str(), note1.id.as_str()]);
+
+        // - Unfiled: [Note 4]
+        let unfiled_notes = NoteRepository::list_unfiled(&conn).expect("list unfiled");
+        assert_eq!(unfiled_notes.len(), 1);
+        assert_eq!(unfiled_notes[0].id, note4.id);
+
+        // 4. Update Note 1 (the oldest note) -> jumps to top of modified_at DESC
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        NoteRepository::update(
+            &conn,
+            &note1.id,
+            UpdateNoteDto {
+                content: Some("Updated content for Note 1".to_string()),
+                ..Default::default()
+            },
+        ).expect("update note 1");
+
+        let all_after_update = NoteRepository::list(&conn, false).expect("list all after update");
+        let ids_after_update: Vec<_> = all_after_update.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids_after_update, vec![note1.id.as_str(), note4.id.as_str(), note3.id.as_str(), note2.id.as_str()]);
+
+        let favs_after_update = NoteRepository::list_favorites(&conn).expect("favs after update");
+        let fav_ids_after_update: Vec<_> = favs_after_update.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(fav_ids_after_update, vec![note1.id.as_str(), note4.id.as_str(), note2.id.as_str()]);
+
+        let project_after_update = NoteRepository::list_by_notebook(&conn, &projects.id).expect("projects after update");
+        let project_ids_after_update: Vec<_> = project_after_update.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(project_ids_after_update, vec![note1.id.as_str(), note3.id.as_str(), note2.id.as_str()]);
+
+        // 5. Pin Note 3 -> jumps ahead of all unpinned notes regardless of timestamps
+        NoteRepository::update(
+            &conn,
+            &note3.id,
+            UpdateNoteDto {
+                is_pinned: Some(true),
+                ..Default::default()
+            },
+        ).expect("pin note 3");
+
+        let all_pinned = NoteRepository::list(&conn, false).expect("list all pinned");
+        let pinned_ids: Vec<_> = all_pinned.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(pinned_ids, vec![note3.id.as_str(), note1.id.as_str(), note4.id.as_str(), note2.id.as_str()]);
+
+        let project_pinned = NoteRepository::list_by_notebook(&conn, &projects.id).expect("project pinned");
+        let project_pinned_ids: Vec<_> = project_pinned.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(project_pinned_ids, vec![note3.id.as_str(), note1.id.as_str(), note2.id.as_str()]);
+
+        // 6. Persistence across connection restart
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let all_reopen = NoteRepository::list(&conn2, false).expect("all reopen");
+        let reopen_ids: Vec<_> = all_reopen.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(reopen_ids, vec![note3.id.as_str(), note1.id.as_str(), note4.id.as_str(), note2.id.as_str()]);
+    }
+
+    #[test]
+    fn test_phase5_task_44_sidebar_overflow_100_tags_lifecycle_and_counts() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Create a note to attach tags to
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note with many tags".to_string()),
+                content: Some("Testing 100+ tags overflow capacity".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note");
+
+        // 2. Insert 100 distinct tags
+        let start_time = std::time::Instant::now();
+        for i in 1..=100 {
+            let tag_name = format!("tag-{:03}", i);
+            let tag = TagRepository::create(&conn, &tag_name).expect("create tag");
+            // Tag every alternate note
+            if i % 2 == 0 {
+                TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).expect("assign tag");
+            }
+        }
+        let elapsed = start_time.elapsed();
+        assert!(elapsed.as_millis() < 5000, "100 tag creations should be fast (< 5s)");
+
+        // 3. Verify TagRepository::list returns all 100 tags in deterministic alphabetical order
+        let tags_list = TagRepository::list(&conn).expect("list 100 tags");
+        assert_eq!(tags_list.len(), 100);
+        assert_eq!(tags_list[0].name, "tag-001");
+        assert_eq!(tags_list[99].name, "tag-100");
+
+        // 4. Verify tag counts map contains 50 tags with count 1
+        let counts = TagRepository::get_tag_note_counts(&conn).expect("tag note counts");
+        assert_eq!(counts.len(), 50);
+        for count in counts.values() {
+            assert_eq!(*count, 1);
+        }
+
+        // 5. Verify batch note tags for the note returns 50 tags
+        let batch = TagRepository::get_all_notes_tag_names(&conn).expect("batch tags");
+        let note_tags = batch.get(&note.id).expect("note tags");
+        assert_eq!(note_tags.len(), 50);
+
+        // 6. Verify persistence across connection reopen
+        drop(conn);
+        let conn2 = init_connection(&env.paths.database_file).expect("reopen");
+        let tags_after_reopen = TagRepository::list(&conn2).expect("list tags reopen");
+        assert_eq!(tags_after_reopen.len(), 100);
+    }
+
+    #[test]
+    fn test_phase5_task_48_unicode_tag_support_lifecycle_and_restart() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let note1_id: String;
+        let note2_id: String;
+        let note3_id: String;
+
+        let work_tag_id: String;
+        let hindi_tag_id: String;
+        let cjk_tag_id: String;
+        let cafe_tag_id: String;
+        let research_tag_id: String;
+        let num_tag_id: String;
+        let proj_tag_id: String;
+
+        // Session 1: Create, assign, filter, rename, and remove Unicode tags
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1 connection failed");
+            run_migrations(&mut conn).expect("Session 1 migration failed");
+
+            // 1. Create tags with exact specification Unicode names:
+            // work, यात्रा, 旅行, café, research & ideas, 2026, project-x
+            let work_tag = TagRepository::create(&conn, "work").expect("create work tag");
+            work_tag_id = work_tag.id;
+
+            let hindi_tag = TagRepository::create(&conn, "यात्रा").expect("create Devanagari Hindi tag");
+            hindi_tag_id = hindi_tag.id;
+
+            let cjk_tag = TagRepository::create(&conn, "旅行").expect("create CJK Japanese tag");
+            cjk_tag_id = cjk_tag.id;
+
+            let cafe_tag = TagRepository::create(&conn, "café").expect("create Accented Latin tag");
+            cafe_tag_id = cafe_tag.id;
+
+            let research_tag = TagRepository::create(&conn, "research & ideas").expect("create Ampersand tag");
+            research_tag_id = research_tag.id;
+
+            let num_tag = TagRepository::create(&conn, "2026").expect("create Numeric tag");
+            num_tag_id = num_tag.id;
+
+            let proj_tag = TagRepository::create(&conn, "project-x").expect("create Hyphenated tag");
+            proj_tag_id = proj_tag.id;
+
+            // Verify all 7 tags created and listed
+            let tags = TagRepository::list(&conn).expect("list tags");
+            assert_eq!(tags.len(), 7);
+
+            // 2. Create notes and assign multi-tag combinations
+            let note1 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Travel Journal".to_string()),
+                    content: Some("Notes from trip to India and Japan".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 1");
+            note1_id = note1.id;
+
+            let note2 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Work & Coffee".to_string()),
+                    content: Some("Research notes at the corner café".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 2");
+            note2_id = note2.id;
+
+            let note3 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Project Planning".to_string()),
+                    content: Some("2026 roadmap for project-x".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 3");
+            note3_id = note3.id;
+
+            // Assign tags:
+            // Note 1 -> यात्रा, 旅行
+            TagRepository::add_tag_to_note(&conn, &note1_id, &hindi_tag_id).expect("add hindi tag to note 1");
+            TagRepository::add_tag_to_note(&conn, &note1_id, &cjk_tag_id).expect("add cjk tag to note 1");
+
+            // Note 2 -> work, café, research & ideas
+            TagRepository::add_tag_to_note(&conn, &note2_id, &work_tag_id).expect("add work tag to note 2");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &cafe_tag_id).expect("add cafe tag to note 2");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &research_tag_id).expect("add research tag to note 2");
+
+            // Note 3 -> work, 2026, project-x
+            TagRepository::add_tag_to_note(&conn, &note3_id, &work_tag_id).expect("add work tag to note 3");
+            TagRepository::add_tag_to_note(&conn, &note3_id, &num_tag_id).expect("add num tag to note 3");
+            TagRepository::add_tag_to_note(&conn, &note3_id, &proj_tag_id).expect("add proj tag to note 3");
+
+            // Verify note tag associations
+            let note1_tags = TagRepository::get_tags_for_note(&conn, &note1_id).expect("note 1 tags");
+            assert_eq!(note1_tags.len(), 2);
+            let note1_tag_names: Vec<String> = note1_tags.into_iter().map(|t| t.name).collect();
+            assert!(note1_tag_names.contains(&"यात्रा".to_string()));
+            assert!(note1_tag_names.contains(&"旅行".to_string()));
+
+            let note2_tags = TagRepository::get_tags_for_note(&conn, &note2_id).expect("note 2 tags");
+            assert_eq!(note2_tags.len(), 3);
+            let note2_tag_names: Vec<String> = note2_tags.into_iter().map(|t| t.name).collect();
+            assert!(note2_tag_names.contains(&"work".to_string()));
+            assert!(note2_tag_names.contains(&"café".to_string()));
+            assert!(note2_tag_names.contains(&"research & ideas".to_string()));
+
+            // 3. Filter notes by tag
+            let hindi_notes = NoteRepository::list_by_tag(&conn, &hindi_tag_id).expect("filter by hindi tag");
+            assert_eq!(hindi_notes.len(), 1);
+            assert_eq!(hindi_notes[0].id, note1_id);
+
+            let cjk_notes = NoteRepository::list_by_tag(&conn, &cjk_tag_id).expect("filter by cjk tag");
+            assert_eq!(cjk_notes.len(), 1);
+            assert_eq!(cjk_notes[0].id, note1_id);
+
+            let cafe_notes = NoteRepository::list_by_tag(&conn, &cafe_tag_id).expect("filter by cafe tag");
+            assert_eq!(cafe_notes.len(), 1);
+            assert_eq!(cafe_notes[0].id, note2_id);
+
+            let work_notes = NoteRepository::list_by_tag(&conn, &work_tag_id).expect("filter by work tag");
+            assert_eq!(work_notes.len(), 2);
+            assert!(work_notes.iter().any(|n| n.id == note2_id));
+            assert!(work_notes.iter().any(|n| n.id == note3_id));
+
+            // 4. Rename tags (including Unicode and emojis)
+            let renamed_hindi = TagRepository::update(
+                &conn,
+                &hindi_tag_id,
+                personal_notepad_lib::storage::models::UpdateTagDto {
+                    name: "तीर्थ-यात्रा 🗺️".to_string(),
+                },
+            ).expect("rename hindi tag");
+            assert_eq!(renamed_hindi.name, "तीर्थ-यात्रा 🗺️");
+
+            let renamed_cafe = TagRepository::update(
+                &conn,
+                &cafe_tag_id,
+                personal_notepad_lib::storage::models::UpdateTagDto {
+                    name: "Grande Café ☕".to_string(),
+                },
+            ).expect("rename cafe tag");
+            assert_eq!(renamed_cafe.name, "Grande Café ☕");
+
+            // Verify note tag names updated automatically
+            let note1_tags_after_rename = TagRepository::get_tags_for_note(&conn, &note1_id).expect("note 1 tags after rename");
+            let note1_tag_names_after: Vec<String> = note1_tags_after_rename.into_iter().map(|t| t.name).collect();
+            assert!(note1_tag_names_after.contains(&"तीर्थ-यात्रा 🗺️".to_string()));
+
+            // 5. Remove tag from note
+            TagRepository::remove_tag_from_note(&conn, &note2_id, &cafe_tag_id).expect("remove cafe tag from note 2");
+            let note2_tags_after_remove = TagRepository::get_tags_for_note(&conn, &note2_id).expect("note 2 tags after remove");
+            assert_eq!(note2_tags_after_remove.len(), 2);
+            let note2_names_after: Vec<String> = note2_tags_after_remove.into_iter().map(|t| t.name).collect();
+            assert!(!note2_names_after.contains(&"Grande Café ☕".to_string()));
+            assert!(note2_names_after.contains(&"work".to_string()));
+            assert!(note2_names_after.contains(&"research & ideas".to_string()));
+
+            // Filter for Grande Café ☕ now returns 0 notes
+            let cafe_notes_after_remove = NoteRepository::list_by_tag(&conn, &cafe_tag_id).expect("filter cafe after remove");
+            assert_eq!(cafe_notes_after_remove.len(), 0);
+        }
+
+        // Session 2: Application restart and persistence verification
+        {
+            let mut conn2 = init_connection(&db_path).expect("Session 2 connection failed");
+            run_migrations(&mut conn2).expect("Session 2 migration failed");
+
+            // 1. Verify all 7 tags exist and retain updated Unicode names
+            let tags = TagRepository::list(&conn2).expect("list tags session 2");
+            assert_eq!(tags.len(), 7);
+
+            let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
+            assert!(tag_names.contains(&"तीर्थ-यात्रा 🗺️".to_string()));
+            assert!(tag_names.contains(&"Grande Café ☕".to_string()));
+            assert!(tag_names.contains(&"旅行".to_string()));
+            assert!(tag_names.contains(&"research & ideas".to_string()));
+            assert!(tag_names.contains(&"2026".to_string()));
+            assert!(tag_names.contains(&"project-x".to_string()));
+            assert!(tag_names.contains(&"work".to_string()));
+
+            // 2. Verify note 1 tag associations preserved
+            let note1_tags = TagRepository::get_tags_for_note(&conn2, &note1_id).expect("note 1 tags session 2");
+            assert_eq!(note1_tags.len(), 2);
+            let note1_tag_names: Vec<String> = note1_tags.into_iter().map(|t| t.name).collect();
+            assert!(note1_tag_names.contains(&"तीर्थ-यात्रा 🗺️".to_string()));
+            assert!(note1_tag_names.contains(&"旅行".to_string()));
+
+            // 3. Verify filtering by Unicode tag returns correct note
+            let filtered_hindi = NoteRepository::list_by_tag(&conn2, &hindi_tag_id).expect("filter hindi session 2");
+            assert_eq!(filtered_hindi.len(), 1);
+            assert_eq!(filtered_hindi[0].id, note1_id);
+
+            let filtered_cjk = NoteRepository::list_by_tag(&conn2, &cjk_tag_id).expect("filter cjk session 2");
+            assert_eq!(filtered_cjk.len(), 1);
+            assert_eq!(filtered_cjk[0].id, note1_id);
+
+            // 4. Verify tag counts after restart
+            let counts = TagRepository::get_tag_note_counts(&conn2).expect("tag counts session 2");
+            assert_eq!(*counts.get(&work_tag_id).unwrap_or(&0), 2);
+            assert_eq!(*counts.get(&hindi_tag_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&cjk_tag_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&cafe_tag_id).unwrap_or(&0), 0);
+            assert_eq!(*counts.get(&research_tag_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&num_tag_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&proj_tag_id).unwrap_or(&0), 1);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_49_special_character_tags_lifecycle_and_restart() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let note1_id: String;
+        let note2_id: String;
+        let note3_id: String;
+
+        let cpp_id: String;
+        let csharp_id: String;
+        let rd_id: String;
+        let proj_id: String;
+        let q4_id: String;
+        let design_id: String;
+
+        // Session 1: Create, assign, filter, rename, and remove Special Character tags
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1 connection failed");
+            run_migrations(&mut conn).expect("Session 1 migration failed");
+
+            // 1. Create tags with exact specification special characters:
+            // C++, C#, R&D, Project / Planning, Q4 2026, Design & UX
+            let cpp = TagRepository::create(&conn, "C++").expect("create C++ tag");
+            cpp_id = cpp.id;
+
+            let csharp = TagRepository::create(&conn, "C#").expect("create C# tag");
+            csharp_id = csharp.id;
+
+            let rd = TagRepository::create(&conn, "R&D").expect("create R&D tag");
+            rd_id = rd.id;
+
+            let proj = TagRepository::create(&conn, "Project / Planning").expect("create Project / Planning tag");
+            proj_id = proj.id;
+
+            let q4 = TagRepository::create(&conn, "Q4 2026").expect("create Q4 2026 tag");
+            q4_id = q4.id;
+
+            let design = TagRepository::create(&conn, "Design & UX").expect("create Design & UX tag");
+            design_id = design.id;
+
+            // Verify all 6 tags exist with exact casing and special characters
+            let tags = TagRepository::list(&conn).expect("list tags");
+            assert_eq!(tags.len(), 6);
+            let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
+            assert!(tag_names.contains(&"C++".to_string()));
+            assert!(tag_names.contains(&"C#".to_string()));
+            assert!(tag_names.contains(&"R&D".to_string()));
+            assert!(tag_names.contains(&"Project / Planning".to_string()));
+            assert!(tag_names.contains(&"Q4 2026".to_string()));
+            assert!(tag_names.contains(&"Design & UX".to_string()));
+
+            // 2. Case-insensitive duplicate check preserves original tag
+            let duplicate_cpp = TagRepository::create(&conn, "c++").expect("create c++ lowercase");
+            assert_eq!(duplicate_cpp.id, cpp_id);
+            assert_eq!(duplicate_cpp.name, "C++");
+
+            let duplicate_csharp = TagRepository::create(&conn, "c#").expect("create c# lowercase");
+            assert_eq!(duplicate_csharp.id, csharp_id);
+            assert_eq!(duplicate_csharp.name, "C#");
+
+            // 3. Create notes and assign multi-tag combinations
+            let note1 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Systems Architecture".to_string()),
+                    content: Some("Low-level engine in C++ and tools in C#".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 1");
+            note1_id = note1.id;
+
+            let note2 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Product Roadmap".to_string()),
+                    content: Some("Planning notes for next quarter release".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 2");
+            note2_id = note2.id;
+
+            let note3 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("User Interface Overhaul".to_string()),
+                    content: Some("Design system and accessibility guidelines".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 3");
+            note3_id = note3.id;
+
+            // Note 1 -> C++, C#, R&D
+            TagRepository::add_tag_to_note(&conn, &note1_id, &cpp_id).expect("assign C++");
+            TagRepository::add_tag_to_note(&conn, &note1_id, &csharp_id).expect("assign C#");
+            TagRepository::add_tag_to_note(&conn, &note1_id, &rd_id).expect("assign R&D");
+
+            // Note 2 -> R&D, Project / Planning, Q4 2026
+            TagRepository::add_tag_to_note(&conn, &note2_id, &rd_id).expect("assign R&D to note 2");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &proj_id).expect("assign Project / Planning");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &q4_id).expect("assign Q4 2026");
+
+            // Note 3 -> Design & UX, Project / Planning
+            TagRepository::add_tag_to_note(&conn, &note3_id, &design_id).expect("assign Design & UX");
+            TagRepository::add_tag_to_note(&conn, &note3_id, &proj_id).expect("assign Project / Planning to note 3");
+
+            // Verify assignments
+            let note1_tags = TagRepository::get_tags_for_note(&conn, &note1_id).expect("note 1 tags");
+            assert_eq!(note1_tags.len(), 3);
+            let n1_names: Vec<String> = note1_tags.into_iter().map(|t| t.name).collect();
+            assert!(n1_names.contains(&"C++".to_string()));
+            assert!(n1_names.contains(&"C#".to_string()));
+            assert!(n1_names.contains(&"R&D".to_string()));
+
+            // 4. Filtering notes by special character tags
+            let cpp_notes = NoteRepository::list_by_tag(&conn, &cpp_id).expect("filter C++");
+            assert_eq!(cpp_notes.len(), 1);
+            assert_eq!(cpp_notes[0].id, note1_id);
+
+            let csharp_notes = NoteRepository::list_by_tag(&conn, &csharp_id).expect("filter C#");
+            assert_eq!(csharp_notes.len(), 1);
+            assert_eq!(csharp_notes[0].id, note1_id);
+
+            let rd_notes = NoteRepository::list_by_tag(&conn, &rd_id).expect("filter R&D");
+            assert_eq!(rd_notes.len(), 2);
+            assert!(rd_notes.iter().any(|n| n.id == note1_id));
+            assert!(rd_notes.iter().any(|n| n.id == note2_id));
+
+            let proj_notes = NoteRepository::list_by_tag(&conn, &proj_id).expect("filter Project / Planning");
+            assert_eq!(proj_notes.len(), 2);
+            assert!(proj_notes.iter().any(|n| n.id == note2_id));
+            assert!(proj_notes.iter().any(|n| n.id == note3_id));
+
+            let design_notes = NoteRepository::list_by_tag(&conn, &design_id).expect("filter Design & UX");
+            assert_eq!(design_notes.len(), 1);
+            assert_eq!(design_notes[0].id, note3_id);
+
+            // 5. Rename special character tags
+            let renamed_cpp = TagRepository::update(
+                &conn,
+                &cpp_id,
+                personal_notepad_lib::storage::models::UpdateTagDto {
+                    name: "Modern C++ (20/23)".to_string(),
+                },
+            ).expect("rename C++");
+            assert_eq!(renamed_cpp.name, "Modern C++ (20/23)");
+
+            let renamed_proj = TagRepository::update(
+                &conn,
+                &proj_id,
+                personal_notepad_lib::storage::models::UpdateTagDto {
+                    name: "Strategic Planning & Dev / Ops".to_string(),
+                },
+            ).expect("rename Project / Planning");
+            assert_eq!(renamed_proj.name, "Strategic Planning & Dev / Ops");
+
+            // 6. Remove tag from note
+            TagRepository::remove_tag_from_note(&conn, &note1_id, &csharp_id).expect("remove C# from note 1");
+            let note1_tags_after = TagRepository::get_tags_for_note(&conn, &note1_id).expect("note 1 tags after remove");
+            assert_eq!(note1_tags_after.len(), 2);
+            let n1_after_names: Vec<String> = note1_tags_after.into_iter().map(|t| t.name).collect();
+            assert!(!n1_after_names.contains(&"C#".to_string()));
+            assert!(n1_after_names.contains(&"Modern C++ (20/23)".to_string()));
+            assert!(n1_after_names.contains(&"R&D".to_string()));
+        }
+
+        // Session 2: Application restart and persistence verification
+        {
+            let mut conn2 = init_connection(&db_path).expect("Session 2 connection failed");
+            run_migrations(&mut conn2).expect("Session 2 migration failed");
+
+            // 1. Verify all 6 tags persist accurately
+            let tags = TagRepository::list(&conn2).expect("list tags session 2");
+            assert_eq!(tags.len(), 6);
+            let tag_names: Vec<String> = tags.iter().map(|t| t.name.clone()).collect();
+            assert!(tag_names.contains(&"Modern C++ (20/23)".to_string()));
+            assert!(tag_names.contains(&"C#".to_string()));
+            assert!(tag_names.contains(&"R&D".to_string()));
+            assert!(tag_names.contains(&"Strategic Planning & Dev / Ops".to_string()));
+            assert!(tag_names.contains(&"Q4 2026".to_string()));
+            assert!(tag_names.contains(&"Design & UX".to_string()));
+
+            // 2. Verify note 2 tag associations preserved
+            let note2_tags = TagRepository::get_tags_for_note(&conn2, &note2_id).expect("note 2 tags session 2");
+            assert_eq!(note2_tags.len(), 3);
+            let n2_names: Vec<String> = note2_tags.into_iter().map(|t| t.name).collect();
+            assert!(n2_names.contains(&"R&D".to_string()));
+            assert!(n2_names.contains(&"Strategic Planning & Dev / Ops".to_string()));
+            assert!(n2_names.contains(&"Q4 2026".to_string()));
+
+            // 3. Verify batch note tag mappings
+            let batch = TagRepository::get_all_notes_tag_names(&conn2).expect("batch tags session 2");
+            let n1_batch = batch.get(&note1_id).expect("n1 batch");
+            assert_eq!(n1_batch.len(), 2);
+            assert!(n1_batch.contains(&"Modern C++ (20/23)".to_string()));
+            assert!(n1_batch.contains(&"R&D".to_string()));
+
+            let n3_batch = batch.get(&note3_id).expect("n3 batch");
+            assert_eq!(n3_batch.len(), 2);
+            assert!(n3_batch.contains(&"Design & UX".to_string()));
+            assert!(n3_batch.contains(&"Strategic Planning & Dev / Ops".to_string()));
+
+            // 4. Verify filtering by renamed special character tag
+            let filtered_proj = NoteRepository::list_by_tag(&conn2, &proj_id).expect("filter renamed proj");
+            assert_eq!(filtered_proj.len(), 2);
+            assert!(filtered_proj.iter().any(|n| n.id == note2_id));
+            assert!(filtered_proj.iter().any(|n| n.id == note3_id));
+
+            // 5. Verify tag note counts
+            let counts = TagRepository::get_tag_note_counts(&conn2).expect("tag counts session 2");
+            assert_eq!(*counts.get(&cpp_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&csharp_id).unwrap_or(&0), 0); // removed from note 1
+            assert_eq!(*counts.get(&rd_id).unwrap_or(&0), 2);
+            assert_eq!(*counts.get(&proj_id).unwrap_or(&0), 2);
+            assert_eq!(*counts.get(&q4_id).unwrap_or(&0), 1);
+            assert_eq!(*counts.get(&design_id).unwrap_or(&0), 1);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_50_large_tag_assignment_lifecycle_and_restart() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let note_id: String;
+        let mut created_tag_ids: Vec<String> = Vec::new();
+
+        // Session 1: Create note, 25 tags, assign 22 to single note, verify duplicate protection, removal, filtering
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1 connection failed");
+            run_migrations(&mut conn).expect("Session 1 migration failed");
+
+            // 1. Create a note
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Comprehensive Multi-Tagged Note".to_string()),
+                    content: Some("Testing 20+ tag assignment, rendering, and performance.".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note");
+            note_id = note.id;
+
+            // 2. Create 25 distinct tags
+            for i in 1..=25 {
+                let tag_name = format!("topic-{:02}", i);
+                let tag = TagRepository::create(&conn, &tag_name).expect("create tag");
+                created_tag_ids.push(tag.id);
+            }
+            assert_eq!(created_tag_ids.len(), 25);
+
+            let all_tags = TagRepository::list(&conn).expect("list tags");
+            assert_eq!(all_tags.len(), 25);
+
+            // 3. Assign 22 tags to the note
+            for tag_id in created_tag_ids.iter().take(22) {
+                TagRepository::add_tag_to_note(&conn, &note_id, tag_id).expect("assign tag");
+            }
+
+            // 4. Duplicate assignment prevention: re-assigning tags must not create duplicate associations
+            for tag_id in created_tag_ids.iter().take(5) {
+                let dup_result = TagRepository::add_tag_to_note(&conn, &note_id, tag_id);
+                // Either gracefully succeeds (idempotent / IGNORE) or returns duplicate error
+                // In either case, the database must contain exactly one association
+                let _ = dup_result;
+            }
+
+            // Verify exactly 22 tags assigned
+            let note_tags = TagRepository::get_tags_for_note(&conn, &note_id).expect("note tags");
+            assert_eq!(note_tags.len(), 22);
+
+            // Verify unique tag IDs (no duplicates)
+            let unique_tag_ids: std::collections::HashSet<String> = note_tags.iter().map(|t| t.id.clone()).collect();
+            assert_eq!(unique_tag_ids.len(), 22);
+
+            // 5. Batch resolution performance & accuracy
+            let batch = TagRepository::get_all_notes_tag_names(&conn).expect("batch tags");
+            let batch_tags = batch.get(&note_id).expect("batch for note");
+            assert_eq!(batch_tags.len(), 22);
+
+            // 6. Tag note counts: 22 tags have count 1, 3 tags have count 0
+            let counts = TagRepository::get_tag_note_counts(&conn).expect("counts");
+            let assigned_count = created_tag_ids.iter().take(22).filter(|id| *counts.get(*id).unwrap_or(&0) == 1).count();
+            assert_eq!(assigned_count, 22);
+            let unassigned_count = created_tag_ids.iter().skip(22).filter(|id| *counts.get(*id).unwrap_or(&0) == 0).count();
+            assert_eq!(unassigned_count, 3);
+
+            // 7. Remove 5 tags from note
+            for tag_id in created_tag_ids.iter().take(5) {
+                TagRepository::remove_tag_from_note(&conn, &note_id, tag_id).expect("remove tag");
+            }
+
+            // Exactly 17 tags remain
+            let note_tags_after_del = TagRepository::get_tags_for_note(&conn, &note_id).expect("note tags after remove");
+            assert_eq!(note_tags_after_del.len(), 17);
+
+            // Verify removed tag no longer returns the note in filtering
+            let removed_tag_filter = NoteRepository::list_by_tag(&conn, &created_tag_ids[0]).expect("filter removed tag");
+            assert_eq!(removed_tag_filter.len(), 0);
+
+            // Verify remaining tag still returns the note in filtering
+            let remaining_tag_filter = NoteRepository::list_by_tag(&conn, &created_tag_ids[10]).expect("filter remaining tag");
+            assert_eq!(remaining_tag_filter.len(), 1);
+            assert_eq!(remaining_tag_filter[0].id, note_id);
+        }
+
+        // Session 2: Application restart and persistence verification
+        {
+            let mut conn2 = init_connection(&db_path).expect("Session 2 connection failed");
+            run_migrations(&mut conn2).expect("Session 2 migration failed");
+
+            // 1. All 25 tags still exist
+            let tags_reloaded = TagRepository::list(&conn2).expect("list tags session 2");
+            assert_eq!(tags_reloaded.len(), 25);
+
+            // 2. Exactly 17 tags preserved on note reopening
+            let note_tags_reloaded = TagRepository::get_tags_for_note(&conn2, &note_id).expect("get note tags session 2");
+            assert_eq!(note_tags_reloaded.len(), 17);
+
+            // 3. Re-assign 1 tag after restart
+            TagRepository::add_tag_to_note(&conn2, &note_id, &created_tag_ids[0]).expect("re-add tag 0");
+            let note_tags_after_readd = TagRepository::get_tags_for_note(&conn2, &note_id).expect("get note tags after re-add");
+            assert_eq!(note_tags_after_readd.len(), 18);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_51_large_note_regression_lifecycle_and_restart() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let note_id: String;
+        let archive_nb_id: String;
+        let final_content: String;
+
+        let mut tag_ids: Vec<String> = Vec::new();
+
+        // Session 1: Create 100KB+ note, assign 5 tags, mark favorite, move notebook, rename tag, autosave content
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1 connection failed");
+            run_migrations(&mut conn).expect("Session 1 migration failed");
+
+            // 1. Generate 120KB+ large note content with multi-byte Unicode and Markdown formatting
+            let mut large_content = String::with_capacity(120 * 1024);
+            for i in 1..=1500 {
+                large_content.push_str(&format!(
+                    "## Section {:04}\nThis is a large scale test line with unicode characters: 🚀 नमस्ते, 日本語, and café. Note index: {}\n\n",
+                    i, i
+                ));
+            }
+            assert!(large_content.len() >= 100 * 1024, "Content must exceed 100KB (was {} bytes)", large_content.len());
+
+            // 2. Create Notebooks "Research" and "Archives"
+            let research_nb = NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: "Research".to_string(),
+                    parent_id: None,
+                },
+            ).expect("create Research notebook");
+
+            let archives_nb = NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: "Archives".to_string(),
+                    parent_id: None,
+                },
+            ).expect("create Archives notebook");
+            archive_nb_id = archives_nb.id.clone();
+
+            // 3. Create the large note inside "Research"
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Large Regression Analysis 100KB+".to_string()),
+                    content: Some(large_content.clone()),
+                    format: Some("md".to_string()),
+                    notebook_id: Some(research_nb.id.clone()),
+                    ..Default::default()
+                },
+            ).expect("create large note");
+            note_id = note.id;
+
+            // 4. Create 5 tags
+            let tag_names = ["architecture", "scale", "performance", "sqlite", "offline"];
+            for name in &tag_names {
+                let tag = TagRepository::create(&conn, name).expect("create tag");
+                tag_ids.push(tag.id);
+            }
+            assert_eq!(tag_ids.len(), 5);
+
+            // 5. Assign all 5 tags to the large note
+            for tid in &tag_ids {
+                TagRepository::add_tag_to_note(&conn, &note_id, tid).expect("assign tag");
+            }
+            let note_tags = TagRepository::get_tags_for_note(&conn, &note_id).expect("get note tags");
+            assert_eq!(note_tags.len(), 5);
+
+            // 6. Mark as favorite
+            let fav_note = NoteRepository::toggle_favorite(&conn, &note_id).expect("toggle favorite");
+            assert!(fav_note.is_favorite);
+
+            // 7. Move note to "Archives"
+            let moved_note = NoteRepository::move_to_notebook(&conn, &note_id, Some(&archive_nb_id)).expect("move note");
+            assert_eq!(moved_note.notebook_id.as_deref(), Some(archive_nb_id.as_str()));
+            assert_eq!(moved_note.content.len(), large_content.len());
+
+            // 8. Rename tag 3 ("performance" -> "extreme-performance-2026 ⚡")
+            let renamed_tag = TagRepository::update(
+                &conn,
+                &tag_ids[2],
+                personal_notepad_lib::storage::models::UpdateTagDto {
+                    name: "extreme-performance-2026 ⚡".to_string(),
+                },
+            ).expect("rename tag");
+            assert_eq!(renamed_tag.name, "extreme-performance-2026 ⚡");
+
+            // 9. Autosave simulation: Append another 10KB of text to the large note
+            let mut append_content = large_content;
+            for j in 1..=100 {
+                append_content.push_str(&format!(
+                    "### Autosave Entry {:03}\nPersisting additional streaming edits without truncation or lag.\n",
+                    j
+                ));
+            }
+            final_content = append_content;
+
+            let updated_note = NoteRepository::update(
+                &conn,
+                &note_id,
+                personal_notepad_lib::storage::models::UpdateNoteDto {
+                    content: Some(final_content.clone()),
+                    ..Default::default()
+                },
+            ).expect("autosave note");
+
+            assert_eq!(updated_note.content.len(), final_content.len());
+            assert_eq!(updated_note.content, final_content);
+            assert_eq!(updated_note.title, "Large Regression Analysis 100KB+");
+            assert!(updated_note.is_favorite);
+            assert_eq!(updated_note.notebook_id.as_deref(), Some(archive_nb_id.as_str()));
+        }
+
+        // Session 2: Application restart and 100% data integrity verification
+        {
+            let mut conn2 = init_connection(&db_path).expect("Session 2 connection failed");
+            run_migrations(&mut conn2).expect("Session 2 migration failed");
+
+            // 1. Fetch the note and verify byte-for-byte fidelity of 100KB+ content
+            let note = NoteRepository::get_by_id(&conn2, &note_id)
+                .expect("get note session 2")
+                .expect("note must exist");
+
+            assert_eq!(note.title, "Large Regression Analysis 100KB+");
+            assert_eq!(note.format, "md");
+            assert!(note.is_favorite);
+            assert_eq!(note.notebook_id.as_deref(), Some(archive_nb_id.as_str()));
+            assert_eq!(note.content.len(), final_content.len());
+            assert_eq!(note.content, final_content);
+
+            // 2. Verify all 5 tags assigned with renamed tag reflected
+            let tags = TagRepository::get_tags_for_note(&conn2, &note_id).expect("get tags session 2");
+            assert_eq!(tags.len(), 5);
+            let names: Vec<String> = tags.into_iter().map(|t| t.name).collect();
+            assert!(names.contains(&"architecture".to_string()));
+            assert!(names.contains(&"scale".to_string()));
+            assert!(names.contains(&"extreme-performance-2026 ⚡".to_string()));
+            assert!(names.contains(&"sqlite".to_string()));
+            assert!(names.contains(&"offline".to_string()));
+
+            // 3. Verify Favorite filtering returns this note
+            let fav_notes = NoteRepository::list_favorites(&conn2).expect("list favorites");
+            assert_eq!(fav_notes.len(), 1);
+            assert_eq!(fav_notes[0].id, note_id);
+            assert_eq!(fav_notes[0].content.len(), final_content.len());
+
+            // 4. Verify Tag filtering by renamed tag returns this note
+            let tagged_notes = NoteRepository::list_by_tag(&conn2, &tag_ids[2]).expect("list by tag");
+            assert_eq!(tagged_notes.len(), 1);
+            assert_eq!(tagged_notes[0].id, note_id);
+
+            // 5. Verify Notebook filtering by "Archives" returns this note
+            let nb_notes = NoteRepository::list_filtered(&conn2, false, Some(&archive_nb_id), false)
+                .expect("list filtered by notebook");
+            assert_eq!(nb_notes.len(), 1);
+            assert_eq!(nb_notes[0].id, note_id);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_52_backend_transaction_safety_and_rollback() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let note1_id: String;
+        let note2_id: String;
+        let tag1_id: String;
+        let tag2_id: String;
+
+        // Session 1: Verify multi-table atomic operations and transaction rollback behavior
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1 connection failed");
+            run_migrations(&mut conn).expect("Session 1 migration failed");
+
+            // 1. Create two notes
+            let note1 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Transaction Safety Note 1".to_string()),
+                    content: Some("Testing transactional tag deletion".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 1");
+            note1_id = note1.id;
+
+            let note2 = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Transaction Safety Note 2".to_string()),
+                    content: Some("Testing second note association retention".to_string()),
+                    ..Default::default()
+                },
+            ).expect("create note 2");
+            note2_id = note2.id;
+
+            // 2. Create two tags
+            let tag1 = TagRepository::create(&conn, "tx-tag-1").expect("create tag 1");
+            tag1_id = tag1.id;
+
+            let tag2 = TagRepository::create(&conn, "tx-tag-2").expect("create tag 2");
+            tag2_id = tag2.id;
+
+            // 3. Associate tags
+            TagRepository::add_tag_to_note(&conn, &note1_id, &tag1_id).expect("add tag 1 to note 1");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &tag1_id).expect("add tag 1 to note 2");
+            TagRepository::add_tag_to_note(&conn, &note2_id, &tag2_id).expect("add tag 2 to note 2");
+
+            assert_eq!(TagRepository::get_tags_for_note(&conn, &note1_id).expect("n1 tags").len(), 1);
+            assert_eq!(TagRepository::get_tags_for_note(&conn, &note2_id).expect("n2 tags").len(), 2);
+
+            // 4. Test atomic deletion: TagRepository::delete wraps delete note_tags + delete tag in a transaction
+            let deleted = TagRepository::delete(&conn, &tag1_id).expect("delete tag 1 transactionally");
+            assert!(deleted, "Tag 1 deletion must return true");
+
+            // Verify tag1 removed from tags table
+            let tag1_lookup = TagRepository::get_by_id(&conn, &tag1_id).expect("lookup tag 1");
+            assert!(tag1_lookup.is_none());
+
+            // Verify tag1 removed from note_tags for both notes
+            let n1_tags = TagRepository::get_tags_for_note(&conn, &note1_id).expect("n1 tags after delete");
+            assert_eq!(n1_tags.len(), 0);
+
+            let n2_tags = TagRepository::get_tags_for_note(&conn, &note2_id).expect("n2 tags after delete");
+            assert_eq!(n2_tags.len(), 1);
+            assert_eq!(n2_tags[0].id, tag2_id);
+
+            // Verify notes themselves are completely untouched
+            let fetched_n1 = NoteRepository::get_by_id(&conn, &note1_id).expect("fetch n1").expect("n1 exists");
+            assert_eq!(fetched_n1.title, "Transaction Safety Note 1");
+            assert_eq!(fetched_n1.content, "Testing transactional tag deletion");
+
+            let fetched_n2 = NoteRepository::get_by_id(&conn, &note2_id).expect("fetch n2").expect("n2 exists");
+            assert_eq!(fetched_n2.title, "Transaction Safety Note 2");
+
+            // 5. Test transaction rollback on abort/failure:
+            // Open an unchecked_transaction, insert a tag and assignment, then explicitly drop/rollback without commit
+            {
+                let tx = conn.unchecked_transaction().expect("start test tx");
+                let abort_tag_id = uuid::Uuid::new_v4().to_string();
+                let now = chrono::Utc::now().to_rfc3339();
+                tx.execute(
+                    "INSERT INTO tags (id, name, created_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![abort_tag_id, "aborted-tag", now],
+                ).expect("insert aborted tag");
+
+                tx.execute(
+                    "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+                    rusqlite::params![note1_id, abort_tag_id],
+                ).expect("insert aborted junction");
+
+                // Drop tx without calling tx.commit() -> triggers automatic ROLLBACK
+                drop(tx);
+            }
+
+            // Verify rollback: aborted tag and its junction do not exist in SQLite
+            let aborted_lookup = TagRepository::get_by_name(&conn, "aborted-tag").expect("lookup aborted");
+            assert!(aborted_lookup.is_none(), "Rolled back tag must not exist");
+
+            let n1_tags_after_rollback = TagRepository::get_tags_for_note(&conn, &note1_id).expect("n1 tags after rollback");
+            assert_eq!(n1_tags_after_rollback.len(), 0, "Rolled back junction must not exist");
+        }
+
+        // Session 2: Application restart verification
+        {
+            let mut conn2 = init_connection(&db_path).expect("Session 2 connection failed");
+            run_migrations(&mut conn2).expect("Session 2 migration failed");
+
+            // Verify note 2 still has tag 2 and only tag 2
+            let n2_tags = TagRepository::get_tags_for_note(&conn2, &note2_id).expect("n2 tags session 2");
+            assert_eq!(n2_tags.len(), 1);
+            assert_eq!(n2_tags[0].id, tag2_id);
+            assert_eq!(n2_tags[0].name, "tx-tag-2");
+
+            // Verify note 1 has 0 tags
+            let n1_tags = TagRepository::get_tags_for_note(&conn2, &note1_id).expect("n1 tags session 2");
+            assert_eq!(n1_tags.len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_53_database_integrity_and_orphan_prevention() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Initial SQLite integrity & foreign key check
+        let integrity_init: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).expect("integrity check");
+        assert_eq!(integrity_init, "ok");
+
+        let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check").expect("prepare fk check");
+        let fk_violations: Vec<String> = fk_stmt.query_map([], |r| r.get(0)).expect("query fk").map(|r| r.unwrap()).collect();
+        assert_eq!(fk_violations.len(), 0, "Initial DB must have 0 foreign key violations");
+
+        // 2. Populate notes, tags, and note_tags
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Integrity Note 1".to_string()),
+                content: Some("Sample content".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 1");
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Integrity Note 2".to_string()),
+                content: Some("Sample content 2".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 2");
+
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Integrity Note 3".to_string()),
+                content: Some("Sample content 3".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 3");
+
+        let tag1 = TagRepository::create(&conn, "integrity-tag-1").expect("create tag 1");
+        let tag2 = TagRepository::create(&conn, "integrity-tag-2").expect("create tag 2");
+        let tag3 = TagRepository::create(&conn, "integrity-tag-3").expect("create tag 3");
+
+        // Assign tags
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag1.id).expect("assign n1 t1");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag2.id).expect("assign n1 t2");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &tag2.id).expect("assign n2 t2");
+        TagRepository::add_tag_to_note(&conn, &note3.id, &tag3.id).expect("assign n3 t3");
+
+        // Toggle favorite for note1
+        NoteRepository::toggle_favorite(&conn, &note1.id).expect("favorite note 1");
+
+        // 3. Test: No duplicate note_tags
+        // Attempting direct raw SQL insert of existing pair violates PRIMARY KEY (note_id, tag_id)
+        let dup_insert = conn.execute(
+            "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+            rusqlite::params![note1.id, tag1.id],
+        );
+        assert!(dup_insert.is_err(), "Duplicate (note_id, tag_id) pair must violate PRIMARY KEY constraint");
+
+        // Verify query for any duplicates across entire table returns 0
+        let dup_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM (SELECT note_id, tag_id FROM note_tags GROUP BY note_id, tag_id HAVING COUNT(*) > 1)",
+            [],
+            |r| r.get(0),
+        ).expect("dup query");
+        assert_eq!(dup_count, 0, "Database must never contain duplicate note_tags pairs");
+
+        // 4. Test: No tag without valid ID
+        let empty_or_null_tag_ids: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM tags WHERE id IS NULL OR length(trim(id)) = 0",
+            [],
+            |r| r.get(0),
+        ).expect("tag id query");
+        assert_eq!(empty_or_null_tag_ids, 0, "No tag without valid non-empty ID may exist");
+
+        // Attempting to insert tag with NULL id fails
+        let null_id_insert = conn.execute(
+            "INSERT INTO tags (id, name, created_at) VALUES (NULL, 'null-tag', '2026-09-30T00:00:00Z')",
+            [],
+        );
+        assert!(null_id_insert.is_err(), "Tag with NULL ID must be rejected by SQLite NOT NULL constraint");
+
+        // 5. Test: No note deleted because tag deleted
+        let total_notes_before = NoteRepository::list(&conn, true).expect("list all notes").len();
+        assert_eq!(total_notes_before, 3);
+
+        // Delete tag2
+        TagRepository::delete(&conn, &tag2.id).expect("delete tag 2");
+
+        let total_notes_after = NoteRepository::list(&conn, true).expect("list all notes").len();
+        assert_eq!(total_notes_after, total_notes_before, "Deleting a tag must NEVER delete any notes");
+
+        // 6. Test: No orphan note_tags
+        // After deleting tag2, junction records referencing tag2 must be 0
+        let tag2_junction_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE tag_id = ?1",
+            rusqlite::params![tag2.id],
+            |r| r.get(0),
+        ).expect("tag2 junction count");
+        assert_eq!(tag2_junction_count, 0, "All note_tags referencing deleted tag must be removed");
+
+        // Hard-delete note3 directly:
+        conn.execute("DELETE FROM notes WHERE id = ?1", rusqlite::params![note3.id]).expect("delete note 3");
+
+        // Note 3 junction records must be cleaned up automatically via FOREIGN KEY cascade
+        let note3_junction_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags WHERE note_id = ?1",
+            rusqlite::params![note3.id],
+            |r| r.get(0),
+        ).expect("note3 junction count");
+        assert_eq!(note3_junction_count, 0, "Junction records for deleted note must cascade-delete");
+
+        // Global orphan query: check for ANY orphaned note_tags
+        let orphan_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags
+             WHERE note_id NOT IN (SELECT id FROM notes)
+                OR tag_id NOT IN (SELECT id FROM tags)",
+            [],
+            |r| r.get(0),
+        ).expect("orphan query");
+        assert_eq!(orphan_count, 0, "Database must never contain orphan note_tags rows");
+
+        // 7. Test: No invalid favorite values
+        let invalid_fav_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM notes WHERE is_favorite NOT IN (0, 1)",
+            [],
+            |r| r.get(0),
+        ).expect("fav check");
+        assert_eq!(invalid_fav_count, 0, "is_favorite must strictly be binary 0 or 1");
+
+        // 8. Final SQLite integrity and foreign key check
+        let final_integrity: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0)).expect("integrity check");
+        assert_eq!(final_integrity, "ok");
+
+        let mut final_fk_stmt = conn.prepare("PRAGMA foreign_key_check").expect("prepare fk check");
+        let final_fk_violations: Vec<String> = final_fk_stmt.query_map([], |r| r.get(0)).expect("query fk").map(|r| r.unwrap()).collect();
+        assert_eq!(final_fk_violations.len(), 0, "Final DB must have 0 foreign key violations");
+    }
+
+    #[test]
+    fn test_phase5_task_54_error_handling_categories_and_messages() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. ValidationError: Empty or whitespace-only tag name
+        let empty_create = TagRepository::create(&conn, "   ");
+        match empty_create {
+            Err(StorageError::Validation(msg)) => {
+                assert_eq!(msg, "Tag name cannot be empty");
+            }
+            other => panic!("Expected ValidationError, got {:?}", other),
+        }
+
+        // ValidationError: Tag name exceeding 100 characters
+        let long_name = "a".repeat(101);
+        let long_create = TagRepository::create(&conn, &long_name);
+        match long_create {
+            Err(StorageError::Validation(msg)) => {
+                assert!(msg.contains("cannot exceed 100 characters"));
+            }
+            other => panic!("Expected ValidationError, got {:?}", other),
+        }
+
+        // 2. Conflict: Renaming a tag to the name of another existing tag (case-insensitive)
+        let _tag1 = TagRepository::create(&conn, "Alpha").expect("create Alpha");
+        let tag2 = TagRepository::create(&conn, "Beta").expect("create Beta");
+
+        let conflict_rename = TagRepository::update(
+            &conn,
+            &tag2.id,
+            personal_notepad_lib::storage::models::UpdateTagDto {
+                name: "alpha".to_string(), // case-insensitive conflict with tag1
+            },
+        );
+        match conflict_rename {
+            Err(StorageError::Conflict(msg)) => {
+                assert!(msg.contains("already exists"));
+                assert!(msg.contains("alpha"));
+            }
+            other => panic!("Expected Conflict, got {:?}", other),
+        }
+
+        // 3. NotFound: Updating a non-existent tag
+        let fake_id = uuid::Uuid::new_v4().to_string();
+        let not_found_update = TagRepository::update(
+            &conn,
+            &fake_id,
+            personal_notepad_lib::storage::models::UpdateTagDto {
+                name: "Nonexistent".to_string(),
+            },
+        );
+        match not_found_update {
+            Err(StorageError::NotFound(msg)) => {
+                assert!(msg.contains("not found"));
+            }
+            other => panic!("Expected NotFound, got {:?}", other),
+        }
+
+        let not_found_delete = TagRepository::delete(&conn, &fake_id).expect("delete nonexistent");
+        assert!(!not_found_delete, "Deleting non-existent tag should safely return false");
+
+        // 4. DatabaseError / ConstraintViolation mapping to user-friendly messages
+        let constraint_err = StorageError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::ConstraintViolation,
+                extended_code: 787,
+            },
+            Some("FOREIGN KEY constraint failed".to_string()),
+        ));
+        let friendly = constraint_err.user_friendly_message();
+        assert!(friendly.contains("could not be completed"));
+        assert!(!friendly.contains("SQLITE_CONSTRAINT")); // No raw SQL leak
+    }
+
+    #[test]
+    fn test_phase5_task_55_offline_verification_full_suite() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        // Ensure database path exists on local filesystem
+        assert!(db_path.parent().unwrap().exists(), "Storage directory must exist locally");
+
+        let note_id: String;
+        let nb_id: String;
+        let tag_id: String;
+
+        // Session 1: Full offline operations (notes, notebooks, tags, favorites, metadata)
+        {
+            let mut conn = init_connection(&db_path).expect("Offline connection failed");
+            run_migrations(&mut conn).expect("Offline migration failed");
+
+            // 1. Notebooks work completely offline
+            let nb = NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: "Offline Projects".to_string(),
+                    parent_id: None,
+                },
+            ).expect("offline notebook creation");
+            nb_id = nb.id;
+
+            // 2. Notes work completely offline
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Offline Note".to_string()),
+                    content: Some("# Offline First\nZero remote APIs or sync needed.".to_string()),
+                    format: Some("md".to_string()),
+                    notebook_id: Some(nb_id.clone()),
+                    ..Default::default()
+                },
+            ).expect("offline note creation");
+            note_id = note.id;
+
+            // 3. Tags work completely offline
+            let tag = TagRepository::create(&conn, "local-first").expect("offline tag creation");
+            tag_id = tag.id;
+
+            TagRepository::add_tag_to_note(&conn, &note_id, &tag_id).expect("offline tag assign");
+
+            // 4. Favorites work completely offline
+            let fav = NoteRepository::toggle_favorite(&conn, &note_id).expect("offline toggle favorite");
+            assert!(fav.is_favorite);
+
+            // 5. Metadata works completely offline
+            let tags = TagRepository::get_tags_for_note(&conn, &note_id).expect("offline get tags");
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "local-first");
+
+            let fav_list = NoteRepository::list_favorites(&conn).expect("offline list favorites");
+            assert_eq!(fav_list.len(), 1);
+            assert_eq!(fav_list[0].id, note_id);
+        }
+
+        // Session 2: Application restart with zero network access
+        {
+            let mut conn2 = init_connection(&db_path).expect("Offline restart connection failed");
+            run_migrations(&mut conn2).expect("Offline restart migration failed");
+
+            let note_reloaded = NoteRepository::get_by_id(&conn2, &note_id)
+                .expect("offline query")
+                .expect("note exists");
+            assert_eq!(note_reloaded.title, "Offline Note");
+            assert!(note_reloaded.is_favorite);
+            assert_eq!(note_reloaded.notebook_id.as_deref(), Some(nb_id.as_str()));
+
+            let tags_reloaded = TagRepository::get_tags_for_note(&conn2, &note_id).expect("offline tags query");
+            assert_eq!(tags_reloaded.len(), 1);
+            assert_eq!(tags_reloaded[0].id, tag_id);
+        }
+    }
+
+    #[test]
+    fn test_phase5_task_56_no_ai_and_local_first_determinism_verification() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. Verify note creation introduces NO unexpected automatic AI tags or summaries
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Simple Note Without AI".to_string()),
+                content: Some("Deterministic user content only. No LLMs, no automatic summaries.".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note");
+
+        // Verify note has exactly 0 tags assigned automatically
+        let initial_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("initial tags");
+        assert_eq!(initial_tags.len(), 0, "No automatic or AI tags may be assigned without user action");
+
+        // Verify favorite status is strictly 0 (not automatically categorized)
+        let note_reloaded = NoteRepository::get_by_id(&conn, &note.id).expect("get note").expect("note exists");
+        assert!(!note_reloaded.is_favorite, "Note must not be marked favorite by AI or heuristics");
+
+        // 2. User explicitly creates and assigns a tag
+        let manual_tag = TagRepository::create(&conn, "user-created").expect("manual tag create");
+        TagRepository::add_tag_to_note(&conn, &note.id, &manual_tag.id).expect("manual tag assign");
+
+        let tags_after = TagRepository::get_tags_for_note(&conn, &note.id).expect("tags after manual assign");
+        assert_eq!(tags_after.len(), 1);
+        assert_eq!(tags_after[0].name, "user-created");
+
+        // 3. Verify total tags in SQLite equals exactly 1 (no background suggested tags generated)
+        let all_tags = TagRepository::list(&conn).expect("list tags");
+        assert_eq!(all_tags.len(), 1);
+        assert_eq!(all_tags[0].name, "user-created");
+    }
+
+    #[test]
+    fn test_phase5_task_57_no_placeholder_data_fresh_db_verification() {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // 1. A clean database must contain 0 hardcoded/mock tags
+        let initial_tags = TagRepository::list(&conn).expect("list tags");
+        assert_eq!(initial_tags.len(), 0, "Fresh database must not contain any pre-seeded or mock tags");
+
+        // 2. A clean database must contain 0 note_tags associations
+        let initial_tag_counts = TagRepository::get_tag_note_counts(&conn).expect("tag note counts");
+        assert_eq!(initial_tag_counts.len(), 0);
+
+        let initial_junction_rows: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM note_tags",
+            [],
+            |r| r.get(0),
+        ).expect("query note_tags");
+        assert_eq!(initial_junction_rows, 0, "Fresh database must contain 0 junction rows");
+
+        // 3. A clean database must contain 0 notes and 0 notebooks
+        let initial_notes = NoteRepository::list(&conn, true).expect("list notes");
+        assert_eq!(initial_notes.len(), 0);
+
+        let initial_notebooks = NotebookRepository::list(&conn).expect("list notebooks");
+        assert_eq!(initial_notebooks.len(), 0);
+
+        // 4. Batch tags mapping for empty database returns empty map
+        let batch = TagRepository::get_all_notes_tag_names(&conn).expect("batch tag names");
+        assert_eq!(batch.len(), 0);
+    }
+
+    #[test]
+    fn test_phase5_task_64_exact_manual_qa_simulation_suite() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        // Initialize fresh DB
+        let mut conn = init_connection(&db_path).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        // ---------------------------------------------------------------------
+        // Test A — Create tags: work, important, planning
+        // Expected: All appear in Tags
+        // ---------------------------------------------------------------------
+        let tag_work = TagRepository::create(&conn, "work").expect("Test A: create work");
+        let tag_important = TagRepository::create(&conn, "important").expect("Test A: create important");
+        let _tag_planning = TagRepository::create(&conn, "planning").expect("Test A: create planning");
+
+        let tags_a = TagRepository::list(&conn).expect("Test A: list tags");
+        assert_eq!(tags_a.len(), 3);
+        let tag_names: Vec<_> = tags_a.iter().map(|t| t.name.as_str()).collect();
+        assert!(tag_names.contains(&"work"));
+        assert!(tag_names.contains(&"important"));
+        assert!(tag_names.contains(&"planning"));
+
+        // ---------------------------------------------------------------------
+        // Test B — Assign tags: Open note -> Add work -> Add important
+        // Expected: [work] [important]
+        // ---------------------------------------------------------------------
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("QA Note 1".to_string()),
+                content: Some("Testing tag assignments".to_string()),
+                ..Default::default()
+            },
+        ).expect("Test B: create QA Note 1");
+
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_work.id).expect("Test B: assign work");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &tag_important.id).expect("Test B: assign important");
+
+        let note1_tags_b = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Test B: get note tags");
+        assert_eq!(note1_tags_b.len(), 2);
+        let note1_tag_names_b: Vec<_> = note1_tags_b.iter().map(|t| t.name.as_str()).collect();
+        assert!(note1_tag_names_b.contains(&"work"));
+        assert!(note1_tag_names_b.contains(&"important"));
+
+        // ---------------------------------------------------------------------
+        // Test C — Remove one tag: Remove work
+        // Expected: [important]
+        // ---------------------------------------------------------------------
+        TagRepository::remove_tag_from_note(&conn, &note1.id, &tag_work.id).expect("Test C: remove work");
+
+        let note1_tags_c = TagRepository::get_tags_for_note(&conn, &note1.id).expect("Test C: get note tags");
+        assert_eq!(note1_tags_c.len(), 1);
+        assert_eq!(note1_tags_c[0].name, "important");
+
+        // ---------------------------------------------------------------------
+        // Test D — Favorite: Mark note as favorite
+        // Expected: Favorites contains note
+        // ---------------------------------------------------------------------
+        let note1_fav = NoteRepository::set_favorite(&conn, &note1.id, true).expect("Test D: mark favorite");
+        assert!(note1_fav.is_favorite);
+
+        let favs_d = NoteRepository::list_favorites(&conn).expect("Test D: list favorites");
+        assert_eq!(favs_d.len(), 1);
+        assert_eq!(favs_d[0].id, note1.id);
+        assert!(favs_d[0].is_favorite);
+
+        // ---------------------------------------------------------------------
+        // Test E — Restart: Close -> reopen
+        // Expected: Tags preserved, Favorite preserved
+        // ---------------------------------------------------------------------
+        drop(conn);
+
+        let mut reopened_conn = init_connection(&db_path).expect("Test E: reopen connection");
+        run_migrations(&mut reopened_conn).expect("Test E: idempotent migrations");
+
+        // Tags preserved
+        let tags_e = TagRepository::list(&reopened_conn).expect("Test E: list tags");
+        assert_eq!(tags_e.len(), 3);
+        let tag_names_e: Vec<_> = tags_e.iter().map(|t| t.name.as_str()).collect();
+        assert!(tag_names_e.contains(&"work"));
+        assert!(tag_names_e.contains(&"important"));
+        assert!(tag_names_e.contains(&"planning"));
+
+        // Note tags preserved
+        let note1_tags_e = TagRepository::get_tags_for_note(&reopened_conn, &note1.id).expect("Test E: get note tags");
+        assert_eq!(note1_tags_e.len(), 1);
+        assert_eq!(note1_tags_e[0].name, "important");
+
+        // Favorite preserved
+        let favs_e = NoteRepository::list_favorites(&reopened_conn).expect("Test E: list favorites");
+        assert_eq!(favs_e.len(), 1);
+        assert_eq!(favs_e[0].id, note1.id);
+        assert!(favs_e[0].is_favorite);
+
+        // ---------------------------------------------------------------------
+        // Test F — Rename tag: work -> projects
+        // Expected: All affected notes now show projects
+        // ---------------------------------------------------------------------
+        // Assign tag 'work' to another note (or note1) to verify affected notes
+        let note2 = NoteRepository::create(
+            &reopened_conn,
+            CreateNoteDto {
+                title: Some("QA Note 2".to_string()),
+                ..Default::default()
+            },
+        ).expect("Test F: create QA Note 2");
+        TagRepository::add_tag_to_note(&reopened_conn, &note2.id, &tag_work.id).expect("Test F: assign work to note2");
+
+        let renamed_tag = TagRepository::update(&reopened_conn, &tag_work.id, UpdateTagDto { name: "projects".to_string() }).expect("Test F: rename work to projects");
+        assert_eq!(renamed_tag.name, "projects");
+
+        // Verify affected note now shows "projects"
+        let note2_tags_f = TagRepository::get_tags_for_note(&reopened_conn, &note2.id).expect("Test F: get note2 tags");
+        assert_eq!(note2_tags_f.len(), 1);
+        assert_eq!(note2_tags_f[0].name, "projects");
+        assert_eq!(note2_tags_f[0].id, tag_work.id);
+
+        // ---------------------------------------------------------------------
+        // Test G — Delete tag: Delete projects
+        // Expected: Tag disappears, Notes remain
+        // ---------------------------------------------------------------------
+        TagRepository::delete(&reopened_conn, &tag_work.id).expect("Test G: delete projects tag");
+
+        let tags_g = TagRepository::list(&reopened_conn).expect("Test G: list tags");
+        assert_eq!(tags_g.len(), 2);
+        let tag_names_g: Vec<_> = tags_g.iter().map(|t| t.name.as_str()).collect();
+        assert!(!tag_names_g.contains(&"projects"));
+        assert!(!tag_names_g.contains(&"work"));
+        assert!(tag_names_g.contains(&"important"));
+        assert!(tag_names_g.contains(&"planning"));
+
+        // Notes remain untouched
+        let all_notes_g = NoteRepository::list(&reopened_conn, false).expect("Test G: list notes");
+        assert_eq!(all_notes_g.len(), 2);
+        let note2_tags_g = TagRepository::get_tags_for_note(&reopened_conn, &note2.id).expect("Test G: get note2 tags");
+        assert_eq!(note2_tags_g.len(), 0);
+
+        // ---------------------------------------------------------------------
+        // Test H — Tag filter: Select #important
+        // Expected: Only notes with important tag appear
+        // ---------------------------------------------------------------------
+        let important_notes_h = NoteRepository::list_by_tag(&reopened_conn, &tag_important.id).expect("Test H: list by important");
+        assert_eq!(important_notes_h.len(), 1);
+        assert_eq!(important_notes_h[0].id, note1.id);
+        assert_eq!(important_notes_h[0].title, "QA Note 1");
+
+        // ---------------------------------------------------------------------
+        // Test I — Notebook + tags:
+        // Work
+        // └── Projects
+        //     └── Project Plan
+        // Tags: work, important
+        // Favorite: Yes
+        // Verify all metadata is consistent.
+        // ---------------------------------------------------------------------
+        let nb_work = NotebookRepository::create(
+            &reopened_conn,
+            CreateNotebookDto {
+                name: "Work".to_string(),
+                parent_id: None,
+            },
+        ).expect("Test I: create Work root notebook");
+
+        let nb_projects = NotebookRepository::create(
+            &reopened_conn,
+            CreateNotebookDto {
+                name: "Projects".to_string(),
+                parent_id: Some(nb_work.id.clone()),
+            },
+        ).expect("Test I: create Projects child notebook");
+
+        // Recreate tag 'work' since it was deleted
+        let tag_work_recreated = TagRepository::create(&reopened_conn, "work").expect("Test I: recreate work tag");
+
+        let note_plan = NoteRepository::create(
+            &reopened_conn,
+            CreateNoteDto {
+                title: Some("Project Plan".to_string()),
+                content: Some("# Project Plan\n\nQ4 Deliverables and schedule.".to_string()),
+                notebook_id: Some(nb_projects.id.clone()),
+                format: Some("md".to_string()),
+                ..Default::default()
+            },
+        ).expect("Test I: create Project Plan note");
+
+        // Assign tags work and important
+        TagRepository::add_tag_to_note(&reopened_conn, &note_plan.id, &tag_work_recreated.id).expect("Test I: assign work");
+        TagRepository::add_tag_to_note(&reopened_conn, &note_plan.id, &tag_important.id).expect("Test I: assign important");
+
+        // Favorite: Yes
+        let note_plan_fav = NoteRepository::set_favorite(&reopened_conn, &note_plan.id, true).expect("Test I: set favorite");
+        assert!(note_plan_fav.is_favorite);
+
+        // Verify hierarchy path
+        let hierarchy_path = NotebookRepository::get_hierarchy_path(&reopened_conn, &nb_projects.id).expect("Test I: get path");
+        assert_eq!(hierarchy_path, "Work / Projects");
+
+        // Verify tags
+        let plan_tags = TagRepository::get_tags_for_note(&reopened_conn, &note_plan.id).expect("Test I: get tags");
+        assert_eq!(plan_tags.len(), 2);
+        let plan_tag_names: Vec<_> = plan_tags.iter().map(|t| t.name.as_str()).collect();
+        assert!(plan_tag_names.contains(&"work"));
+        assert!(plan_tag_names.contains(&"important"));
+
+        // Verify note retrieved from DB has all consistent metadata
+        let plan_db = NoteRepository::get_by_id(&reopened_conn, &note_plan.id).expect("Test I: get note").expect("found note");
+        assert_eq!(plan_db.title, "Project Plan");
+        assert_eq!(plan_db.notebook_id, Some(nb_projects.id));
+        assert_eq!(plan_db.format, "md");
+        assert!(plan_db.is_favorite);
+        assert!(!plan_db.is_pinned);
+        assert!(!plan_db.is_deleted);
+        assert_eq!(plan_db.deleted_at, None);
+        assert!(!plan_db.created_at.is_empty());
+        assert!(!plan_db.modified_at.is_empty());
+    }
+
+    #[test]
+    fn test_phase5_task_65_restart_regression_suite() {
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+
+        let initial_created_at;
+        let note_id;
+        let tag_backend_id;
+        let tag_critical_id;
+        let tag_q4_id;
+        let product_nb_id;
+
+        let edited_title = "Sprint 42 Specs & Architecture";
+        let edited_content = "# Sprint 42 Specs & Architecture\n\nDeep dive into offline local-first storage and indexing.";
+
+        // Session 1: Create, Tag, Favorite, Edit, Move, Rename
+        {
+            let mut conn = init_connection(&db_path).expect("Session 1: connection");
+            run_migrations(&mut conn).expect("Session 1: migration");
+
+            // 1. Create notebook "Engineering"
+            let engineering_nb = NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: "Engineering".to_string(),
+                    parent_id: None,
+                },
+            ).expect("Step 1: create notebook");
+
+            // 2. Create note
+            let note = NoteRepository::create(
+                &conn,
+                CreateNoteDto {
+                    title: Some("Sprint Specs".to_string()),
+                    content: Some("Initial sprint specifications.".to_string()),
+                    notebook_id: Some(engineering_nb.id.clone()),
+                    format: Some("md".to_string()),
+                    ..Default::default()
+                },
+            ).expect("Step 2: create note");
+
+            note_id = note.id.clone();
+            initial_created_at = note.created_at.clone();
+
+            // 3. Assign 3 tags
+            let t_backend = TagRepository::create(&conn, "backend").expect("Step 3: create backend tag");
+            let t_critical = TagRepository::create(&conn, "critical").expect("Step 3: create critical tag");
+            let t_q4 = TagRepository::create(&conn, "q4-2026").expect("Step 3: create q4 tag");
+
+            tag_backend_id = t_backend.id.clone();
+            tag_critical_id = t_critical.id.clone();
+            tag_q4_id = t_q4.id.clone();
+
+            TagRepository::add_tag_to_note(&conn, &note_id, &tag_backend_id).expect("Step 3: assign backend");
+            TagRepository::add_tag_to_note(&conn, &note_id, &tag_critical_id).expect("Step 3: assign critical");
+            TagRepository::add_tag_to_note(&conn, &note_id, &tag_q4_id).expect("Step 3: assign q4");
+
+            let assigned = TagRepository::get_tags_for_note(&conn, &note_id).expect("Step 3: check tags");
+            assert_eq!(assigned.len(), 3);
+
+            // 4. Mark favorite
+            let fav_res = NoteRepository::set_favorite(&conn, &note_id, true).expect("Step 4: mark favorite");
+            assert!(fav_res.is_favorite);
+
+            // 5. Edit note (title & content)
+            NoteRepository::update(
+                &conn,
+                &note_id,
+                UpdateNoteDto {
+                    title: Some(edited_title.to_string()),
+                    content: Some(edited_content.to_string()),
+                    ..Default::default()
+                },
+            ).expect("Step 5: edit note");
+
+            // 6. Move note (to notebook "Product")
+            let product_nb = NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: "Product".to_string(),
+                    parent_id: None,
+                },
+            ).expect("Step 6: create product notebook");
+            product_nb_id = product_nb.id.clone();
+
+            NoteRepository::update(
+                &conn,
+                &note_id,
+                UpdateNoteDto {
+                    notebook_id: Some(product_nb_id.clone()),
+                    ..Default::default()
+                },
+            ).expect("Step 6: move note");
+
+            // 7. Rename tag: backend -> core-infrastructure
+            let renamed = TagRepository::update(
+                &conn,
+                &tag_backend_id,
+                UpdateTagDto {
+                    name: "core-infrastructure".to_string(),
+                },
+            ).expect("Step 7: rename tag");
+            assert_eq!(renamed.name, "core-infrastructure");
+
+            // 8. Close application (conn dropped here)
+        }
+
+        // 9. Reopen application
+        let mut reopened_conn = init_connection(&db_path).expect("Step 9: reopen connection");
+        run_migrations(&mut reopened_conn).expect("Step 9: idempotent migrations");
+
+        // 10. Verify all state after restart
+        let note_after_restart = NoteRepository::get_by_id(&reopened_conn, &note_id)
+            .expect("Step 10: get note")
+            .expect("Note exists after restart");
+
+        // Notebook assignment correct
+        assert_eq!(note_after_restart.notebook_id, Some(product_nb_id.clone()));
+        let hierarchy_path = NotebookRepository::get_hierarchy_path(&reopened_conn, &product_nb_id)
+            .expect("get hierarchy path");
+        assert_eq!(hierarchy_path, "Product");
+
+        // Title correct
+        assert_eq!(note_after_restart.title, edited_title);
+
+        // Content correct
+        assert_eq!(note_after_restart.content, edited_content);
+
+        // Favorite correct
+        assert!(note_after_restart.is_favorite);
+        let favorites_list = NoteRepository::list_favorites(&reopened_conn).expect("list favorites");
+        assert_eq!(favorites_list.len(), 1);
+        assert_eq!(favorites_list[0].id, note_id);
+
+        // Tags correct (with renamed tag and other 2 tags)
+        let tags_after_restart = TagRepository::get_tags_for_note(&reopened_conn, &note_id)
+            .expect("get tags after restart");
+        assert_eq!(tags_after_restart.len(), 3);
+        let mut tag_names: Vec<String> = tags_after_restart.into_iter().map(|t| t.name).collect();
+        tag_names.sort();
+        assert_eq!(tag_names, vec!["core-infrastructure", "critical", "q4-2026"]);
+
+        // Created time unchanged
+        assert_eq!(note_after_restart.created_at, initial_created_at);
+
+        // Modified time correct (valid non-empty timestamp)
+        assert!(!note_after_restart.modified_at.is_empty());
+        assert_ne!(note_after_restart.modified_at, "");
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

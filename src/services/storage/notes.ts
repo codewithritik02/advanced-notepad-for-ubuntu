@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { CreateNoteInput, ListNotesOptions, Note, UpdateNoteInput } from "./types";
+import { CreateNoteInput, ListNotesOptions, Note, NoteMetadata, UpdateNoteInput } from "./types";
 
 export const notesStorage = {
   /**
@@ -47,6 +47,13 @@ export const notesStorage = {
   },
 
   /**
+   * Restores a soft-deleted note in SQLite.
+   */
+  async restore(id: string): Promise<Note> {
+    return await invoke<Note>("restore_note", { id });
+  },
+
+  /**
    * Moves a note to a target notebook, or unfiles it when notebookId is null.
    */
   async moveToNotebook(id: string, notebookId: string | null): Promise<Note> {
@@ -55,4 +62,40 @@ export const notesStorage = {
       notebookId,
     });
   },
+
+  /**
+   * Sets or unsets favorite status for a note in SQLite.
+   */
+  async setFavorite(id: string, isFavorite: boolean): Promise<Note> {
+    return await invoke<Note>("set_note_favorite", { id, isFavorite });
+  },
+
+  /**
+   * Toggles favorite status for a note in SQLite.
+   */
+  async toggleFavorite(id: string): Promise<Note> {
+    return await invoke<Note>("toggle_note_favorite", { id });
+  },
+
+  /**
+   * Lists all favorite, non-deleted notes ordered by modified date.
+   */
+  async listFavorites(): Promise<Note[]> {
+    return await invoke<Note[]>("list_favorite_notes");
+  },
+
+  /**
+   * Retrieves canonical note metadata including tags, notebook path, and content metrics (Task 29, 33).
+   */
+  async getMetadata(noteId: string): Promise<NoteMetadata | null> {
+    return await invoke<NoteMetadata | null>("get_note_metadata", { noteId });
+  },
+
+  /**
+   * Retrieves human-readable notebook path for a note (Task 33).
+   */
+  async getNotebookPath(noteId: string): Promise<string> {
+    return await invoke<string>("get_note_notebook_path", { noteId });
+  },
 };
+

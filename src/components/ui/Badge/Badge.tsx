@@ -54,7 +54,7 @@ export const Tag: React.FC<TagProps> = ({
             onRemove();
           }}
           title={`Remove #${name}`}
-          aria-label={`Remove #${name}`}
+          aria-label={`Remove tag ${name}`}
         >
           ×
         </button>

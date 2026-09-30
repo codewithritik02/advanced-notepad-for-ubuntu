@@ -15,6 +15,7 @@ export interface NotesListProps {
   emptyDescription?: string;
   onRetry?: () => void;
   onNewNote?: () => void;
+  onToggleFavorite?: (noteId: string) => void;
 }
 
 const EmptyNotesIcon = () => (
@@ -37,6 +38,7 @@ export const NotesList: React.FC<NotesListProps> = ({
   emptyDescription = "Create your first note to get started.",
   onRetry,
   onNewNote,
+  onToggleFavorite,
 }) => {
   return (
     <div className="notes-list-container">
@@ -86,6 +88,7 @@ export const NotesList: React.FC<NotesListProps> = ({
                 note={note}
                 isSelected={note.id === selectedNoteId}
                 onSelect={onSelectNote}
+                onToggleFavorite={onToggleFavorite}
               />
             ))}
           </div>

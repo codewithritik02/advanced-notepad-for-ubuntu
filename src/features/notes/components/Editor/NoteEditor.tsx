@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { Note, NoteFormat, EditorStatus } from "../../types";
-import { storageService } from "../../../../services/storage";
+import { Note, NoteFormat, EditorStatus, getFormatDisplayName } from "../../types";
+import { storageService, Tag } from "../../../../services/storage";
+import { TagPicker } from "../../../tags";
+import { NoteMetadataPanel } from "./NoteMetadataPanel";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -9,8 +11,23 @@ export interface NoteEditorProps {
   onNoteUpdated?: (updatedNote: Note) => void;
   onRegisterSave?: (saveFn: (() => Promise<void>) | null) => void;
   notebookName?: string | null;
+  notebookPath?: string | null;
   onMoveNote?: (note: Note) => void;
+  noteTags?: Tag[];
+  availableTags?: Tag[];
+  onAddTag?: (tagId: string) => Promise<void>;
+  onRemoveTag?: (tagId: string) => Promise<void>;
+  onCreateTag?: (name: string) => Promise<Tag | null>;
 }
+
+// Inline lightweight SVG icons for editor toolbar
+const InfoIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="16" x2="12" y2="12" />
+    <line x1="12" y1="8" x2="12.01" y2="8" />
+  </svg>
+);
 
 // Inline lightweight SVG icons for editor toolbar
 const SaveIcon = () => (
@@ -80,6 +97,21 @@ const RedoIcon = () => (
   </svg>
 );
 
+const StarIcon = ({ filled }: { filled: boolean }) => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill={filled ? "var(--color-warning-default, #eab308)" : "none"}
+    stroke={filled ? "var(--color-warning-default, #eab308)" : "currentColor"}
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+  </svg>
+);
+
 interface NoteSessionViewState {
   cursorStart: number;
   cursorEnd: number;
@@ -114,10 +146,17 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onNoteUpdated,
   onRegisterSave,
   notebookName,
+  notebookPath,
   onMoveNote,
+  noteTags = [],
+  availableTags = [],
+  onAddTag,
+  onRemoveTag,
+  onCreateTag,
 }) => {
   const [loadedNote, setLoadedNote] = useState<Note | null>(null);
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
+  const [isMetadataOpen, setIsMetadataOpen] = useState(false);
   const [loadErrorState, setLoadErrorState] = useState<{
     title: string;
     message: string;
@@ -551,6 +590,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (noteId) scheduleAutosave(noteId);
   };
 
+  const handleToggleFavorite = useCallback(async () => {
+    if (!noteId || !loadedNote) return;
+    const currentFav = loadedNote.is_favorite;
+    const nextFav = !currentFav;
+    setLoadedNote((prev) => (prev ? { ...prev, is_favorite: nextFav } : null));
+    try {
+      const updated = await storageService.notes.setFavorite(noteId, nextFav);
+      setLoadedNote(updated);
+      if (onNoteUpdated) {
+        onNoteUpdated(updated);
+      }
+    } catch {
+      setLoadedNote((prev) => (prev ? { ...prev, is_favorite: currentFav } : null));
+    }
+  }, [noteId, loadedNote, onNoteUpdated]);
+
   const handleSave = useCallback(async () => {
     if (!noteId || isSavingRef.current) return;
     if (!isDirtyRef.current && editorStatus !== "error") {
@@ -721,6 +776,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
+        {loadedNote && (
+          <button
+            type="button"
+            className={`toolbar-btn-favorite ${loadedNote.is_favorite ? "is-favorite" : ""}`}
+            title={loadedNote.is_favorite ? "Remove from favorites" : "Add to favorites"}
+            aria-label={loadedNote.is_favorite ? "Remove from favorites" : "Add to favorites"}
+            aria-pressed={loadedNote.is_favorite}
+            onClick={handleToggleFavorite}
+          >
+            <StarIcon filled={loadedNote.is_favorite} />
+            <span>{loadedNote.is_favorite ? "Favorited" : "Favorite"}</span>
+          </button>
+        )}
+
         <button
           type="button"
           className="toolbar-btn-save"
@@ -739,6 +808,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               : "Saved"}
           </span>
         </button>
+
+        {loadedNote && (
+          <button
+            type="button"
+            className={`toolbar-btn ${isMetadataOpen ? "is-active" : ""}`}
+            title="Note Details (Metadata)"
+            aria-label="Toggle note details"
+            aria-pressed={isMetadataOpen}
+            onClick={() => setIsMetadataOpen((prev) => !prev)}
+          >
+            <InfoIcon />
+          </button>
+        )}
 
         <button
           type="button"
@@ -798,9 +880,36 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             )}
             <span className="meta-item">
               <span className="meta-label">Format:</span>{" "}
-              {format === "md" ? "Markdown (.md)" : "Plain Text (.txt)"}
+              {getFormatDisplayName(format)}
             </span>
           </div>
+
+          {/* Note Tags Strip & Picker (Task 17) */}
+          <TagPicker
+            noteTags={noteTags}
+            availableTags={availableTags}
+            onAddTag={onAddTag}
+            onRemoveTag={onRemoveTag}
+            onCreateTag={onCreateTag}
+            disabled={!noteId}
+          />
+
+          {/* Note Metadata Details Panel (Task 30) */}
+          <NoteMetadataPanel
+            isOpen={isMetadataOpen}
+            onToggle={() => setIsMetadataOpen((prev) => !prev)}
+            notebookPath={notebookPath || notebookName || "Unfiled"}
+            noteTags={noteTags}
+            createdAt={loadedNote?.created_at}
+            modifiedAt={loadedNote?.modified_at}
+            format={format}
+            isFavorite={loadedNote?.is_favorite}
+            wordCount={wordCount}
+            characterCount={content.length}
+            byteSize={new TextEncoder().encode(content).length}
+            onMoveNote={onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
+            onToggleFavorite={handleToggleFavorite}
+          />
 
           <div className="editor-body-divider" />
 

@@ -1,0 +1,178 @@
+/* Personal Notepad — Manage Tags Modal Styling (Task 45) */
+
+.manage-tags-modal {
+  width: 100%;
+  max-width: 480px;
+}
+
+.manage-tags-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md, 12px);
+  max-height: 480px;
+}
+
+.manage-tags-top-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm, 8px);
+}
+
+.manage-tags-create-form {
+  display: flex;
+  gap: var(--spacing-xs, 6px);
+}
+
+.manage-tags-create-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 var(--spacing-sm, 8px);
+  font-size: var(--font-size-xs, 12px);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--color-border-subtle, #333333);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--color-text-primary, #e5e5e5);
+  outline: none;
+  transition: border-color var(--transition-fast, 0.15s ease);
+}
+
+.manage-tags-create-input:focus {
+  border-color: var(--color-accent-default, #3b82f6);
+}
+
+.manage-tags-filter-input {
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--spacing-sm, 8px);
+  font-size: var(--font-size-xs, 12px);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--color-border-subtle, #333333);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--color-text-primary, #e5e5e5);
+  outline: none;
+}
+
+.manage-tags-filter-input:focus {
+  border-color: var(--color-accent-default, #3b82f6);
+}
+
+.manage-tags-list-wrap {
+  max-height: 280px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--color-border-subtle, #333333);
+  border-radius: var(--radius-md, 6px);
+  padding: 4px;
+  scrollbar-width: thin;
+}
+
+.manage-tags-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.manage-tags-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 4px);
+  background-color: transparent;
+  transition: background-color var(--transition-fast, 0.15s ease);
+}
+
+.manage-tags-row:hover {
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.05));
+}
+
+.manage-tags-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  flex: 1;
+}
+
+.manage-tags-name {
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-medium, 500);
+  color: var(--color-text-primary, #e5e5e5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manage-tags-count {
+  font-size: var(--font-size-2xs, 10px);
+  padding: 1px 6px;
+  border-radius: var(--radius-full, 9999px);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.1));
+  color: var(--color-text-muted, #888888);
+  white-space: nowrap;
+}
+
+.manage-tags-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.manage-tags-action-btn {
+  font-size: var(--font-size-2xs, 11px);
+  padding: 3px 8px;
+  border-radius: var(--radius-xs, 3px);
+  border: 1px solid var(--color-border-subtle, #333333);
+  background-color: transparent;
+  color: var(--color-text-secondary, #cccccc);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.manage-tags-action-btn:hover {
+  color: var(--color-text-primary, #ffffff);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08));
+}
+
+.manage-tags-action-btn.is-delete:hover {
+  border-color: var(--color-danger-default, #ef4444);
+  color: var(--color-danger-default, #ef4444);
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.1));
+}
+
+.manage-tags-inline-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.manage-tags-edit-input {
+  flex: 1;
+  height: 26px;
+  padding: 0 6px;
+  font-size: var(--font-size-xs, 12px);
+  background-color: var(--color-surface-active, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--color-accent-default, #3b82f6);
+  border-radius: var(--radius-xs, 3px);
+  color: var(--color-text-primary, #e5e5e5);
+  outline: none;
+}
+
+.manage-tags-empty {
+  padding: var(--spacing-lg, 16px);
+  text-align: center;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-muted, #888888);
+  font-style: italic;
+}
+
+.manage-tags-error {
+  font-size: var(--font-size-2xs, 11px);
+  color: var(--color-danger-default, #ef4444);
+  margin-top: 2px;
+}

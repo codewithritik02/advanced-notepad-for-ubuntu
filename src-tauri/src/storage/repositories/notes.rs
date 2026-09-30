@@ -146,6 +146,14 @@ impl NoteRepository {
         Self::list_filtered(conn, include_deleted, None, false)
     }
 
+    pub fn list_by_notebook(conn: &Connection, notebook_id: &str) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered(conn, false, Some(notebook_id), false)
+    }
+
+    pub fn list_unfiled(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered(conn, false, None, true)
+    }
+
     pub fn list_filtered(
         conn: &Connection,
         include_deleted: bool,
@@ -253,6 +261,17 @@ impl NoteRepository {
         }
     }
 
+    pub fn restore(conn: &Connection, id: &str) -> Result<Note, StorageError> {
+        Self::update(
+            conn,
+            id,
+            UpdateNoteDto {
+                is_deleted: Some(false),
+                ..Default::default()
+            },
+        )
+    }
+
     pub fn move_to_notebook(
         conn: &Connection,
         id: &str,
@@ -288,6 +307,92 @@ impl NoteRepository {
         updated.notebook_id = notebook_id.map(|s| s.to_string());
         updated.modified_at = now;
         Ok(updated)
+    }
+
+    pub fn set_favorite(
+        conn: &Connection,
+        id: &str,
+        is_favorite: bool,
+    ) -> Result<Note, StorageError> {
+        Self::update(
+            conn,
+            id,
+            UpdateNoteDto {
+                is_favorite: Some(is_favorite),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn toggle_favorite(
+        conn: &Connection,
+        id: &str,
+    ) -> Result<Note, StorageError> {
+        let note = Self::get_by_id(conn, id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+        Self::set_favorite(conn, id, !note.is_favorite)
+    }
+
+    pub fn list_favorites(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
+                    is_favorite, is_pinned, is_deleted, deleted_at
+             FROM notes
+             WHERE is_deleted = 0 AND is_favorite = 1
+             ORDER BY is_pinned DESC, modified_at DESC",
+        )?;
+        let note_iter = stmt.query_map([], Self::map_row)?;
+        let mut notes = Vec::new();
+        for note in note_iter {
+            notes.push(note?);
+        }
+        Ok(notes)
+    }
+
+    pub fn list_by_tag(conn: &Connection, tag_id: &str) -> Result<Vec<Note>, StorageError> {
+        let mut stmt = conn.prepare(
+            "SELECT n.id, n.title, n.content, n.format, n.notebook_id, n.created_at, n.modified_at,
+                    n.is_favorite, n.is_pinned, n.is_deleted, n.deleted_at
+             FROM notes n
+             JOIN note_tags nt ON nt.note_id = n.id
+             WHERE nt.tag_id = ?1
+               AND n.is_deleted = 0
+             ORDER BY n.is_pinned DESC, n.modified_at DESC",
+        )?;
+
+        let note_iter = stmt.query_map(params![tag_id], Self::map_row)?;
+        let mut notes = Vec::new();
+        for note in note_iter {
+            notes.push(note?);
+        }
+        Ok(notes)
+    }
+
+    pub fn get_metadata(
+        conn: &Connection,
+        id: &str,
+    ) -> Result<Option<crate::storage::models::NoteMetadata>, StorageError> {
+        let note = match Self::get_by_id(conn, id)? {
+            Some(n) => n,
+            None => return Ok(None),
+        };
+        let tags = crate::storage::repositories::tags::TagRepository::get_tags_for_note(conn, id)?;
+        let mut metadata = crate::storage::models::NoteMetadata::from_note_and_tags(&note, tags);
+        if let Some(ref nb_id) = note.notebook_id {
+            let path = crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(conn, nb_id)?;
+            metadata.notebook_path = Some(path);
+        }
+        Ok(Some(metadata))
+    }
+
+    /// Returns the human-readable notebook path for a note (or "Unfiled" if unassigned).
+    pub fn get_notebook_path(conn: &Connection, note_id: &str) -> Result<String, StorageError> {
+        let note = Self::get_by_id(conn, note_id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{note_id}' not found")))?;
+        match note.notebook_id {
+            Some(ref nb_id) => crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(conn, nb_id),
+            None => Ok("Unfiled".to_string()),
+        }
     }
 }
 
@@ -347,4 +452,160 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_task_61_favorite_tests() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_t61_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        // 1. Create a note (starts with is_favorite = false)
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Favorite Note 1".to_string()),
+                content: Some("First note content".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 1");
+        assert!(!note1.is_favorite);
+
+        // Favorite note
+        let fav1 = NoteRepository::toggle_favorite(&conn, &note1.id).expect("favorite note 1");
+        assert!(fav1.is_favorite, "1. note must be favorited");
+
+        // 2. Unfavorite note
+        let unfav1 = NoteRepository::toggle_favorite(&conn, &note1.id).expect("unfavorite note 1");
+        assert!(!unfav1.is_favorite, "2. note must be unfavorited");
+
+        // Re-favorite note 1 for persistence testing
+        NoteRepository::toggle_favorite(&conn, &note1.id).expect("re-favorite note 1");
+
+        // 3. Favorite persists across connection drop / reopen
+        drop(conn);
+        let conn2 = init_connection(&db_path).expect("Reopen failed");
+        let note1_reloaded = NoteRepository::get_by_id(&conn2, &note1.id).unwrap().unwrap();
+        assert!(note1_reloaded.is_favorite, "3. favorite must persist across connection reload");
+
+        // 4. Favorite filtering
+        let note2 = NoteRepository::create(
+            &conn2,
+            CreateNoteDto {
+                title: Some("Standard Note 2".to_string()),
+                content: Some("Second note content (not favorite)".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 2");
+        assert!(!note2.is_favorite);
+
+        let note3 = NoteRepository::create(
+            &conn2,
+            CreateNoteDto {
+                title: Some("Favorite Note 3".to_string()),
+                content: Some("Third note content (favorite)".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 3");
+        NoteRepository::toggle_favorite(&conn2, &note3.id).expect("favorite note 3");
+
+        let favorites = NoteRepository::list_favorites(&conn2).expect("4. list favorites");
+        assert_eq!(favorites.len(), 2);
+        assert!(favorites.iter().any(|n| n.id == note1.id));
+        assert!(favorites.iter().any(|n| n.id == note3.id));
+        assert!(!favorites.iter().any(|n| n.id == note2.id));
+
+        // 5. Deleted note does not appear in Favorites
+        NoteRepository::delete(&conn2, &note1.id, true).expect("soft delete note 1");
+        let favorites_after_delete = NoteRepository::list_favorites(&conn2).expect("5. list favorites after delete");
+        assert_eq!(favorites_after_delete.len(), 1);
+        assert_eq!(favorites_after_delete[0].id, note3.id);
+
+        drop(conn2);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_62_tag_filter_tests() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_t62_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        // 1. Tag with no notes
+        let empty_tag = TagRepository::create(&conn, "empty-tag").expect("create empty tag");
+        let empty_notes = NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("1. list empty tag notes");
+        assert_eq!(empty_notes.len(), 0, "Tag with no notes must return empty vector");
+
+        // 2. Tag with one note
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 1".to_string()),
+                content: Some("Content 1".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 1");
+
+        let solo_tag = TagRepository::create(&conn, "solo-tag").expect("create solo tag");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &solo_tag.id).expect("assign solo tag");
+
+        let solo_notes = NoteRepository::list_by_tag(&conn, &solo_tag.id).expect("2. list solo tag notes");
+        assert_eq!(solo_notes.len(), 1);
+        assert_eq!(solo_notes[0].id, note1.id);
+
+        // 3. Tag with multiple notes
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 2".to_string()),
+                content: Some("Content 2".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 2");
+
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note 3".to_string()),
+                content: Some("Content 3".to_string()),
+                ..Default::default()
+            },
+        ).expect("create note 3");
+
+        let shared_tag = TagRepository::create(&conn, "shared-tag").expect("create shared tag");
+        TagRepository::add_tag_to_note(&conn, &note1.id, &shared_tag.id).expect("assign note 1");
+        TagRepository::add_tag_to_note(&conn, &note2.id, &shared_tag.id).expect("assign note 2");
+        TagRepository::add_tag_to_note(&conn, &note3.id, &shared_tag.id).expect("assign note 3");
+
+        let shared_notes = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("3. list shared tag notes");
+        assert_eq!(shared_notes.len(), 3);
+
+        // 4. Deleted note excluded
+        NoteRepository::delete(&conn, &note2.id, true).expect("soft delete note 2");
+        let notes_after_soft_delete = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("4. list after soft delete");
+        assert_eq!(notes_after_soft_delete.len(), 2, "Deleted note must be excluded from tag filter");
+        assert!(notes_after_soft_delete.iter().any(|n| n.id == note1.id));
+        assert!(notes_after_soft_delete.iter().any(|n| n.id == note3.id));
+        assert!(!notes_after_soft_delete.iter().any(|n| n.id == note2.id));
+
+        // 5. Multiple notes ordered correctly (is_pinned DESC, modified_at DESC)
+        NoteRepository::update(
+            &conn,
+            &note3.id,
+            UpdateNoteDto {
+                is_pinned: Some(true),
+                ..Default::default()
+            },
+        ).expect("pin note 3");
+        let ordered_notes = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("5. list ordered notes");
+        assert_eq!(ordered_notes.len(), 2);
+        assert_eq!(ordered_notes[0].id, note3.id, "Pinned note must be ordered first");
+        assert_eq!(ordered_notes[1].id, note1.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+
+
