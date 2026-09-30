@@ -1,0 +1,308 @@
+/* TagPicker and Note Tags Strip Styles */
+
+.note-tags-container {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs, 6px);
+  margin-bottom: var(--spacing-base, 16px);
+  min-height: 28px;
+}
+
+.note-tags-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-medium, 500);
+  color: var(--color-text-muted, #888888);
+  margin-right: 2px;
+  user-select: none;
+}
+
+.note-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-xs, 3px);
+  background-color: var(--color-surface-hover);
+  border: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  transition: background-color var(--transition-fast, 0.15s ease),
+              border-color var(--transition-fast, 0.15s ease);
+}
+
+.note-tag-chip:hover {
+  background-color: var(--color-surface-selected);
+  border-color: var(--color-border-default);
+}
+
+.note-tag-chip-hash {
+  color: var(--color-accent-default, #3b82f6);
+  font-weight: var(--font-weight-semibold, 600);
+  opacity: 0.85;
+}
+
+.note-tag-chip-name {
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.note-tag-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted, #888888);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 2px;
+  transition: color var(--transition-fast, 0.15s ease),
+              background-color var(--transition-fast, 0.15s ease);
+}
+
+.note-tag-chip-remove:hover {
+  color: var(--color-error-default, #ef4444);
+  background-color: rgba(239, 68, 68, 0.15);
+}
+
+.note-tag-chip-remove:focus-visible {
+  outline: 2px solid var(--color-accent-default, #3b82f6);
+  outline-offset: 1px;
+  color: var(--color-error-default, #ef4444);
+}
+
+/* Tag Picker Trigger & Popover */
+.tag-picker-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.tag-picker-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: var(--radius-xs, 3px);
+  background: transparent;
+  border: 1px dashed var(--color-border-default, rgba(255, 255, 255, 0.2));
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary, #cccccc);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.tag-picker-add-btn:hover {
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08));
+  border-color: var(--color-accent-default, #3b82f6);
+  color: var(--color-text-primary, #ffffff);
+}
+
+.tag-picker-add-btn:focus-visible {
+  outline: 2px solid var(--color-accent-default, #3b82f6);
+  outline-offset: 1px;
+}
+
+.tag-picker-add-btn.is-active {
+  background-color: var(--color-surface-selected, rgba(255, 255, 255, 0.12));
+  border-color: var(--color-accent-default, #3b82f6);
+  color: var(--color-accent-default, #3b82f6);
+}
+
+.tag-picker-section-label {
+  font-size: var(--font-size-2xs, 11px);
+  color: var(--color-text-muted, #888888);
+  font-weight: 500;
+  padding: 4px 6px 2px 6px;
+  user-select: none;
+}
+
+/* Popover Dropdown */
+.tag-picker-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 240px;
+  max-width: 90vw;
+  background-color: var(--color-surface-elevated, #242424);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-md, 8px);
+  box-shadow: var(--shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.4));
+  padding: var(--spacing-xs, 8px);
+  z-index: 1000;
+  animation: tagPickerFadeIn 0.12s ease-out;
+}
+
+@keyframes tagPickerFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tag-picker-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-xs, 6px);
+  padding: 2px 4px;
+}
+
+.tag-picker-popover-title {
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--color-text-primary, #ffffff);
+  user-select: none;
+}
+
+.tag-picker-popover-close {
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted, #888888);
+  cursor: pointer;
+  padding: 2px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: var(--radius-sm, 4px);
+}
+
+.tag-picker-popover-close:hover {
+  color: var(--color-text-primary, #ffffff);
+}
+
+.tag-picker-search-input {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background-color: var(--color-bg-base, #181818);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.1));
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-primary, #ffffff);
+  outline: none;
+  box-sizing: border-box;
+  margin-bottom: var(--spacing-xs, 6px);
+  transition: border-color var(--transition-fast, 0.15s ease);
+}
+
+.tag-picker-search-input:focus {
+  border-color: var(--color-accent-default, #3b82f6);
+}
+
+.tag-picker-search-input::placeholder {
+  color: var(--color-text-muted, #888888);
+}
+
+.tag-picker-list {
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tag-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-primary, #ffffff);
+  transition: background-color var(--transition-fast, 0.15s ease);
+}
+
+.tag-picker-item:hover {
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08));
+}
+
+.tag-picker-item:focus-visible {
+  outline: 2px solid var(--color-accent-default, #3b82f6);
+  outline-offset: -1px;
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08));
+}
+
+.tag-picker-item.is-selected {
+  background-color: var(--color-surface-selected, rgba(255, 255, 255, 0.1));
+}
+
+.tag-picker-checkbox {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1.5px solid var(--color-text-muted, #888888);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.tag-picker-checkbox.is-checked {
+  background-color: var(--color-accent-default, #3b82f6);
+  border-color: var(--color-accent-default, #3b82f6);
+}
+
+.tag-picker-check-icon {
+  color: #ffffff;
+  width: 10px;
+  height: 10px;
+}
+
+.tag-picker-item-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tag-picker-empty {
+  padding: 12px 8px;
+  text-align: center;
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-muted, #888888);
+}
+
+.tag-picker-create-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  margin-top: 4px;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  border: 1px dashed var(--color-border-default, rgba(255, 255, 255, 0.2));
+  color: var(--color-accent-default, #3b82f6);
+  font-size: var(--font-size-xs, 12px);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--transition-fast, 0.15s ease);
+}
+
+.tag-picker-create-btn:hover {
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.08));
+}

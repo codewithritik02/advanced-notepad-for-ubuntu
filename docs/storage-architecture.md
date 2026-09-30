@@ -206,3 +206,11 @@ erDiagram
 3. **Foreign Key Enforcement**: `PRAGMA foreign_keys = ON;` is enabled on every SQLite connection.
 4. **Idempotent Migrations**: Database versioning table (`_migrations`) tracks executed migrations so schema updates run once and preserve all existing data.
 5. **Zero Cloud / Local-First**: No remote database connections, cloud synchronization, telemetry, or third-party AI APIs exist in the application.
+
+---
+
+## 6. Related Architecture Documents
+- [Notebook Architecture](notebook-architecture.md): Hierarchical tree models, cycle prevention, and breadcrumb path computation.
+- [Tags & Metadata Architecture](tags-and-metadata-architecture.md): Many-to-many tag relations, favorites filtering, and canonical note metadata.
+- [Note Editor Architecture](note-editor.md): Autosave, dirty state tracking, and keyboard shortcuts.
+

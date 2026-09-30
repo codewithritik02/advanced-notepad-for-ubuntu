@@ -1,0 +1,97 @@
+.sidebar-tags-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-tags-filter-wrap {
+  position: relative;
+  margin-bottom: var(--spacing-xs, 4px);
+  padding: 0 var(--spacing-2xs, 2px);
+}
+
+.sidebar-tags-filter-input {
+  width: 100%;
+  height: 24px;
+  padding: 0 20px 0 6px;
+  font-size: var(--font-size-2xs, 11px);
+  color: var(--color-text-primary, #e5e5e5);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--color-border-subtle, #333333);
+  border-radius: var(--radius-sm, 4px);
+  outline: none;
+  transition: border-color var(--transition-fast, 0.15s ease);
+}
+
+.sidebar-tags-filter-input:focus {
+  border-color: var(--color-accent-default, #3b82f6);
+}
+
+.sidebar-tags-filter-input::placeholder {
+  color: var(--color-text-muted, #888888);
+}
+
+.sidebar-tags-filter-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted, #888888);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+.sidebar-tags-filter-clear:hover {
+  color: var(--color-text-primary, #ffffff);
+}
+
+.sidebar-tags-scroll {
+  max-height: 240px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+.sidebar-tags-empty {
+  padding: var(--spacing-sm, 8px) var(--spacing-sm, 8px);
+  font-size: var(--font-size-xs, 12px);
+  color: var(--color-text-muted, #888888);
+  font-style: italic;
+}
+
+.sidebar-tags-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-new-tag-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  width: 100%;
+  height: 28px;
+  padding: 0 var(--spacing-sm, 8px);
+  margin-top: 4px;
+  background: transparent;
+  border: 1px dashed var(--color-border-subtle, #333333);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--color-text-muted, #888888);
+  font-size: var(--font-size-xs, 12px);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.sidebar-new-tag-btn:hover {
+  border-color: var(--color-accent-default, #3b82f6);
+  color: var(--color-accent-default, #3b82f6);
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.05));
+}

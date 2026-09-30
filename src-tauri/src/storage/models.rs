@@ -70,6 +70,18 @@ pub struct Tag {
     pub created_at: String,
 }
 
+/// DTO for creating a tag
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTagDto {
+    pub name: String,
+}
+
+/// DTO for updating a tag (rename)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTagDto {
+    pub name: String,
+}
+
 /// Many-to-many link between Note and Tag
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteTag {
@@ -96,3 +108,58 @@ pub struct Setting {
     pub key: String,
     pub value: String,
 }
+
+/// Canonical note metadata representation (Task 29)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteMetadata {
+    pub note_id: String,
+    pub created_at: String,
+    pub modified_at: String,
+    pub format: String,
+    pub notebook_id: Option<String>,
+    pub notebook_path: Option<String>,
+    pub is_favorite: bool,
+    pub is_pinned: bool,
+    pub tags: Vec<Tag>,
+    pub word_count: usize,
+    pub character_count: usize,
+    pub byte_size: usize,
+}
+
+impl NoteMetadata {
+    pub fn from_note_and_tags(note: &Note, tags: Vec<Tag>) -> Self {
+        let content = &note.content;
+        let word_count = content.split_whitespace().count();
+        let character_count = content.chars().count();
+        let byte_size = content.len();
+
+        Self {
+            note_id: note.id.clone(),
+            created_at: note.created_at.clone(),
+            modified_at: note.modified_at.clone(),
+            format: note.format.clone(),
+            notebook_id: note.notebook_id.clone(),
+            notebook_path: None,
+            is_favorite: note.is_favorite,
+            is_pinned: note.is_pinned,
+            tags,
+            word_count,
+            character_count,
+            byte_size,
+        }
+    }
+
+    /// Returns the user-facing format display name (Task 32: "Plain Text" vs "Markdown").
+    pub fn format_display(&self) -> &'static str {
+        format_display_name(&self.format)
+    }
+}
+
+/// Helper returning user-facing display name for note format code (Task 32).
+pub fn format_display_name(format: &str) -> &'static str {
+    match format.to_ascii_lowercase().as_str() {
+        "md" => "Markdown",
+        _ => "Plain Text",
+    }
+}
+

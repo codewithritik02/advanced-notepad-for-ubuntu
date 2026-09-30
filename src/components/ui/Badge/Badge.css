@@ -60,10 +60,12 @@
   padding: 1px 6px;
   border-radius: var(--radius-xs);
   background-color: var(--color-surface-hover);
+  border: 1px solid var(--color-border-subtle);
   color: var(--color-text-secondary);
   font-size: var(--font-size-2xs);
-  font-weight: var(--font-weight-regular);
+  font-weight: var(--font-weight-medium);
   line-height: normal;
+  white-space: nowrap;
 }
 
 .app-tag-remove {
@@ -79,3 +81,10 @@
 .app-tag-remove:hover {
   color: var(--color-danger-default);
 }
+
+.app-tag-remove:focus-visible {
+  outline: 2px solid var(--color-accent-default, #3b82f6);
+  outline-offset: 1px;
+  color: var(--color-danger-default);
+}
+

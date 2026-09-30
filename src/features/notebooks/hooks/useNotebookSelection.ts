@@ -4,10 +4,13 @@ import type { NoteLocation } from "../types";
 export interface UseNotebookSelectionReturn {
   location: NoteLocation;
   selectedNotebookId: string | null;
+  selectedTagId: string | null;
   selectLocation: (loc: NoteLocation) => void;
   selectNotebook: (notebookId: string, allNotebooks?: Array<{ id: string; parent_id: string | null }>) => void;
   selectAllNotes: () => void;
   selectUnfiled: () => void;
+  selectFavorites: () => void;
+  selectTag: (tagId: string) => void;
   // Expand / collapse UI state (Task 9)
   expandedNotebookIds: Set<string>;
   toggleExpand: (notebookId: string) => void;
@@ -32,6 +35,9 @@ export function useNotebookSelection(
 
   const selectedNotebookId =
     location.type === "notebook" ? location.notebookId : null;
+
+  const selectedTagId =
+    location.type === "tag" ? location.tagId : null;
 
   const selectLocation = useCallback((loc: NoteLocation) => {
     setLocation(loc);
@@ -64,6 +70,14 @@ export function useNotebookSelection(
 
   const selectUnfiled = useCallback(() => {
     setLocation({ type: "unfiled" });
+  }, []);
+
+  const selectFavorites = useCallback(() => {
+    setLocation({ type: "favorites" });
+  }, []);
+
+  const selectTag = useCallback((tagId: string) => {
+    setLocation({ type: "tag", tagId });
   }, []);
 
   // Expand / Collapse toggling (Task 9)
@@ -107,10 +121,13 @@ export function useNotebookSelection(
   return {
     location,
     selectedNotebookId,
+    selectedTagId,
     selectLocation,
     selectNotebook,
     selectAllNotes,
     selectUnfiled,
+    selectFavorites,
+    selectTag,
     expandedNotebookIds,
     toggleExpand,
     expandNotebook,

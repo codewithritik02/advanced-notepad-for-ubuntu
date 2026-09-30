@@ -119,6 +119,34 @@
   border-color: var(--color-accent-default);
 }
 
+.toolbar-btn-favorite {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 var(--spacing-sm);
+  background-color: var(--color-surface-hover);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.toolbar-btn-favorite:hover {
+  background-color: var(--color-surface-selected);
+  color: var(--color-warning-default, #eab308);
+  border-color: var(--color-warning-default, #eab308);
+}
+
+.toolbar-btn-favorite.is-favorite {
+  background-color: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.4);
+  color: var(--color-warning-default, #eab308);
+  font-weight: var(--font-weight-medium);
+}
+
 
 .toolbar-info-badge {
   font-size: var(--font-size-2xs);

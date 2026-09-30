@@ -156,3 +156,32 @@ export function flattenNotebookTree(
   traverse(tree);
   return flat;
 }
+
+/**
+ * Computes a human-readable hierarchical path for a notebook (e.g. "Work / Projects").
+ * Returns "Unfiled" if notebookId is null, undefined, or empty.
+ * Task 33: Notebook Metadata Integration
+ */
+export function computeNotebookPath(
+  notebookId: string | null | undefined,
+  notebooks: Notebook[]
+): string {
+  if (!notebookId) return "Unfiled";
+  const path: string[] = [];
+  let currentId: string | null = notebookId;
+  const visited = new Set<string>();
+
+  while (currentId && !visited.has(currentId)) {
+    visited.add(currentId);
+    const nb = notebooks.find((n) => n.id === currentId);
+    if (nb) {
+      path.unshift(nb.name);
+      currentId = nb.parent_id;
+    } else {
+      break;
+    }
+  }
+
+  return path.length > 0 ? path.join(" / ") : "Unfiled";
+}
+

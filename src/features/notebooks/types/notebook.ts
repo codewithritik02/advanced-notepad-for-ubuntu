@@ -24,7 +24,9 @@ export interface NotebookTreeNode extends Notebook {
 export type NoteLocation =
   | { type: "all" }
   | { type: "unfiled" }
-  | { type: "notebook"; notebookId: string };
+  | { type: "favorites" }
+  | { type: "notebook"; notebookId: string }
+  | { type: "tag"; tagId: string };
 
 /**
  * Loading and error lifecycle status for notebooks.
