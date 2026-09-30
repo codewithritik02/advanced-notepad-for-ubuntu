@@ -42,6 +42,14 @@ import {
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
+  const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  const handleFlushPendingSave = useCallback(async () => {
+    if (editorSaveRef.current) {
+      await editorSaveRef.current();
+    }
+  }, []);
+
   const {
     query: searchQuery,
     setQuery: setSearchQuery,
@@ -51,7 +59,11 @@ export function App() {
     clearSearch,
     searchNow,
     cancelPendingDebounce,
-  } = useSearch({ debounceMs: 200, limit: 50 });
+  } = useSearch({
+    debounceMs: 200,
+    limit: 50,
+    onBeforeSearch: handleFlushPendingSave,
+  });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
@@ -388,7 +400,10 @@ export function App() {
     []
   );
 
-  const handleFocusSearch = useCallback(() => {
+  const handleFocusSearch = useCallback(async () => {
+    if (editorSaveRef.current) {
+      await editorSaveRef.current();
+    }
     searchInputRef.current?.focus();
     searchInputRef.current?.select();
   }, []);
@@ -407,8 +422,6 @@ export function App() {
       searchInputRef.current?.blur();
     }
   }, [isSettingsOpen, searchQuery, isSearchActive, clearSearch]);
-
-  const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
   const handleRegisterSave = useCallback(
     (saveFn: (() => Promise<void> | void) | null) => {
@@ -851,6 +864,7 @@ export function App() {
             onSearchChange={setSearchQuery}
             onSearchSubmit={() => searchNow()}
             onSearchClear={clearSearch}
+            onSearchFocus={handleFlushPendingSave}
             theme={theme}
             onThemeToggle={toggleTheme}
             onNewNoteClick={handleNewNoteAction}

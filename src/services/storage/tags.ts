@@ -92,5 +92,15 @@ export const tagsStorage = {
   async getAllNotesTags(): Promise<Record<string, string[]>> {
     return await invoke<Record<string, string[]>>("get_all_notes_tags");
   },
+
+  /**
+   * Retrieves tag names for a specific batch of note IDs (Task 60, Task 61).
+   * Avoids N+1 queries by issuing a single batch query.
+   */
+  async getTagsForNotes(noteIds: string[]): Promise<Record<string, string[]>> {
+    if (!noteIds || noteIds.length === 0) return {};
+    return await invoke<Record<string, string[]>>("get_tags_for_notes", { noteIds });
+  },
 };
+
 

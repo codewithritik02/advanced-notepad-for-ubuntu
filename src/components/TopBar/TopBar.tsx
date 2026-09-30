@@ -8,6 +8,7 @@ export interface TopBarProps {
   onSearchChange?: (query: string) => void;
   onSearchSubmit?: () => void;
   onSearchClear?: () => void;
+  onSearchFocus?: () => void;
   onNewNoteClick?: () => void;
   onThemeToggle?: () => void;
   onSettingsClick?: () => void;
@@ -85,6 +86,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSearchChange,
   onSearchSubmit,
   onSearchClear,
+  onSearchFocus,
   onNewNoteClick,
   onThemeToggle,
   onSettingsClick,
@@ -139,6 +141,7 @@ export const TopBar: React.FC<TopBarProps> = ({
             placeholder="Search notes..."
             value={searchQuery}
             onChange={(e) => onSearchChange?.(e.target.value)}
+            onFocus={onSearchFocus}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();

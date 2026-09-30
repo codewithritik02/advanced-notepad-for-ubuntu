@@ -251,6 +251,15 @@ pub fn get_all_notes_tags(
 }
 
 #[tauri::command]
+pub fn get_tags_for_notes(
+    db: State<'_, Database>,
+    note_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    TagRepository::get_tags_for_notes(&conn, &note_ids).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn get_note_metadata(
     db: State<'_, Database>,
     note_id: String,

@@ -215,6 +215,42 @@ impl TagRepository {
 
         Ok(map)
     }
+
+    /// Retrieves tag names for a specific batch of note IDs in a single query (Task 60, Task 61).
+    /// Strictly avoids N+1 queries by leveraging a single SQL statement with parameterized IN clause.
+    pub fn get_tags_for_notes(
+        conn: &Connection,
+        note_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, StorageError> {
+        if note_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let placeholders: Vec<String> = (1..=note_ids.len()).map(|i| format!("?{}", i)).collect();
+        let query = format!(
+            "SELECT nt.note_id, t.name
+             FROM note_tags nt
+             JOIN tags t ON t.id = nt.tag_id
+             JOIN notes n ON n.id = nt.note_id
+             WHERE n.is_deleted = 0 AND nt.note_id IN ({})
+             ORDER BY t.name ASC",
+            placeholders.join(", ")
+        );
+
+        let mut stmt = conn.prepare(&query)?;
+        let params: Vec<&dyn rusqlite::ToSql> = note_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+
+        for r in rows {
+            let (note_id, tag_name) = r?;
+            map.entry(note_id).or_default().push(tag_name);
+        }
+
+        Ok(map)
+    }
 }
 
 #[cfg(test)]
