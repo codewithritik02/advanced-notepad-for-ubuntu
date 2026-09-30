@@ -90,6 +90,19 @@
   color: var(--color-text-muted);
 }
 
+.search-shortcut-hint {
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--color-text-muted);
+  background-color: var(--color-surface-hover);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xs, 3px);
+  padding: 1px 5px;
+  line-height: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
 .search-clear-btn {
   color: var(--color-text-muted);
   display: flex;

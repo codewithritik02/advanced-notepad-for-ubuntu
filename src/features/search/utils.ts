@@ -22,6 +22,7 @@ export function isValidSearchQuery(query: string): boolean {
 import React from "react";
 import type { SearchResult, SearchState } from "./types";
 import type { NoteListItem } from "../notes/types";
+import type { NoteLocation } from "../notebooks/types";
 
 /**
  * Transforms a SearchResult domain object into a NoteListItem for unified display in NotesList (Task 14).
@@ -57,6 +58,78 @@ export function searchResultToNoteListItem(
     tags,
   };
 }
+
+/**
+ * Filters search results when Favorites navigation is active (Task 39).
+ * Preserves deterministic result ordering while scoping to favorited notes.
+ */
+export function filterSearchResultsByFavorite(
+  results: SearchResult[],
+  isFavoritesActive: boolean,
+  notesLookup?: Map<string, { is_favorite: boolean }>
+): SearchResult[] {
+  if (!isFavoritesActive) return results;
+  return results.filter((result) => {
+    if (notesLookup && notesLookup.has(result.noteId)) {
+      return notesLookup.get(result.noteId)!.is_favorite;
+    }
+    return result.favorite;
+  });
+}
+
+export interface SearchScopeOptions {
+  /**
+   * The current navigation location (Task 42).
+   * Carries the full discriminated navigation context so scoping
+   * does not require separate activeNavId + selectedTagId + selectedNotebookId
+   * properties that can fall out of sync.
+   */
+  location: NoteLocation;
+  tags?: Array<{ id: string; name: string }>;
+  noteTagsMap?: Record<string, string[]>;
+  notesLookup?: Map<string, { is_favorite: boolean }>;
+}
+
+/**
+ * Scopes search results based on the active NoteLocation (Task 42).
+ *
+ * - { type: "favorites" }  → Task 39: filter to favorited notes only.
+ * - { type: "tag" }        → Task 40: filter to notes that carry the selected tag.
+ * - { type: "notebook" }   → Task 41: filter to notes that belong to the selected notebook.
+ * - { type: "all" | "unfiled" | "trash" } → no post-filter (SQL handles these).
+ *
+ * Search state (searchQuery) is intentionally kept separate from NoteLocation.
+ * Do NOT merge them into a combined location variant. Use this composition layer instead.
+ */
+export function scopeSearchResults(
+  results: SearchResult[],
+  options: SearchScopeOptions
+): SearchResult[] {
+  const { location, tags, noteTagsMap, notesLookup } = options;
+
+  if (location.type === "favorites") {
+    return filterSearchResultsByFavorite(results, true, notesLookup);
+  }
+
+  if (location.type === "tag" && tags && noteTagsMap) {
+    const selectedTag = tags.find((t) => t.id === location.tagId);
+    if (!selectedTag) return results;
+    const targetTagName = selectedTag.name.toLowerCase();
+    return results.filter((result) => {
+      const noteTags = noteTagsMap[result.noteId];
+      if (!noteTags || noteTags.length === 0) return false;
+      return noteTags.some((t) => t.toLowerCase() === targetTagName);
+    });
+  }
+
+  // Task 41: Notebook — scope results to the currently selected notebook.
+  if (location.type === "notebook") {
+    return results.filter((result) => result.notebookId === location.notebookId);
+  }
+
+  return results;
+}
+
 
 /**
  * Generates user-facing result count text with proper singular/plural grammar (Task 30).

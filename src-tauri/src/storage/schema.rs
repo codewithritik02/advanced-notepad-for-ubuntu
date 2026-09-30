@@ -76,6 +76,34 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
+/// SQL DDL for FTS5 full-text search index (Migration 002, Task 33)
+pub const MIGRATION_002_FTS5_SQL: &str = r#"
+-- 1. Create FTS5 virtual table referencing notes external content
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+    title,
+    content,
+    content='notes',
+    content_rowid='rowid'
+);
+
+-- 2. Populate FTS5 index from all existing notes (Task 34)
+INSERT INTO notes_fts(notes_fts) VALUES('rebuild');
+
+-- 3. Automatic synchronization triggers (Task 35, 36, 37)
+CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes BEGIN
+  INSERT INTO notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
+  INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES('delete', old.rowid, old.title, old.content);
+END;
+
+CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE ON notes BEGIN
+  INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES('delete', old.rowid, old.title, old.content);
+  INSERT INTO notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+END;
+"#;
+
 /// Applies the initial schema to the provided database connection.
 pub fn apply_initial_schema(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(INITIAL_SCHEMA_SQL)?;
