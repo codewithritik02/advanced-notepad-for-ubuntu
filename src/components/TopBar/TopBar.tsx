@@ -7,6 +7,7 @@ export interface TopBarProps {
   isSearching?: boolean;
   onSearchChange?: (query: string) => void;
   onSearchSubmit?: () => void;
+  onSearchClear?: () => void;
   onNewNoteClick?: () => void;
   onThemeToggle?: () => void;
   onSettingsClick?: () => void;
@@ -83,6 +84,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   isSearching = false,
   onSearchChange,
   onSearchSubmit,
+  onSearchClear,
   onNewNoteClick,
   onThemeToggle,
   onSettingsClick,
@@ -93,7 +95,11 @@ export const TopBar: React.FC<TopBarProps> = ({
   const searchInputRef = externalSearchRef ?? internalSearchRef;
 
   const handleClearSearch = () => {
-    onSearchChange?.("");
+    if (onSearchClear) {
+      onSearchClear();
+    } else {
+      onSearchChange?.("");
+    }
     searchInputRef.current?.focus();
   };
 
@@ -118,7 +124,10 @@ export const TopBar: React.FC<TopBarProps> = ({
 
       {/* Middle: Visual Search Placeholder Input */}
       <div className="topbar-search-container">
-        <div className="topbar-search-bar">
+        <div
+          className="topbar-search-bar"
+          onClick={() => searchInputRef.current?.focus()}
+        >
           <span className="search-icon" title={isSearching ? "Searching..." : "Search"}>
             {isSearching ? <SearchSpinnerIcon /> : <SearchIcon />}
           </span>
@@ -133,6 +142,15 @@ export const TopBar: React.FC<TopBarProps> = ({
               if (e.key === "Enter") {
                 e.preventDefault();
                 onSearchSubmit?.();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                if (onSearchClear) {
+                  onSearchClear();
+                } else {
+                  onSearchChange?.("");
+                }
+                searchInputRef.current?.blur();
               }
             }}
             aria-label="Search notes"

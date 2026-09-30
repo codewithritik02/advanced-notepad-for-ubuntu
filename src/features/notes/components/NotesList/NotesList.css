@@ -376,3 +376,13 @@
     background-position: -200% 0;
   }
 }
+
+/* Search match highlight (Phase 6, Task 26) */
+.search-highlight {
+  background-color: var(--color-accent-subtle, rgba(59, 130, 246, 0.25));
+  color: inherit;
+  font-weight: var(--font-weight-medium, 500);
+  border-radius: var(--radius-xs, 2px);
+  padding: 0 1px;
+}
+

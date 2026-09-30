@@ -46,8 +46,8 @@ export function useKeyboardShortcuts({
         return;
       }
 
-      // Ctrl/Cmd + F — Focus Search
-      if (isModifier && key === "f") {
+      // Ctrl/Cmd + K or Ctrl/Cmd + F — Focus Search (Phase 6, Task 22)
+      if (isModifier && (key === "k" || key === "f")) {
         event.preventDefault();
         onFocusSearch?.();
         return;

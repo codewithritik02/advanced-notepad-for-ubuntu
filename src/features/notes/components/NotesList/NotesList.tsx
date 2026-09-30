@@ -130,6 +130,7 @@ export const NotesList: React.FC<NotesListProps> = ({
                 isSelected={note.id === selectedNoteId}
                 onSelect={onSelectNote}
                 onToggleFavorite={onToggleFavorite}
+                searchQuery={isSearchMode ? searchQuery : undefined}
               />
             ))}
           </div>

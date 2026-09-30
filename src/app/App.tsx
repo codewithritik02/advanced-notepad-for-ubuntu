@@ -397,13 +397,13 @@ export function App() {
   const handleEscape = useCallback(() => {
     if (isSettingsOpen) {
       setIsSettingsOpen(false);
-    } else if (searchQuery) {
+    } else if (searchQuery || isSearchActive) {
       clearSearch();
       searchInputRef.current?.blur();
     } else {
       searchInputRef.current?.blur();
     }
-  }, [isSettingsOpen, searchQuery, clearSearch]);
+  }, [isSettingsOpen, searchQuery, isSearchActive, clearSearch]);
 
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -737,6 +737,7 @@ export function App() {
             isSearching={searchState.status === "searching"}
             onSearchChange={setSearchQuery}
             onSearchSubmit={() => searchNow()}
+            onSearchClear={clearSearch}
             theme={theme}
             onThemeToggle={toggleTheme}
             onNewNoteClick={handleNewNoteAction}

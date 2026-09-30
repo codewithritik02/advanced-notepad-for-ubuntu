@@ -1,12 +1,14 @@
 import React from "react";
 import { NoteListItem } from "../../types";
 import { Tag } from "../../../../components/ui";
+import { highlightText } from "../../../search/utils";
 
 export interface NoteCardProps {
   note: NoteListItem;
   isSelected: boolean;
   onSelect: (noteId: string) => void;
   onToggleFavorite?: (noteId: string) => void;
+  searchQuery?: string;
 }
 
 export const NoteCard: React.FC<NoteCardProps> = ({
@@ -14,6 +16,7 @@ export const NoteCard: React.FC<NoteCardProps> = ({
   isSelected,
   onSelect,
   onToggleFavorite,
+  searchQuery,
 }) => {
   return (
     <article
@@ -36,7 +39,9 @@ export const NoteCard: React.FC<NoteCardProps> = ({
       aria-selected={isSelected}
     >
       <div className="note-card-header">
-        <h3 className="note-card-title">{note.title || "Untitled Note"}</h3>
+        <h3 className="note-card-title">
+          {highlightText(note.title || "Untitled Note", searchQuery)}
+        </h3>
         <button
           type="button"
           className={`note-card-favorite-btn ${note.isFavorite ? "is-favorite" : ""}`}
@@ -66,7 +71,9 @@ export const NoteCard: React.FC<NoteCardProps> = ({
         </div>
       )}
 
-      <p className="note-card-preview">{note.preview}</p>
+      <p className="note-card-preview">
+        {highlightText(note.preview, searchQuery)}
+      </p>
 
       <div className="note-card-footer">
         <span className="note-card-date">{note.updatedAt}</span>
