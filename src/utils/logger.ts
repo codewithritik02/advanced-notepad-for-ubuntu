@@ -72,6 +72,22 @@ export const logger = {
       logger.error(`Database operation failed: ${operation}`, error);
     },
   },
+
+  search: {
+    executed: (query: string, count: number, durationMs: number): void => {
+      if (!isDev) return;
+      console.info(
+        `[Search] query executed: count=${count} duration=${Math.round(durationMs)}ms query="${query}"`
+      );
+    },
+    failed: (query: string, durationMs: number, error: unknown): void => {
+      if (!isDev) return;
+      console.warn(
+        `[Search] query failed: duration=${Math.round(durationMs)}ms query="${query}"`,
+        error
+      );
+    },
+  },
 };
 
 export default logger;

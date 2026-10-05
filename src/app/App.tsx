@@ -37,6 +37,7 @@ import {
   searchResultToNoteListItem,
   formatResultCount,
   scopeSearchResults,
+  SearchErrorBoundary,
 } from "../features/search";
 
 export function App() {
@@ -733,12 +734,26 @@ export function App() {
 
   const selectedNote = useMemo(() => {
     if (!selectedNoteId) return null;
-    return (
-      filteredNotes.find((n) => n.id === selectedNoteId) ??
-      notes.find((n) => n.id === selectedNoteId) ??
-      null
-    );
-  }, [filteredNotes, notes, selectedNoteId]);
+    const foundInFiltered = filteredNotes.find((n) => n.id === selectedNoteId);
+    if (foundInFiltered) return foundInFiltered;
+    const foundInNotes = notes.find((n) => n.id === selectedNoteId);
+    if (foundInNotes) return foundInNotes;
+    const foundInSearch = scopedSearchResults.find((r) => r.noteId === selectedNoteId);
+    if (foundInSearch) {
+      return {
+        id: foundInSearch.noteId,
+        title: foundInSearch.title,
+        content: foundInSearch.snippet,
+        notebook_id: foundInSearch.notebookId ?? null,
+        format: "txt" as const,
+        is_favorite: foundInSearch.favorite ? 1 : 0,
+        is_deleted: 0,
+        created_at: "",
+        modified_at: foundInSearch.modifiedAt || "",
+      };
+    }
+    return null;
+  }, [filteredNotes, notes, selectedNoteId, scopedSearchResults]);
 
   const selectedNotebook = useMemo(() => {
     if (!selectedNotebookId) return null;
@@ -939,54 +954,60 @@ export function App() {
           />
         }
         notesList={
-          <NotesList
-            title={getSectionTitle()}
-            notes={displayedNoteListItems}
-            selectedNoteId={selectedNote?.id ?? null}
-            onSelectNote={handleKeyboardSelectNote}
+          <SearchErrorBoundary
+            onReset={() => {
+              clearSearch();
+            }}
+          >
+            <NotesList
+              title={getSectionTitle()}
+              notes={displayedNoteListItems}
+              selectedNoteId={selectedNoteId}
+              onSelectNote={handleKeyboardSelectNote}
 
-            status={displayedStatus}
-            errorTitle={isSearchActive ? "Search failed" : undefined}
-            errorMessage={
-              isSearchActive && searchState.status === "error"
-                ? searchState.message
-                : errorMessage
-            }
-            emptyTitle={
-              isSearchActive
-                ? (activeNavId === "favorites"
-                    ? "No favorite notes found"
-                    : activeNavId === "tags"
-                    ? "No tagged notes found"
-                    : activeNavId === "notebook"
-                    ? "No notes found in this notebook"
-                    : "No notes found")
-                : emptyState.title
-            }
-            emptyDescription={
-              isSearchActive
-                ? (activeNavId === "favorites"
-                    ? `No favorite notes match "${searchQuery}".`
-                    : activeNavId === "tags" && selectedTagId
-                    ? `No notes tagged #${tags.find((t) => t.id === selectedTagId)?.name ?? "selected tag"} match "${searchQuery}".`
-                    : activeNavId === "notebook" && selectedNotebook
-                    ? `No notes in "${selectedNotebook.name}" match "${searchQuery}".`
-                    : `No notes match "${searchQuery}".`)
-                : emptyState.description
-            }
-            mode={isSearchActive ? "search" : "normal"}
-            searchQuery={searchQuery}
-            resultCountLabel={
-              isSearchActive ? formatResultCount(scopedSearchResults.length) : undefined
-            }
-            onRetry={isSearchActive ? () => searchNow() : handleRetry}
-            onNewNote={isSearchActive ? undefined : handleNewNoteAction}
-            onToggleFavorite={handleToggleNoteFavorite}
-          />
+              status={displayedStatus}
+              errorTitle={isSearchActive ? "Search failed" : undefined}
+              errorMessage={
+                isSearchActive && searchState.status === "error"
+                  ? searchState.message
+                  : errorMessage
+              }
+              emptyTitle={
+                isSearchActive
+                  ? (activeNavId === "favorites"
+                      ? "No favorite notes found"
+                      : activeNavId === "tags"
+                      ? "No tagged notes found"
+                      : activeNavId === "notebook"
+                      ? "No notes found in this notebook"
+                      : "No notes found")
+                  : emptyState.title
+              }
+              emptyDescription={
+                isSearchActive
+                  ? (activeNavId === "favorites"
+                      ? `No favorite notes match "${searchQuery}".`
+                      : activeNavId === "tags" && selectedTagId
+                      ? `No notes tagged #${tags.find((t) => t.id === selectedTagId)?.name ?? "selected tag"} match "${searchQuery}".`
+                      : activeNavId === "notebook" && selectedNotebook
+                      ? `No notes in "${selectedNotebook.name}" match "${searchQuery}".`
+                      : `No notes match "${searchQuery}".`)
+                  : emptyState.description
+              }
+              mode={isSearchActive ? "search" : "normal"}
+              searchQuery={searchQuery}
+              resultCountLabel={
+                isSearchActive ? formatResultCount(scopedSearchResults.length) : undefined
+              }
+              onRetry={isSearchActive ? () => searchNow() : handleRetry}
+              onNewNote={isSearchActive ? undefined : handleNewNoteAction}
+              onToggleFavorite={handleToggleNoteFavorite}
+            />
+          </SearchErrorBoundary>
         }
         editor={
           <NoteEditor
-            noteId={selectedNote?.id ?? null}
+            noteId={selectedNoteId}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
             notebookName={selectedNoteNotebookName}
@@ -1007,9 +1028,13 @@ export function App() {
             }}
             onCreateTag={createTag}
             onNoteUpdated={(updated) => {
-              setNotes((prev) =>
-                prev.map((n) => (n.id === updated.id ? updated : n))
-              );
+              setNotes((prev) => {
+                const exists = prev.some((n) => n.id === updated.id);
+                if (exists) {
+                  return prev.map((n) => (n.id === updated.id ? updated : n));
+                }
+                return [updated, ...prev];
+              });
             }}
           />
         }

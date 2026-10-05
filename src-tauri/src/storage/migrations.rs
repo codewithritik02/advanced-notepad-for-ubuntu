@@ -38,9 +38,21 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), StorageError> {
 /// Runs all pending migrations inside atomic transactions in ascending version order.
 /// Idempotent: previously applied migrations are skipped, preserving all existing user data.
 pub fn run_migrations(conn: &mut Connection) -> Result<(), StorageError> {
+    run_migrations_custom(conn, MIGRATIONS)
+}
+
+/// Runs a custom or registered list of migrations using atomic per-migration transactions.
+///
+/// Task 67 — Search Migration Failure Safety:
+/// If a search migration fails (e.g. FTS5 syntax, extension missing, or corrupted index):
+/// - Follows existing migration transaction architecture: rolls back the failed transaction cleanly.
+/// - Does NOT corrupt the notes database or delete any notes data.
+/// - Database remains completely usable for reading, editing, and creating notes.
+/// - Search gracefully falls back to LIKE search.
+pub fn run_migrations_custom(conn: &mut Connection, migrations: &[Migration]) -> Result<(), StorageError> {
     ensure_migrations_table(conn)?;
 
-    for migration in MIGRATIONS {
+    for migration in migrations {
         let is_applied: bool = conn.query_row(
             "SELECT COUNT(1) FROM _migrations WHERE version = ?1",
             [migration.version],
@@ -52,15 +64,32 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), StorageError> {
 
         if !is_applied {
             let tx = conn.transaction()?;
-            tx.execute_batch(migration.sql)?;
-            
-            let now = chrono::Utc::now().to_rfc3339();
-            tx.execute(
-                "INSERT INTO _migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![migration.version, migration.name, now],
-            )?;
+            match tx.execute_batch(migration.sql) {
+                Ok(_) => {
+                    let now = chrono::Utc::now().to_rfc3339();
+                    tx.execute(
+                        "INSERT INTO _migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                        rusqlite::params![migration.version, migration.name, now],
+                    )?;
+                    tx.commit()?;
+                }
+                Err(err) => {
+                    // Task 67: If search migration fails, database remains usable must be the priority.
+                    // Follow existing migration transaction architecture: roll back transaction.
+                    // Do not corrupt the notes database.
+                    let is_search_migration = migration.name.contains("fts") || migration.name.contains("search");
+                    let _ = tx.rollback();
 
-            tx.commit()?;
+                    if is_search_migration {
+                        eprintln!(
+                            "[Migration Warning] Search migration '{}' (v{}) failed: {}. Transaction rolled back. Notes database remains intact and usable; search will fallback to LIKE search.",
+                            migration.name, migration.version, err
+                        );
+                    } else {
+                        return Err(StorageError::Database(err));
+                    }
+                }
+            }
         }
     }
 
@@ -231,6 +260,118 @@ mod tests {
         assert!(result_ids.contains(&id_a), "Note A (title match) must be returned");
         assert!(result_ids.contains(&id_b), "Note B (content match) must be returned");
         assert!(!result_ids.contains(&id_c_deleted), "Deleted note must be excluded");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_67_search_migration_failure_safety() {
+        use crate::storage::repositories::{NoteRepository, SearchRepository};
+        use crate::storage::models::CreateNoteDto;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_mig_safety_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+
+        // 1. Initialize DB at version 1 (healthy initial schema)
+        let mut conn = init_connection(&db_path).expect("Initial connection failed");
+        ensure_migrations_table(&conn).expect("Ensure migrations table");
+
+        let tx = conn.transaction().expect("Tx");
+        tx.execute_batch(INITIAL_SCHEMA_SQL).expect("Version 1 schema");
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO _migrations (version, name, applied_at) VALUES (1, '001_initial_schema', ?1)",
+            rusqlite::params![now],
+        ).expect("Insert migration 1");
+        tx.commit().expect("Commit v1");
+
+        // 2. Insert vital user notes prior to search migration
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Mission Critical Financial Plan".to_string()),
+                content: Some("Q4 budget allocation and cash flow analysis.".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 1");
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Confidential System Architecture".to_string()),
+                content: Some("Zero trust security model and access controls.".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 2");
+
+        let count_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_before, 2);
+
+        // 3. Define a failing search migration (simulating corrupt FTS extension / broken FTS migration)
+        let failing_search_migration = Migration {
+            version: 2,
+            name: "002_fts5_search_index",
+            sql: "CREATE VIRTUAL TABLE broken_fts USING non_existent_extension_fts(foo); SYNTAX ERROR;",
+        };
+
+        // 4. Run migration runner with failing search migration
+        // Invariant: Must return Ok(()) so database remains usable and app can start
+        let migration_res = run_migrations_custom(&mut conn, &[failing_search_migration]);
+        assert!(
+            migration_res.is_ok(),
+            "Search migration failure must not crash migration runner; priority is database remaining usable"
+        );
+
+        // 5. Invariant: Transaction rolled back; _migrations does NOT record version 2
+        let v2_applied: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM _migrations WHERE version = 2",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(!v2_applied, "Failed search migration must NOT be marked as applied in _migrations");
+
+        // 6. Invariant: Database remains completely usable and uncorrupted
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .expect("Integrity check must succeed");
+        assert_eq!(integrity, "ok", "Database file must not be corrupted by failed migration");
+
+        // 7. Invariant: All pre-existing user notes are 100% intact
+        let count_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_after, 2, "Notes must never be deleted or lost on migration failure");
+
+        let fetched_note1 = NoteRepository::get_by_id(&conn, &note1.id).unwrap().expect("Note 1 must exist");
+        assert_eq!(fetched_note1.title, "Mission Critical Financial Plan");
+        assert_eq!(fetched_note1.content, "Q4 budget allocation and cash flow analysis.");
+
+        let fetched_note2 = NoteRepository::get_by_id(&conn, &note2.id).unwrap().expect("Note 2 must exist");
+        assert_eq!(fetched_note2.title, "Confidential System Architecture");
+
+        // 8. Invariant: Database CRUD operations remain functional
+        let _note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("New Note After Failed Search Migration".to_string()),
+                content: Some("User can continue creating notes without interruption.".to_string()),
+                ..Default::default()
+            },
+        ).expect("Creating notes after search migration failure must succeed");
+
+        let list_notes = NoteRepository::list(&conn, false).unwrap();
+        assert_eq!(list_notes.len(), 3, "Database must remain usable for listing notes");
+
+        // 9. Invariant: Search remains functional through fallback
+        let search_results = SearchRepository::search(&conn, "financial", None).expect("Search must succeed");
+        assert_eq!(search_results.len(), 1, "Search must return results via fallback mechanism");
+        assert_eq!(search_results[0].note_id, note1.id);
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

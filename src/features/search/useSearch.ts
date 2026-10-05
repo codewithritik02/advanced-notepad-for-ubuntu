@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { searchStorage } from "../../services/storage/search";
 import { SearchResult, SearchState } from "./types";
 import { sanitizeSearchError } from "./utils";
+import { logger } from "../../utils/logger.ts";
 
 export interface UseSearchOptions {
   debounceMs?: number;
@@ -72,11 +73,13 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
         }
       }
 
+      const startTime = performance.now();
       const currentReqId = ++requestIdRef.current;
       setSearchState({ status: "searching", query: trimmed });
 
       try {
         const searchResults = await searchStorage.search(trimmed, limit);
+        const durationMs = performance.now() - startTime;
 
         // Task 20: Stale request protection
         if (currentReqId === requestIdRef.current) {
@@ -85,8 +88,11 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
             query: trimmed,
             results: searchResults,
           });
+          // Task 63: Performance logging during development (query, count, execution time)
+          logger.search.executed(trimmed, searchResults.length, durationMs);
         }
       } catch (err: unknown) {
+        const durationMs = performance.now() - startTime;
         if (currentReqId === requestIdRef.current) {
           const { message } = sanitizeSearchError(err);
           setSearchState({
@@ -94,6 +100,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
             query: trimmed,
             message,
           });
+          logger.search.failed(trimmed, durationMs, err);
         }
       }
     },

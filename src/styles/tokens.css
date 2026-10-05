@@ -27,6 +27,7 @@
   /* Accent — Slate Blue / Indigo inspired */
   --color-accent-subtle: #eef2ff;
   --color-accent-default: #4f46e5;
+  --color-primary-default: var(--color-accent-default);
   --color-accent-hover: #4338ca;
   --color-accent-active: #3730a3;
   --color-accent-text: #ffffff;
@@ -142,6 +143,7 @@
 
     --color-accent-subtle: #232842;
     --color-accent-default: #6366f1;
+    --color-primary-default: var(--color-accent-default);
     --color-accent-hover: #4f46e5;
     --color-accent-active: #4338ca;
     --color-accent-text: #ffffff;
@@ -180,6 +182,7 @@
 
   --color-accent-subtle: #232842;
   --color-accent-default: #6366f1;
+  --color-primary-default: var(--color-accent-default);
   --color-accent-hover: #4f46e5;
   --color-accent-active: #4338ca;
   --color-accent-text: #ffffff;

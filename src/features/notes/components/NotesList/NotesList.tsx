@@ -2,6 +2,7 @@ import React from "react";
 import { NoteListItem, NotesListStatus } from "../../types";
 import { NoteCard } from "./NoteCard";
 import { Badge, EmptyState, ErrorState, LoadingState } from "../../../../components/ui";
+import { SearchErrorBoundary } from "../../../search";
 import "./NotesList.css";
 
 export interface NotesListProps {
@@ -122,22 +123,33 @@ export const NotesList: React.FC<NotesListProps> = ({
 
         {/* Normal / Search Results State */}
         {status === "idle" && notes.length > 0 && (
-          <div
-            className="notes-list-items"
-            role="region"
-            aria-label={isSearchMode ? "Search results" : "Notes list"}
-          >
-            {notes.map((note) => (
-              <NoteCard
-                key={note.id}
-                note={note}
-                isSelected={note.id === selectedNoteId}
-                onSelect={onSelectNote}
-                onToggleFavorite={onToggleFavorite}
-                searchQuery={isSearchMode ? searchQuery : undefined}
+          <SearchErrorBoundary
+            onReset={onRetry}
+            fallback={
+              <ErrorState
+                title="Search display error"
+                message="Unable to render search results. Your existing notes are safe."
+                onRetry={onRetry}
               />
-            ))}
-          </div>
+            }
+          >
+            <div
+              className="notes-list-items"
+              role="region"
+              aria-label={isSearchMode ? "Search results" : "Notes list"}
+            >
+              {notes.map((note) => (
+                <NoteCard
+                  key={note.id}
+                  note={note}
+                  isSelected={note.id === selectedNoteId}
+                  onSelect={onSelectNote}
+                  onToggleFavorite={onToggleFavorite}
+                  searchQuery={isSearchMode ? searchQuery : undefined}
+                />
+              ))}
+            </div>
+          </SearchErrorBoundary>
         )}
       </div>
     </div>

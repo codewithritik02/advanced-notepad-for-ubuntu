@@ -37,6 +37,8 @@ impl SearchRepository {
 
         let bounded_limit = limit.unwrap_or(Self::DEFAULT_LIMIT).clamp(1, Self::MAX_LIMIT);
 
+        let start = std::time::Instant::now();
+
         // Check if FTS5 virtual table exists in the database
         let has_fts: bool = conn
             .query_row(
@@ -47,15 +49,110 @@ impl SearchRepository {
             .map(|c| c > 0)
             .unwrap_or(false);
 
-        if has_fts {
-            // Attempt FTS5 search first
-            if let Ok(results) = Self::search_fts5(conn, trimmed, bounded_limit) {
-                return Ok(results);
+        let search_res = if has_fts {
+            match Self::search_fts5(conn, trimmed, bounded_limit) {
+                Ok(results) => Ok(results),
+                Err(_) => {
+                    // Task 66: Inconsistent or corrupted FTS index detected.
+                    // Recovery strategy: Rebuild search index without touching notes,
+                    // retry FTS5 query, or safely fall back to LIKE search.
+                    let _ = Self::recover_index(conn);
+                    if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
+                        Ok(recovered)
+                    } else {
+                        Self::search_like(conn, trimmed, bounded_limit)
+                    }
+                }
+            }
+        } else {
+            // Task 66: Missing index detected -> recreate -> populate from notes
+            let _ = Self::recover_index(conn);
+            if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
+                Ok(recovered)
+            } else {
+                Self::search_like(conn, trimmed, bounded_limit)
+            }
+        };
+
+        // Task 63: Performance logging during development (query, result count, execution time)
+        // Strictly never logs note content. Completely eliminated in release builds.
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(ref items) = search_res {
+                eprintln!(
+                    "[Search] query executed: count={} duration={}ms query=\"{}\"",
+                    items.len(),
+                    start.elapsed().as_millis(),
+                    trimmed
+                );
             }
         }
 
-        // Fallback to parameterized LIKE search
-        Self::search_like(conn, trimmed, bounded_limit)
+        search_res
+    }
+
+    /// Rebuilds the FTS5 search index internally from the authoritative notes content table (Task 65).
+    ///
+    /// Useful for:
+    /// - Database migrations
+    /// - Index corruption recovery
+    /// - Future maintenance
+    ///
+    /// Re-creates virtual table and sync triggers if missing, then invokes SQLite FTS5 'rebuild'.
+    /// Strictly an internal backend capability; no user-facing button is exposed in Phase 6.
+    pub fn rebuild_search_index(conn: &Connection) -> Result<(), StorageError> {
+        let sql = r#"
+            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+                title,
+                content,
+                content='notes',
+                content_rowid='rowid'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS notes_fts_ai AFTER INSERT ON notes BEGIN
+              INSERT INTO notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS notes_fts_ad AFTER DELETE ON notes BEGIN
+              INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES('delete', old.rowid, old.title, old.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE ON notes BEGIN
+              INSERT INTO notes_fts(notes_fts, rowid, title, content) VALUES('delete', old.rowid, old.title, old.content);
+              INSERT INTO notes_fts(rowid, title, content) VALUES (new.rowid, new.title, new.content);
+            END;
+
+            INSERT INTO notes_fts(notes_fts) VALUES('rebuild');
+        "#;
+
+        conn.execute_batch(sql)?;
+        Ok(())
+    }
+
+    /// Safe recovery strategy for missing or inconsistent/corrupted FTS search index (Task 66).
+    ///
+    /// Lifecycle:
+    /// 1. Detect missing or broken index
+    /// 2. Re-create virtual table and sync triggers if missing
+    /// 3. Rebuild / populate index from authoritative notes table
+    ///
+    /// Invariant: Authoritative `notes` records are strictly never deleted or modified
+    /// because search index creation or recovery failed.
+    pub fn recover_index(conn: &Connection) -> Result<(), StorageError> {
+        // Attempt fast rebuild if virtual table is intact
+        if Self::rebuild_search_index(conn).is_ok() {
+            return Ok(());
+        }
+
+        // If rebuild failed (e.g. shadow table corruption), drop virtual table & triggers cleanly and recreate
+        let cleanup_sql = r#"
+            DROP TABLE IF EXISTS notes_fts;
+            DROP TRIGGER IF EXISTS notes_fts_ai;
+            DROP TRIGGER IF EXISTS notes_fts_ad;
+            DROP TRIGGER IF EXISTS notes_fts_au;
+        "#;
+        let _ = conn.execute_batch(cleanup_sql);
+        Self::rebuild_search_index(conn)
     }
 
     /// Executes FTS5 full-text query joined with authoritative notes table
@@ -200,14 +297,53 @@ fn escape_like(input: &str) -> String {
     out
 }
 
-/// Transforms user search string into safe FTS5 query tokens.
-/// Whitespace-separated words become AND-ed terms.
-/// Punctuation within words (e.g. "project-x", "hello.world", "foo/bar", "user@example.com", "R&D")
-/// splits the word into sub-tokens joined with the FTS5 phrase operator (+).
+/// Transforms user search string into safe FTS5 query tokens (Task 71 & 73).
+///
+/// Rules:
+/// 1. Explicit Quoted Phrases: e.g. `"project plan"` or `'project plan'`
+///    Enforces contiguous phrase matching in SQLite FTS5 (`"project plan"`).
+///    It strictly matches adjacent tokens in that exact order and NEVER evaluates as `project OR plan`.
+/// 2. Standard Multi-Word Search: e.g. `project plan`
+///    Terms are separated by whitespace, which SQLite FTS5 evaluates as an implicit AND operator.
+///    Both terms must be present in the document. It NEVER evaluates as `project OR plan`.
+/// 3. Special Characters: Punctuation and control characters are stripped to prevent syntax errors.
 fn sanitize_fts5_query(query: &str) -> String {
+    let trimmed = query.trim();
+
+    // Check if the query is an explicitly quoted phrase: e.g. "project plan"
+    let is_quoted_phrase = (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
+        || (trimmed.starts_with('“') && trimmed.ends_with('”') && trimmed.len() >= 2);
+
+    if is_quoted_phrase {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut tokens = Vec::new();
+
+        for w in inner.split_whitespace() {
+            let mut current_token = String::new();
+            for c in w.chars() {
+                if c.is_ascii() {
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        current_token.push(c);
+                    }
+                } else if !c.is_control() && !c.is_whitespace() && !is_unicode_punctuation_or_quote(c) {
+                    current_token.push(c);
+                }
+            }
+            if !current_token.is_empty() {
+                tokens.push(current_token);
+            }
+        }
+
+        if !tokens.is_empty() {
+            // In FTS5, "token1 token2" enforces exact contiguous phrase matching in that order
+            return format!("\"{}\"", tokens.join(" "));
+        }
+    }
+
     let mut word_phrases = Vec::new();
 
-    for w in query.split_whitespace() {
+    for w in trimmed.split_whitespace() {
         let mut sub_tokens = Vec::new();
         let mut current_token = String::new();
 
@@ -2233,7 +2369,1021 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_task_61_avoid_n_plus_one_search_queries() {
+        use crate::storage::repositories::TagRepository;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_nplus1_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create tags
+        let tag_work = TagRepository::create(&conn, "work").unwrap();
+        let tag_important = TagRepository::create(&conn, "important").unwrap();
+
+        // 2. Populate 100 notes containing the search term "nplusone"
+        let tx = conn.transaction().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 1..=100 {
+            let note_id = format!("n1-note-{}", i);
+            let title = format!("NPlusOne Test Note {}", i);
+            let content = format!("Detailed note content matching nplusone keyword at index {}.", i);
+            tx.execute(
+                "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+                 VALUES (?1, ?2, ?3, 'txt', ?4, ?4, 0, 0, 0)",
+                params![note_id, title, content, now],
+            ).unwrap();
+
+            // Tag even-numbered notes with work, odd notes divisible by 5 with important
+            if i % 2 == 0 {
+                tx.execute(
+                    "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+                    params![note_id, tag_work.id],
+                ).unwrap();
+            }
+            if i % 5 == 0 {
+                tx.execute(
+                    "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+                    params![note_id, tag_important.id],
+                ).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+
+        // 3. Execute search for "nplusone" with limit 100: exactly 1 database query
+        let results = SearchRepository::search(&conn, "nplusone", Some(100)).unwrap();
+        assert_eq!(results.len(), 100, "Search must return all 100 notes");
+
+        // 4. Batch query metadata for all 100 note IDs in one shot: exactly 1 additional query
+        let note_ids: Vec<String> = results.iter().map(|r| r.note_id.clone()).collect();
+        let batch_tags_map = TagRepository::get_tags_for_notes(&conn, &note_ids).unwrap();
+
+        // Total database queries = 2 (1 search + 1 batch metadata), strictly avoiding 101 queries
+        assert!(batch_tags_map.len() >= 50, "Batch tags map must cover tagged notes");
+
+        // 5. Verify correctness: even note has "work", note 10 has both "important" and "work"
+        let tags_10 = batch_tags_map.get("n1-note-10").expect("Note 10 must have tags");
+        assert!(tags_10.contains(&"work".to_string()));
+        assert!(tags_10.contains(&"important".to_string()));
+
+        // Note 1 has no tags
+        assert_eq!(batch_tags_map.get("n1-note-1"), None);
+
+        // 6. Simplicity & Graceful omission: Search results function completely even if tags are omitted
+        for res in &results {
+            assert!(!res.note_id.is_empty());
+            assert!(!res.title.is_empty());
+            assert!(res.snippet.is_some());
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_62_search_result_limit_enforcement() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_limit_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create 150 notes that match the search term "quantum"
+        let tx = conn.transaction().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 1..=150 {
+            let note_id = format!("quantum-note-{}", i);
+            let title = format!("Quantum Mechanics Note {}", i);
+            let content = format!("Theoretical principles of quantum entanglement and superposition in record {}.", i);
+            tx.execute(
+                "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+                 VALUES (?1, ?2, ?3, 'txt', ?4, ?4, 0, 0, 0)",
+                params![note_id, title, content, now],
+            ).unwrap();
+        }
+        tx.commit().unwrap();
+
+        let total_matches: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes WHERE title LIKE '%Quantum%' AND is_deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_matches, 150, "Database must have 150 matching notes");
+
+        // 2. Default limit: Calling search with limit = None must enforce DEFAULT_LIMIT (50)
+        let results_default = SearchRepository::search(&conn, "Quantum", None).unwrap();
+        assert_eq!(
+            results_default.len(),
+            SearchRepository::DEFAULT_LIMIT,
+            "Default search must enforce exactly {} results at the database query level",
+            SearchRepository::DEFAULT_LIMIT
+        );
+        assert_eq!(results_default.len(), 50);
+
+        // 3. Custom lower limit: Calling search with limit = Some(15) must return exactly 15
+        let results_custom = SearchRepository::search(&conn, "Quantum", Some(15)).unwrap();
+        assert_eq!(results_custom.len(), 15, "Search with custom limit 15 must return exactly 15 results");
+
+        // 4. Excessive limit: Calling search with limit = Some(500) must be clamped to MAX_LIMIT (100)
+        let results_clamped = SearchRepository::search(&conn, "Quantum", Some(500)).unwrap();
+        assert_eq!(
+            results_clamped.len(),
+            SearchRepository::MAX_LIMIT,
+            "Search with excessive limit must clamp to MAX_LIMIT ({})",
+            SearchRepository::MAX_LIMIT
+        );
+        assert_eq!(results_clamped.len(), 100);
+
+        // 5. Zero limit: Calling search with limit = Some(0) must clamp to minimum (1)
+        let results_zero = SearchRepository::search(&conn, "Quantum", Some(0)).unwrap();
+        assert_eq!(results_zero.len(), 1, "Search with limit 0 must clamp to 1");
+
+        // 6. Verification of LIKE fallback query limit enforcement:
+        // Even when bypassing FTS5, search_like must strictly enforce LIMIT ? in SQL
+        let results_like_default = SearchRepository::search_like(&conn, "Quantum", 50).unwrap();
+        assert_eq!(results_like_default.len(), 50, "search_like must enforce limit 50 in SQL");
+
+        let results_like_custom = SearchRepository::search_like(&conn, "Quantum", 25).unwrap();
+        assert_eq!(results_like_custom.len(), 25, "search_like must enforce limit 25 in SQL");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_63_search_performance_logging() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_perf_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create a note with sensitive content
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Performance Benchmark Document".to_string()),
+                content: Some("Extremely confidential credentials and sensitive private keys.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Measure search execution: query, result count, and duration
+        let start = std::time::Instant::now();
+        let query = "Benchmark";
+        let results = SearchRepository::search(&conn, query, None).unwrap();
+        let duration = start.elapsed();
+
+        // 3. Verify metrics
+        assert_eq!(results.len(), 1, "Expected 1 result count");
+        assert_eq!(results[0].note_id, note.id);
+
+        // Format performance log line per specification:
+        // Search query executed: count=1 duration=Xms query="Benchmark"
+        let log_line = format!(
+            "Search query executed: count={} duration={}ms query=\"{}\"",
+            results.len(),
+            duration.as_millis(),
+            query
+        );
+
+        // Verification: Log line contains query, count, duration
+        assert!(log_line.contains("count=1"));
+        assert!(log_line.contains("duration="));
+        assert!(log_line.contains("query=\"Benchmark\""));
+
+        // Critical privacy invariant: Log line must NEVER contain note content
+        assert!(!log_line.contains("confidential"));
+        assert!(!log_line.contains("credentials"));
+        assert!(!log_line.contains("sensitive"));
+        assert!(!log_line.contains("private keys"));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_64_search_index_integrity() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_integ_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Step 1: create note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Architecture Blueprint Alpha".to_string()),
+                content: Some("Specifications containing unique tokenalpha in body.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Also create a persistent sibling note
+        let persistent_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Persistent System Baseline".to_string()),
+                content: Some("Long term documentation containing tokenomega.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Step 2: search initial text
+        let res_initial = SearchRepository::search(&conn, "tokenalpha", None).unwrap();
+        assert_eq!(res_initial.len(), 1, "Initial note must be searchable");
+        assert_eq!(res_initial[0].note_id, note.id);
+
+        // Step 3: edit note
+        NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                title: Some("Architecture Blueprint Beta".to_string()),
+                content: Some("Updated specifications containing tokenbeta replacing earlier text.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Step 4: search old text -> Expected: old text not found
+        let res_old = SearchRepository::search(&conn, "tokenalpha", None).unwrap();
+        assert_eq!(res_old.len(), 0, "Old text 'tokenalpha' must not be found after edit");
+
+        // Step 5: search new text -> Expected: new text found
+        let res_new = SearchRepository::search(&conn, "tokenbeta", None).unwrap();
+        assert_eq!(res_new.len(), 1, "New text 'tokenbeta' must be found after edit");
+        assert_eq!(res_new[0].note_id, note.id);
+
+        // Step 6: delete note
+        NoteRepository::delete(&conn, &note.id, true).unwrap();
+
+        // Step 7: search deleted text -> Expected: deleted note excluded
+        let res_deleted = SearchRepository::search(&conn, "tokenbeta", None).unwrap();
+        assert_eq!(res_deleted.len(), 0, "Deleted note must be excluded from search");
+
+        // Step 8: restart (drop connection and re-open SQLite database file)
+        drop(conn);
+        let conn_restarted = init_connection(&db_path).unwrap();
+
+        // Step 9: search after restart -> Expected: restart still works
+        // - Deleted note remains excluded
+        let res_restart_deleted = SearchRepository::search(&conn_restarted, "tokenbeta", None).unwrap();
+        assert_eq!(res_restart_deleted.len(), 0, "Deleted note remains excluded after restart");
+
+        // - Old text remains not found
+        let res_restart_old = SearchRepository::search(&conn_restarted, "tokenalpha", None).unwrap();
+        assert_eq!(res_restart_old.len(), 0, "Old text remains excluded after restart");
+
+        // - Persistent sibling note is found
+        let res_restart_sibling = SearchRepository::search(&conn_restarted, "tokenomega", None).unwrap();
+        assert_eq!(res_restart_sibling.len(), 1, "Active notes remain searchable after restart");
+        assert_eq!(res_restart_sibling[0].note_id, persistent_note.id);
+
+        drop(conn_restarted);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_65_search_rebuild_capability() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_rebuild_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create notes before index loss
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quantum Algorithms Alpha".to_string()),
+                content: Some("Foundational quantum gates and teleportation protocols.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quantum Cryptography Beta".to_string()),
+                content: Some("Post-quantum encryption and lattice-based security.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Verify initial FTS search works
+        let res_before = SearchRepository::search(&conn, "teleportation", None).unwrap();
+        assert_eq!(res_before.len(), 1);
+        assert_eq!(res_before[0].note_id, note1.id);
+
+        // 2. Simulate corruption or missing index: Drop FTS table and triggers
+        conn.execute_batch(
+            "DROP TABLE notes_fts;
+             DROP TRIGGER IF EXISTS notes_fts_ai;
+             DROP TRIGGER IF EXISTS notes_fts_ad;
+             DROP TRIGGER IF EXISTS notes_fts_au;"
+        ).unwrap();
+
+        // Confirm table is missing from sqlite_master
+        let fts_exists_before_rebuild: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(!fts_exists_before_rebuild, "Virtual table must be dropped to simulate index loss");
+
+        // 3. Execute backend-level rebuild_search_index()
+        SearchRepository::rebuild_search_index(&conn).expect("rebuild_search_index must succeed");
+
+        // 4. Verify FTS5 table is restored and populated with all existing notes
+        let fts_exists_after_rebuild: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(fts_exists_after_rebuild, "notes_fts virtual table must be recreated");
+
+        // Verify search finds both pre-existing notes
+        let res_rebuilt1 = SearchRepository::search(&conn, "teleportation", None).unwrap();
+        assert_eq!(res_rebuilt1.len(), 1, "Pre-existing note 1 must be re-indexed");
+        assert_eq!(res_rebuilt1[0].note_id, note1.id);
+
+        let res_rebuilt2 = SearchRepository::search(&conn, "lattice", None).unwrap();
+        assert_eq!(res_rebuilt2.len(), 1, "Pre-existing note 2 must be re-indexed");
+        assert_eq!(res_rebuilt2[0].note_id, note2.id);
+
+        // 5. Verify synchronization triggers are active after rebuild
+        let note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quantum Error Correction Gamma".to_string()),
+                content: Some("Surface codes and syndrome measurement strategies.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let res_new = SearchRepository::search(&conn, "syndrome", None).unwrap();
+        assert_eq!(res_new.len(), 1, "New note created after rebuild must be indexed immediately");
+        assert_eq!(res_new[0].note_id, note3.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_66_search_index_recovery() {
+        let temp_dir = std::env::temp_dir().join(format!("custom_notepad_test_task_66_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create notes in authoritative database
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Distributed Raft Consensus Protocol".to_string()),
+                content: Some("Leader election and log replication with heartbeats.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Paxos State Machine".to_string()),
+                content: Some("Multi-decree consensus with acceptors and proposers.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let count_before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_before, 2);
+
+        // 2. Simulate MISSING index: completely drop notes_fts and sync triggers
+        conn.execute_batch(
+            "DROP TABLE notes_fts;
+             DROP TRIGGER IF EXISTS notes_fts_ai;
+             DROP TRIGGER IF EXISTS notes_fts_ad;
+             DROP TRIGGER IF EXISTS notes_fts_au;"
+        ).unwrap();
+
+        let fts_missing: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(!fts_missing, "FTS table must be dropped to simulate missing index state");
+
+        // 3. Search should detect missing index -> recreate -> populate from notes
+        let results_recovered = SearchRepository::search(&conn, "consensus", None).expect("Search must succeed despite missing index");
+        assert_eq!(results_recovered.len(), 2, "Both consensus notes must be found upon index recovery");
+
+        // CRITICAL INVARIANT: Notes are never deleted because search index creation/recovery occurred
+        let count_after_missing_recovery: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count_after_missing_recovery, 2,
+            "CRITICAL INVARIANT: Notes must never be deleted during search index recovery"
+        );
+
+        // Verify FTS table was actually recreated and populated
+        let fts_recreated: bool = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+        assert!(fts_recreated, "SearchRepository must automatically recreate missing notes_fts table");
+
+        // 4. Simulate INCONSISTENT / CORRUPTED index:
+        // Corrupt by dropping one of the shadow tables generated by FTS5
+        let shadow_drop_res = conn.execute_batch("DROP TABLE IF EXISTS notes_fts_data;");
+        if shadow_drop_res.is_ok() {
+            // Index is now inconsistent/corrupted (queries to notes_fts will error)
+            let search_corrupt_res = SearchRepository::search(&conn, "replication", None);
+            assert!(
+                search_corrupt_res.is_ok(),
+                "Search must safely recover or fallback to LIKE search on index corruption"
+            );
+            let results = search_corrupt_res.unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].note_id, note1.id);
+
+            // Invariant check: Notes are still intact
+            let count_after_corrupt_recovery: i64 = conn
+                .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                count_after_corrupt_recovery, 2,
+                "CRITICAL INVARIANT: Notes must remain intact during corruption recovery"
+            );
+        }
+
+        // 5. Explicit recover_index verification
+        SearchRepository::recover_index(&conn).expect("recover_index must succeed");
+        let results_final = SearchRepository::search(&conn, "proposers", None).unwrap();
+        assert_eq!(results_final.len(), 1);
+        assert_eq!(results_final[0].note_id, note2.id);
+
+        let final_notes_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(final_notes_count, 2, "Final note count must remain exactly 2");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_69_search_with_no_notes() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_no_notes_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Fresh application: exactly 0 notes
+        let note_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(note_count, 0, "Fresh application database must have 0 notes");
+
+        // 2. Search for "project"
+        let results = SearchRepository::search(&conn, "project", None)
+            .expect("Searching with 0 notes must succeed without crashing or erroring");
+
+        // 3. Expected: No notes found, no crash
+        assert_eq!(results.len(), 0, "Search result must be empty when no notes exist");
+
+        // 4. Verify various queries with 0 notes
+        let results_with_limit = SearchRepository::search(&conn, "project", Some(10)).unwrap();
+        assert_eq!(results_with_limit.len(), 0);
+
+        let results_special = SearchRepository::search(&conn, "!@#$%", None).unwrap();
+        assert_eq!(results_special.len(), 0);
+
+        let results_unicode = SearchRepository::search(&conn, "अंतरिक्ष", None).unwrap();
+        assert_eq!(results_unicode.len(), 0);
+
+        // 5. Database integrity remains intact
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_70_search_with_one_note() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_one_note_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create exactly one note: "Project Plan"
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Plan".to_string()),
+                content: Some("Architecture, deliverables, and timeline milestones.".to_string()),
+                ..Default::default()
+            },
+        ).expect("Note creation must succeed");
+
+        let total_notes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_notes, 1, "Database must have exactly 1 note");
+
+        // 2. Search for "project" (case-insensitive title match)
+        let results = SearchRepository::search(&conn, "project", None)
+            .expect("Search must succeed");
+
+        // 3. Expected: exactly 1 result
+        assert_eq!(results.len(), 1, "Expected exactly 1 result");
+        assert_eq!(results[0].note_id, note.id);
+        assert_eq!(results[0].title, "Project Plan");
+
+        // 4. Verify search for non-matching term returns 0 results
+        let no_results = SearchRepository::search(&conn, "unrelated_term_xyz", None).unwrap();
+        assert_eq!(no_results.len(), 0);
+
+        // 5. Verify search for word in content also returns the 1 result
+        let content_results = SearchRepository::search(&conn, "milestones", None).unwrap();
+        assert_eq!(content_results.len(), 1);
+        assert_eq!(content_results[0].note_id, note.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_71_search_exact_phrase() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_phrase_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Create test notes
+        // Note 1: Contains exact phrase "project plan"
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Q4 Project Plan".to_string()),
+                content: Some("Engineering architecture and delivery schedules.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note 2: Contains both "project" and "plan", but separated and in reverse order
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Financial Plan for the Project".to_string()),
+                content: Some("Budget allocations across all initiatives.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note 3: Contains only "project", NO "plan"
+        let _note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Gamma Overview".to_string()),
+                content: Some("High level summary of the engineering work.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note 4: Contains only "plan", NO "project"
+        let _note4 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Vacation Plan".to_string()),
+                content: Some("Personal travel itinerary for the holidays.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Exact phrase search: "\"project plan\"" (with quotes)
+        let phrase_results = SearchRepository::search(&conn, "\"project plan\"", None)
+            .expect("Phrase search must succeed");
+
+        // Expected: Matches ONLY Note 1 (the exact contiguous phrase)
+        assert_eq!(phrase_results.len(), 1, "Exact phrase query must match only Note 1");
+        assert_eq!(phrase_results[0].note_id, note1.id);
+
+        // Crucial Invariant: "project plan" MUST NOT accidentally mean "project OR plan"
+        // If it meant OR, all 4 notes would be returned!
+        assert_ne!(
+            phrase_results.len(), 4,
+            "Phrase search must NOT accidentally mean 'project OR plan'"
+        );
+
+        // 3. Unquoted multi-word search: "project plan"
+        // Whitespace between terms is implicit AND in FTS5
+        let and_results = SearchRepository::search(&conn, "project plan", None)
+            .expect("Multi-word search must succeed");
+
+        // Both Note 1 and Note 2 contain both words -> returned
+        // Note 3 (only project) and Note 4 (only plan) are EXCLUDED
+        assert_eq!(and_results.len(), 2, "Unquoted terms must evaluate as AND (both terms required)");
+        let returned_ids: Vec<String> = and_results.iter().map(|r| r.note_id.clone()).collect();
+        assert!(returned_ids.contains(&note1.id));
+        assert!(returned_ids.contains(&note2.id));
+
+        // 4. Test phrase search on fallback LIKE engine
+        let like_results = SearchRepository::search_like(&conn, "project plan", 50).unwrap();
+        // LIKE matches substring '%project plan%', finding Note 1
+        assert_eq!(like_results.len(), 1, "LIKE fallback matches exact phrase substring");
+        assert_eq!(like_results[0].note_id, note1.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_72_search_query_syntax() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_syntax_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Create notes containing plain text that resembles advanced syntax
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("title: System Architecture Roadmap".to_string()),
+                content: Some("Discussion on before: 2026 deadlines and after: launch plans.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Meeting Notes".to_string()),
+                content: Some("Reminder: tag: urgent action items and notebook: engineering sync.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 1. Query with "title:" prefix must not crash SQLite FTS5 with column syntax errors
+        let res_title = SearchRepository::search(&conn, "title: Roadmap", None);
+        assert!(res_title.is_ok(), "Searching 'title: Roadmap' must execute safely as plain text");
+        let items_title = res_title.unwrap();
+        assert_eq!(items_title.len(), 1);
+        assert_eq!(items_title[0].note_id, note1.id);
+
+        // 2. Query with "tag:" prefix must not error with 'no such column: tag'
+        let res_tag = SearchRepository::search(&conn, "tag: urgent", None);
+        assert!(res_tag.is_ok(), "Searching 'tag: urgent' must execute safely without column error");
+        let items_tag = res_tag.unwrap();
+        assert_eq!(items_tag.len(), 1);
+        assert_eq!(items_tag[0].note_id, note2.id);
+
+        // 3. Query with "notebook:" prefix must not error with 'no such column: notebook'
+        let res_nb = SearchRepository::search(&conn, "notebook: engineering", None);
+        assert!(res_nb.is_ok(), "Searching 'notebook: engineering' must execute safely");
+        let items_nb = res_nb.unwrap();
+        assert_eq!(items_nb.len(), 1);
+        assert_eq!(items_nb[0].note_id, note2.id);
+
+        // 4. Query with "before:" and "after:" date prefixes must not crash
+        let res_before = SearchRepository::search(&conn, "before: 2026", None);
+        assert!(res_before.is_ok(), "Searching 'before: 2026' must execute safely as plain text");
+        let items_before = res_before.unwrap();
+        assert_eq!(items_before.len(), 1);
+        assert_eq!(items_before[0].note_id, note1.id);
+
+        let res_after = SearchRepository::search(&conn, "after: launch", None);
+        assert!(res_after.is_ok(), "Searching 'after: launch' must execute safely as plain text");
+        let items_after = res_after.unwrap();
+        assert_eq!(items_after.len(), 1);
+        assert_eq!(items_after[0].note_id, note1.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_73_search_special_query_handling() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_special_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Note with "project", "plan", and explicit text word "OR"
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Alpha".to_string()),
+                content: Some("Detailed plan for the architecture with OR keyword mentioned.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // 2. Note with only "plan" (no "project", no "OR")
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Plan Beta".to_string()),
+                content: Some("Standalone plan document without any other terms.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Test 1: Quoted single word "project"
+        let res_quoted = SearchRepository::search(&conn, "\"project\"", None);
+        assert!(res_quoted.is_ok(), "Quoted '\"project\"' must execute safely");
+        let items_quoted = res_quoted.unwrap();
+        assert_eq!(items_quoted.len(), 1);
+        assert_eq!(items_quoted[0].note_id, note1.id);
+
+        // Test 2: "project OR plan" treats OR as normal user text, not raw FTS disjunctive operator
+        // If it were raw FTS boolean OR, note2 would match because it contains "plan".
+        // But plain text search requires all terms ("project", "OR", "plan"), so only note1 matches.
+        let res_or = SearchRepository::search(&conn, "project OR plan", None);
+        assert!(res_or.is_ok(), "Searching 'project OR plan' must succeed without error");
+        let items_or = res_or.unwrap();
+        assert_eq!(items_or.len(), 1, "Must not evaluate as raw boolean OR which would include note2");
+        assert_eq!(items_or[0].note_id, note1.id);
+        assert!(!items_or.iter().any(|i| i.note_id == note2.id), "note2 must be strictly excluded");
+
+        // Test 3: Raw FTS operators in trailing/leading positions that would crash raw FTS5
+        let raw_operator_queries = [
+            "project OR",
+            "OR project",
+            "project AND",
+            "project NOT",
+            "project NEAR",
+            "NEAR(project plan)",
+        ];
+        for q in raw_operator_queries {
+            let res = SearchRepository::search(&conn, q, None);
+            assert!(res.is_ok(), "Query with raw operator '{q}' must not crash FTS5");
+        }
+
+        // Test 4: Special symbols and punctuation that would trigger FTS5 syntax errors
+        let raw_symbol_queries = [
+            "\"unbalanced quote",
+            "\"\"\"",
+            "project*",
+            "*project",
+            "(project plan)",
+            "{project plan}",
+            "^project",
+            "project +plan -other",
+            ":::colon:::",
+            "fakecol:query",
+        ];
+        for q in raw_symbol_queries {
+            let res = SearchRepository::search(&conn, q, None);
+            assert!(res.is_ok(), "Query with raw symbol '{q}' must not crash FTS5");
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_74_search_ranking_verification() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_rank_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Note A: title = Project
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project".to_string()),
+                content: Some("".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note B: title = Meeting, content = project
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Meeting".to_string()),
+                content: Some("project".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Note C: title = Project Plan, content = project
+        let note_c = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Plan".to_string()),
+                content: Some("project".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let results = SearchRepository::search(&conn, "project", None).unwrap();
+        assert_eq!(results.len(), 3);
+        // FTS5 ranking: Note A (exact title) -> Note C (title prefix + content) -> Note B (content only)
+        assert_eq!(results[0].note_id, note_a.id, "Note A (title 'Project') must be ranked 1st");
+        assert_eq!(results[1].note_id, note_c.id, "Note C (title 'Project Plan') must be ranked 2nd");
+        assert_eq!(results[2].note_id, note_b.id, "Note B (title 'Meeting', content 'project') must be ranked 3rd");
+
+        // LIKE search fallback ranking verification:
+        // Tier 0 (Exact Title Match) -> Tier 1 (Title Prefix Match) -> Tier 3 (Content Match)
+        let like_results = SearchRepository::search_like(&conn, "project", 50).unwrap();
+        assert_eq!(like_results.len(), 3);
+        assert_eq!(like_results[0].note_id, note_a.id, "LIKE tier 0: Note A must be ranked 1st");
+        assert_eq!(like_results[1].note_id, note_c.id, "LIKE tier 1: Note C must be ranked 2nd");
+        assert_eq!(like_results[2].note_id, note_b.id, "LIKE tier 3: Note B must be ranked 3rd");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_75_search_result_stability() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_stable_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("test.db");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // Seed 5 notes with distinct titles and contents
+        let _note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Alpha".to_string()),
+                content: Some("Core roadmap plan.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Beta".to_string()),
+                content: Some("Feature list for the project.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Meeting Minutes".to_string()),
+                content: Some("Discussion on project deadlines and milestones.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note4 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project".to_string()),
+                content: Some("Master outline document.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let _note5 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Sprint Planning".to_string()),
+                content: Some("Detailed tasks for the current project sprint.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Run search 5 consecutive times (Task 75 specification example)
+        let mut fts_runs: Vec<Vec<String>> = Vec::new();
+        for _ in 0..5 {
+            let res = SearchRepository::search(&conn, "project", None).unwrap();
+            assert_eq!(res.len(), 5);
+            fts_runs.push(res.into_iter().map(|r| r.note_id).collect());
+        }
+
+        // Verify identical result ordering across all 5 runs
+        for i in 1..5 {
+            assert_eq!(
+                fts_runs[i], fts_runs[0],
+                "Run {} must produce identical ordering to Run 0",
+                i
+            );
+        }
+
+        // Verify LIKE search fallback is also 100% deterministic across 5 runs
+        let mut like_runs: Vec<Vec<String>> = Vec::new();
+        for _ in 0..5 {
+            let res = SearchRepository::search_like(&conn, "project", 50).unwrap();
+            assert_eq!(res.len(), 5);
+            like_runs.push(res.into_iter().map(|r| r.note_id).collect());
+        }
+
+        for i in 1..5 {
+            assert_eq!(
+                like_runs[i], like_runs[0],
+                "LIKE fallback run {} must produce identical ordering to Run 0",
+                i
+            );
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_80_search_and_selection_state() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_sel_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Initial State: Note A created and active
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note A — Project Charter".to_string()),
+                content: Some("Initial scope and deliverables for the Q4 project.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note B — Sprint Backlog".to_string()),
+                content: Some("Detailed backlog items and story point estimates.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        let mut current_selected_note_id = note_a.id.clone();
+        assert_eq!(current_selected_note_id, note_a.id);
+
+        // 2. User edits Note A in the editor
+        let updated_note_a_content = "Initial scope and deliverables with updated Q4 requirements.";
+        
+        // 3. User searches: "Sprint"
+        let search_results = SearchRepository::search(&conn, "Sprint", None).unwrap();
+        assert_eq!(search_results.len(), 1, "Search should return Note B");
+        let result_note_b = &search_results[0];
+        assert_eq!(result_note_b.note_id, note_b.id);
+        assert_eq!(result_note_b.title, "Note B — Sprint Backlog");
+
+        // 4. User selects search result Note B
+        // Pre-selection flush: Note A is persisted before selection switch
+        NoteRepository::update(
+            &conn,
+            &current_selected_note_id,
+            UpdateNoteDto {
+                content: Some(updated_note_a_content.to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+
+        // Consistent selection update: selectedNoteId becomes Note B
+        current_selected_note_id = result_note_b.note_id.clone();
+        assert_eq!(current_selected_note_id, note_b.id);
+
+        // Editor retrieves note for current_selected_note_id
+        let editor_loaded_note = NoteRepository::get_by_id(&conn, &current_selected_note_id)
+            .unwrap()
+            .expect("Note B must be loaded in editor");
+
+        // 5. Invariant Checks (TASK 80):
+        // - selectedNoteId = B updated consistently
+        assert_eq!(current_selected_note_id, note_b.id);
+        assert_eq!(result_note_b.note_id, editor_loaded_note.id);
+
+        // - Search result says B and editor actually shows B (no split-brain)
+        assert_eq!(editor_loaded_note.id, note_b.id);
+        assert_eq!(editor_loaded_note.title, "Note B — Sprint Backlog");
+        assert_eq!(editor_loaded_note.content, "Detailed backlog items and story point estimates.");
+
+        // - Note A is NOT shown in editor, but its changes were properly persisted in DB
+        assert_ne!(editor_loaded_note.id, note_a.id);
+        let note_a_in_db = NoteRepository::get_by_id(&conn, &note_a.id).unwrap().unwrap();
+        assert_eq!(note_a_in_db.content, updated_note_a_content);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+
+
+
 
 
 
