@@ -1,9 +1,11 @@
+pub mod attachments;
 pub mod notebooks;
 pub mod notes;
 pub mod search;
 pub mod settings;
 pub mod tags;
 
+pub use attachments::AttachmentRepository;
 pub use notebooks::NotebookRepository;
 pub use notes::NoteRepository;
 pub use search::SearchRepository;

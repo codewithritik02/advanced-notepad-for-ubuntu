@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import { Note, NoteFormat, EditorStatus, getFormatDisplayName } from "../../types";
 import { storageService, Tag } from "../../../../services/storage";
 import { TagPicker } from "../../../tags";
+import { AttachmentList } from "../../../attachments";
 import { NoteMetadataPanel } from "./NoteMetadataPanel";
 import "./EditorPlaceholder.css";
 
@@ -164,6 +165,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   } | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [attachmentCount, setAttachmentCount] = useState<number>(0);
+
+  // Fetch targeted attachment count for metadata panel (Phase 7, Task 19)
+  useEffect(() => {
+    if (!noteId) {
+      setAttachmentCount(0);
+      return;
+    }
+    storageService.attachments
+      .getAttachmentCount(noteId)
+      .then((count) => setAttachmentCount(count))
+      .catch(() => setAttachmentCount(0));
+  }, [noteId]);
 
   // In-memory editing state
   const [title, setTitle] = useState("");
@@ -942,9 +956,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             wordCount={wordCount}
             characterCount={content.length}
             byteSize={new TextEncoder().encode(content).length}
+            attachmentCount={attachmentCount}
             onMoveNote={onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
             onToggleFavorite={handleToggleFavorite}
           />
+
+          {/* Note File Attachments (Phase 7, Tasks 11-19) */}
+          <AttachmentList noteId={noteId} />
 
           <div className="editor-body-divider" />
 

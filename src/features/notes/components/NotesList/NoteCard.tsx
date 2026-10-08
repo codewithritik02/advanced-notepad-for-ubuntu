@@ -110,6 +110,28 @@ export const NoteCard: React.FC<NoteCardProps> = ({
         <span className="note-card-date" aria-label={`Updated ${note.updatedAt}`}>
           {note.updatedAt}
         </span>
+        {typeof note.attachmentCount === "number" && note.attachmentCount > 0 && (
+          <span
+            className="note-card-attachment-indicator"
+            title={`${note.attachmentCount} attachment${note.attachmentCount === 1 ? "" : "s"}`}
+            aria-label={`${note.attachmentCount} attachment${note.attachmentCount === 1 ? "" : "s"}`}
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.49-8.49a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+            <span className="note-card-attachment-count">{note.attachmentCount}</span>
+          </span>
+        )}
         {note.tags && note.tags.length > 0 && (
           <div className="note-card-tags" aria-label="Tags">
             {note.tags.slice(0, 3).map((tag) => (

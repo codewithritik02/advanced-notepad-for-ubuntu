@@ -104,6 +104,31 @@ CREATE TRIGGER IF NOT EXISTS notes_fts_au AFTER UPDATE ON notes BEGIN
 END;
 "#;
 
+/// SQL DDL for Attachments schema refinement (Migration 003, Task 3)
+pub const MIGRATION_003_ATTACHMENTS_SCHEMA_SQL: &str = r#"
+-- 1. Create updated attachments table with nullable mime_type and non-negative file_size constraint
+CREATE TABLE IF NOT EXISTS attachments_new (
+    id TEXT PRIMARY KEY NOT NULL,
+    note_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    mime_type TEXT,
+    file_size INTEGER NOT NULL CHECK (file_size >= 0),
+    created_at TEXT NOT NULL,
+    modified_at TEXT NOT NULL,
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+);
+
+-- 2. Preserve any existing attachment records
+INSERT OR IGNORE INTO attachments_new (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+SELECT id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at FROM attachments;
+
+-- 3. Replace old table and recreate index
+DROP TABLE attachments;
+ALTER TABLE attachments_new RENAME TO attachments;
+CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
+"#;
+
 /// Applies the initial schema to the provided database connection.
 pub fn apply_initial_schema(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(INITIAL_SCHEMA_SQL)?;

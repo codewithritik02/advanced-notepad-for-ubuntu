@@ -1,0 +1,369 @@
+/* Attachment List and Item Styles (Phase 7, Tasks 11 & 12) */
+
+.attachments-section {
+  margin: var(--spacing-sm) 0;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-panel);
+  overflow: hidden;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.attachments-section:hover {
+  border-color: var(--color-border-default);
+}
+
+/* Header */
+.attachments-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-xs) var(--spacing-md);
+  min-height: 36px;
+  background-color: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.attachments-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.attachments-header-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.attachments-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 9px;
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+
+.attachments-count-badge.has-items {
+  background-color: var(--color-accent-subtle);
+  color: var(--color-accent-default);
+}
+
+.attachments-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.attachments-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.attachments-add-btn:hover:not(:disabled) {
+  background-color: var(--color-surface-hover);
+  border-color: var(--color-accent-default);
+  color: var(--color-accent-default);
+}
+
+.attachments-add-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Spinner animation */
+.attachments-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: attachments-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes attachments-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Progress and Banners */
+.attachments-progress-banner {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background-color: var(--color-accent-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: 0.75rem;
+  color: var(--color-accent-default);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.attachments-success-banner {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background-color: var(--color-accent-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-accent-default);
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.attachments-success-close {
+  background: transparent;
+  border: none;
+  color: var(--color-accent-default);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.attachments-error-banner {
+  padding: var(--spacing-xs) var(--spacing-md);
+  background-color: var(--color-danger-subtle);
+  border-bottom: 1px solid var(--color-danger-default);
+  color: var(--color-danger-default);
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.attachments-error-close {
+  background: transparent;
+  border: none;
+  color: var(--color-danger-default);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+/* Loading & Empty States */
+.attachments-loading-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-md);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+}
+
+.attachments-empty-state {
+  padding: var(--spacing-md);
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+/* List Items Container */
+.attachments-list {
+  display: flex;
+  flex-direction: column;
+  padding: var(--spacing-2xs) 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* Individual Item Row */
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px var(--spacing-md);
+  transition: background-color var(--transition-fast);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.attachment-item:last-child {
+  border-bottom: none;
+}
+
+.attachment-item:hover {
+  background-color: var(--color-surface-hover);
+}
+
+.attachment-item-leading {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.attachment-type-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+
+.attachment-type-badge.type-pdf {
+  color: #ef4444;
+  background-color: #fee2e2;
+}
+
+.attachment-type-badge.type-image {
+  color: #0284c7;
+  background-color: #e0f2fe;
+}
+
+.attachment-type-badge.type-text {
+  color: #64748b;
+  background-color: #f1f5f9;
+}
+
+.attachment-type-badge.type-archive {
+  color: #d97706;
+  background-color: #fef3c7;
+}
+
+.attachment-type-badge.type-code {
+  color: #059669;
+  background-color: #d1fae5;
+}
+
+.attachment-type-badge.type-audio {
+  color: #7c3aed;
+  background-color: #ede9fe;
+}
+
+.attachment-type-badge.type-video {
+  color: #db2777;
+  background-color: #fce7f3;
+}
+
+.attachment-item-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-item-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.attachment-item-submeta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+}
+
+.attachment-meta-dot {
+  opacity: 0.5;
+}
+
+.attachment-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.attachment-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  background-color: var(--color-bg-surface);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.attachment-action-btn .action-text {
+  display: inline-block;
+}
+
+.attachment-action-btn.btn-open {
+  color: var(--color-text-secondary);
+}
+
+.attachment-action-btn.btn-open:hover:not(:disabled) {
+  color: var(--color-accent-default);
+  border-color: var(--color-accent-default);
+  background-color: var(--color-accent-subtle);
+}
+
+.attachment-action-btn.btn-remove {
+  color: var(--color-text-muted);
+}
+
+.attachment-action-btn.btn-remove:hover:not(:disabled) {
+  color: var(--color-danger-default);
+  border-color: var(--color-danger-default);
+  background-color: var(--color-danger-subtle);
+}
+
+.attachment-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.attachment-confirm-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.attachment-action-btn.btn-confirm-remove {
+  color: #ffffff;
+  background-color: var(--color-danger-default, #ef4444);
+  border-color: var(--color-danger-default, #ef4444);
+}
+
+.attachment-action-btn.btn-confirm-remove:hover:not(:disabled) {
+  background-color: #dc2626;
+  border-color: #dc2626;
+}
+
+.attachment-action-btn.btn-cancel-remove {
+  color: var(--color-text-secondary);
+}
+
+.attachment-action-btn.btn-cancel-remove:hover:not(:disabled) {
+  background-color: var(--color-surface-hover);
+}

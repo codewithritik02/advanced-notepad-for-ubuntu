@@ -10,7 +10,8 @@ export function computeNoteMetadata(
   note: Note,
   tags: Tag[] = [],
   notebookName?: string | null,
-  notebookPath?: string | null
+  notebookPath?: string | null,
+  attachmentCount?: number
 ): NoteMetadata {
   const content = note.content || "";
   const trimmed = content.trim();
@@ -32,6 +33,7 @@ export function computeNoteMetadata(
     word_count,
     character_count,
     byte_size,
+    attachment_count: attachmentCount,
   };
 }
 
@@ -53,6 +55,7 @@ export interface NoteListItem {
   notebookId?: string;
   notebookPath?: string;
   tags?: string[];
+  attachmentCount?: number;
 }
 
 export type NotesListStatus = "idle" | "loading" | "error" | "empty";

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use crate::storage::errors::StorageError;
-use crate::storage::schema::{INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL};
+use crate::storage::schema::{INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL, MIGRATION_003_ATTACHMENTS_SCHEMA_SQL};
 
 /// Represents a single discrete database migration step
 pub struct Migration {
@@ -20,6 +20,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 2,
         name: "002_fts5_search_index",
         sql: MIGRATION_002_FTS5_SQL,
+    },
+    Migration {
+        version: 3,
+        name: "003_attachments_schema_refinement",
+        sql: MIGRATION_003_ATTACHMENTS_SCHEMA_SQL,
     },
 ];
 
@@ -373,6 +378,108 @@ mod tests {
         assert_eq!(search_results.len(), 1, "Search must return results via fallback mechanism");
         assert_eq!(search_results[0].note_id, note1.id);
 
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_3_attachments_migration_schema_and_integrity() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_mig_att_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+
+        // 1. Simulate an existing database that has migrations 1 and 2 applied
+        let mut conn = init_connection(&db_path).expect("Initial connection failed");
+        ensure_migrations_table(&conn).expect("Ensure migrations table");
+
+        let tx = conn.transaction().expect("Tx");
+        tx.execute_batch(INITIAL_SCHEMA_SQL).expect("Apply v1 schema");
+        tx.execute_batch(MIGRATION_002_FTS5_SQL).expect("Apply v2 schema");
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "INSERT INTO _migrations (version, name, applied_at) VALUES (1, '001_initial_schema', ?1)",
+            rusqlite::params![now],
+        ).expect("Insert migration 1");
+        tx.execute(
+            "INSERT INTO _migrations (version, name, applied_at) VALUES (2, '002_fts5_search_index', ?1)",
+            rusqlite::params![now],
+        ).expect("Insert migration 2");
+
+        // Insert a pre-existing note and attachment
+        let note_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO notes (id, title, content, format, created_at, modified_at)
+             VALUES (?1, 'Note with Attachment', 'Content', 'txt', ?2, ?2)",
+            [&note_id, &now],
+        ).expect("Insert note");
+
+        let att_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+             VALUES (?1, ?2, 'test.pdf', 'note/test.pdf', 'application/pdf', 1024, ?3, ?3)",
+            [&att_id, &note_id, &now],
+        ).expect("Insert pre-existing attachment");
+        tx.commit().expect("Commit pre-migration data");
+
+        // 2. Run migrations (which applies Migration 3)
+        run_migrations(&mut conn).expect("Run migrations including v3");
+
+        // 3. Verify Migration 3 was recorded
+        let v3_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM _migrations WHERE version = 3",
+            [],
+            |r| r.get(0),
+        ).expect("Query _migrations for v3");
+        assert_eq!(v3_count, 1, "Migration 3 must be recorded in _migrations");
+
+        // 4. Verify pre-existing data was preserved
+        let fetched_att_name: String = conn.query_row(
+            "SELECT file_name FROM attachments WHERE id = ?1",
+            [&att_id],
+            |r| r.get(0),
+        ).expect("Pre-existing attachment must exist");
+        assert_eq!(fetched_att_name, "test.pdf");
+
+        // 5. Verify nullable mime_type support (inserting NULL mime_type)
+        let att_null_mime_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+             VALUES (?1, ?2, 'unknown_file.bin', 'note/bin.dat', NULL, 2048, ?3, ?3)",
+            [&att_null_mime_id, &note_id, &now],
+        ).expect("Inserting attachment with NULL mime_type must succeed");
+
+        let retrieved_mime: Option<String> = conn.query_row(
+            "SELECT mime_type FROM attachments WHERE id = ?1",
+            [&att_null_mime_id],
+            |r| r.get(0),
+        ).expect("Retrieve null mime");
+        assert_eq!(retrieved_mime, None);
+
+        // 6. Verify non-negative file_size constraint rejection
+        let invalid_size_res = conn.execute(
+            "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+             VALUES (?1, ?2, 'bad.dat', 'note/bad.dat', 'application/octet-stream', -5, ?3, ?3)",
+            [uuid::Uuid::new_v4().to_string(), note_id.clone(), now.clone()],
+        );
+        assert!(invalid_size_res.is_err(), "Negative file_size must be rejected by CHECK constraint");
+
+        // 7. Verify foreign key enforcement
+        let invalid_fk_res = conn.execute(
+            "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+             VALUES (?1, 'non-existent-note-id', 'bad.dat', 'note/bad.dat', 'application/octet-stream', 100, ?2, ?2)",
+            [uuid::Uuid::new_v4().to_string(), now.clone()],
+        );
+        assert!(invalid_fk_res.is_err(), "Non-existent note_id must be rejected by foreign key constraint");
+
+        // 8. Verify CASCADE deletion on hard note delete
+        conn.execute("DELETE FROM notes WHERE id = ?1", [&note_id]).expect("Delete note");
+        let remaining_att_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM attachments WHERE note_id = ?1",
+            [&note_id],
+            |r| r.get(0),
+        ).expect("Count attachments");
+        assert_eq!(remaining_att_count, 0, "Hard note deletion must cascade to attachments in database");
+
+        // Clean up
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

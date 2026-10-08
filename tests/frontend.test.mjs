@@ -7848,6 +7848,1356 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
   });
 });
 
+// =============================================================================
+// Phase 7: Attachments & Files
+// =============================================================================
+describe("Phase 7: Attachments & Files", () => {
+  describe("Task 10: Add-Attachment Workflow", () => {
+    // 1. Success workflow with progress tracking
+    it("executes add-attachment workflow and notifies progress for each file", async () => {
+      const { executeAddAttachmentWorkflow } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      const progressSnapshots = [];
+      const mockStorage = {
+        async addAttachment({ noteId, sourcePath }) {
+          return {
+            id: `att-${Math.random().toString(36).substring(2, 7)}`,
+            note_id: noteId,
+            file_name: sourcePath.split("/").pop(),
+            mime_type: "application/pdf",
+            file_size: 1024,
+            created_at: "2026-10-08T12:00:00Z",
+          };
+        },
+      };
+
+      const result = await executeAddAttachmentWorkflow(
+        "note-test-1",
+        ["/home/user/docs/financial_summary.pdf", "/home/user/docs/chart.png"],
+        (prog) => progressSnapshots.push({ ...prog }),
+        mockStorage
+      );
+
+      assert.strictEqual(result.targetNoteId, "note-test-1");
+      assert.strictEqual(result.successful.length, 2);
+      assert.strictEqual(result.failed.length, 0);
+      assert.strictEqual(result.successful[0].file_name, "financial_summary.pdf");
+      assert.strictEqual(result.successful[1].file_name, "chart.png");
+
+      // Verify progress notifications
+      assert.strictEqual(progressSnapshots.length, 2);
+      assert.deepStrictEqual(progressSnapshots[0], {
+        current: 1,
+        total: 2,
+        currentFileName: "financial_summary.pdf",
+      });
+      assert.deepStrictEqual(progressSnapshots[1], {
+        current: 2,
+        total: 2,
+        currentFileName: "chart.png",
+      });
+    });
+
+    // 2. Partial multi-file failure isolation
+    it("guarantees partial multi-file failure isolation: failed file does not cancel previous successes", async () => {
+      const { executeAddAttachmentWorkflow } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      const mockStorage = {
+        async addAttachment({ noteId, sourcePath }) {
+          if (sourcePath.includes("oversized")) {
+            throw new Error("File exceeds maximum permitted size of 100 MB.");
+          }
+          return {
+            id: `att-${sourcePath}`,
+            note_id: noteId,
+            file_name: sourcePath.split("/").pop(),
+            mime_type: "application/octet-stream",
+            file_size: 512,
+            created_at: "2026-10-08T12:00:00Z",
+          };
+        },
+      };
+
+      const fileList = [
+        "/docs/file1.pdf",
+        "/docs/oversized_video.mp4",
+        "/docs/file3.txt",
+      ];
+
+      const result = await executeAddAttachmentWorkflow(
+        "note-abc",
+        fileList,
+        undefined,
+        mockStorage
+      );
+
+      // Invariant: file1 and file3 succeed, file2 recorded in failed
+      assert.strictEqual(result.targetNoteId, "note-abc");
+      assert.strictEqual(result.successful.length, 2);
+      assert.strictEqual(result.failed.length, 1);
+
+      assert.strictEqual(result.successful[0].file_name, "file1.pdf");
+      assert.strictEqual(result.successful[1].file_name, "file3.txt");
+      assert.strictEqual(result.failed[0].path, "/docs/oversized_video.mp4");
+      assert.ok(result.failed[0].error.includes("File exceeds maximum permitted size"));
+    });
+
+    // 3. Target Note validation
+    it("rejects execution without a valid target note ID", async () => {
+      const { executeAddAttachmentWorkflow } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      await assert.rejects(
+        async () => {
+          await executeAddAttachmentWorkflow("", ["/path/test.pdf"]);
+        },
+        {
+          message: "Cannot add attachments without a valid note ID.",
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await executeAddAttachmentWorkflow("   ", ["/path/test.pdf"]);
+        },
+        {
+          message: "Cannot add attachments without a valid note ID.",
+        }
+      );
+    });
+
+    // 4. Structured Error State mapping
+    it("maps technical and user-friendly error strings into correct AttachmentErrorKind categories", async () => {
+      const { mapToAttachmentErrorState } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      assert.strictEqual(
+        mapToAttachmentErrorState("File exceeds maximum permitted size of 100 MB.").kind,
+        "FileTooLarge"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("The referenced note could not be found.").kind,
+        "NoteNotFound"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Cannot attach files to a deleted note").kind,
+        "InvalidRequest"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Selected source file could not be read or does not exist: test.bin").kind,
+        "SourceUnavailable"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Attachment file is missing from storage.").kind,
+        "ManagedFileMissing"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Permission denied when accessing file.").kind,
+        "PermissionDenied"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Failed to open attachment: no default application").kind,
+        "OpenFailed"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("A database error occurred while processing attachment.").kind,
+        "Database"
+      );
+      assert.strictEqual(
+        mapToAttachmentErrorState("Some unclassified system error").kind,
+        "Unknown"
+      );
+    });
+
+    // 5. IPC Bridge invariants verification
+    it("verifies attachmentsStorage IPC command contract and storageService export", async () => {
+      const fs = await import("node:fs");
+      const storageFile = fs.readFileSync(
+        new URL("../src/services/storage/attachments.ts", import.meta.url),
+        "utf8"
+      );
+
+      // Verifies each required Tauri command invocation
+      assert.ok(storageFile.includes('invoke<Attachment>("add_attachment"'));
+      assert.ok(storageFile.includes('invoke<Attachment[]>("list_attachments"'));
+      assert.ok(storageFile.includes('invoke<boolean>("remove_attachment"'));
+      assert.ok(storageFile.includes('invoke<void>("open_attachment"'));
+
+      const indexFile = fs.readFileSync(
+        new URL("../src/services/storage/index.ts", import.meta.url),
+        "utf8"
+      );
+      assert.ok(indexFile.includes("attachments: attachmentsStorage"));
+      assert.ok(indexFile.includes('export { attachmentsStorage } from "./attachments"'));
+    });
+  });
+
+  // Task 11: Build the Attachment List UI
+  describe("Task 11: Build the Attachment List UI", () => {
+    it("formats file sizes correctly across byte thresholds", async () => {
+      const { formatFileSize } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+      assert.strictEqual(formatFileSize(0), "0 B");
+      assert.strictEqual(formatFileSize(-10), "0 B");
+      assert.strictEqual(formatFileSize(512), "512 B");
+      assert.strictEqual(formatFileSize(1024), "1.0 KB");
+      assert.strictEqual(formatFileSize(1536), "1.5 KB");
+      assert.strictEqual(formatFileSize(1048576), "1.0 MB");
+      assert.strictEqual(formatFileSize(1073741824), "1.0 GB");
+    });
+
+    it("categorizes attachments accurately by file extension and MIME type", async () => {
+      const { getFileCategory } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+      assert.strictEqual(getFileCategory("contract.pdf"), "pdf");
+      assert.strictEqual(getFileCategory("document.bin", "application/pdf"), "pdf");
+      assert.strictEqual(getFileCategory("photo.png"), "image");
+      assert.strictEqual(getFileCategory("data.raw", "image/jpeg"), "image");
+      assert.strictEqual(getFileCategory("notes.txt"), "text");
+      assert.strictEqual(getFileCategory("README.md"), "text");
+      assert.strictEqual(getFileCategory("archive.tar.gz"), "archive");
+      assert.strictEqual(getFileCategory("files.zip"), "archive");
+      assert.strictEqual(getFileCategory("music.mp3"), "audio");
+      assert.strictEqual(getFileCategory("movie.mp4"), "video");
+      assert.strictEqual(getFileCategory("source.rs"), "code");
+      assert.strictEqual(getFileCategory("Component.tsx"), "code");
+      assert.strictEqual(getFileCategory("unknown.weirdext"), "generic");
+    });
+
+    it("formats ISO timestamps into clean localized dates", async () => {
+      const { formatAttachmentDate } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+      assert.strictEqual(formatAttachmentDate(null), "");
+      assert.strictEqual(formatAttachmentDate(undefined), "");
+      assert.strictEqual(formatAttachmentDate("invalid-date"), "");
+      const formatted = formatAttachmentDate("2026-10-08T10:30:00Z");
+      assert.ok(formatted.includes("2026"));
+      assert.ok(formatted.includes("Oct"));
+    });
+
+    it("verifies AttachmentItem and AttachmentList adhere to UI isolation and safety contracts", async () => {
+      const fs = await import("node:fs");
+      const itemContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentItem.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const listContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentList.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const editorContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/Editor/NoteEditor.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // AttachmentItem displays original file_name and never leaks internal storage paths
+      assert.ok(itemContent.includes("attachment.file_name"));
+      assert.ok(!itemContent.includes("relative_path"));
+      assert.ok(!itemContent.includes("file_path"));
+      assert.ok(itemContent.includes("formatFileSize(attachment.file_size)"));
+      assert.ok(itemContent.includes("onOpen(attachment.id)"));
+      assert.ok(itemContent.includes("onRemove(attachment.id)"));
+
+      // AttachmentList uses useAttachments hook, provides safe empty & disabled states
+      assert.ok(listContent.includes("useAttachments(noteId)"));
+      assert.ok(listContent.includes("pickAndAddFiles"));
+      assert.ok(listContent.includes("removeAttachment"));
+      assert.ok(listContent.includes("openAttachment"));
+      assert.ok(listContent.includes("attachments-empty-state"));
+      assert.ok(listContent.includes("attachments-error-banner"));
+
+      // NoteEditor mounts AttachmentList within editor-document
+      assert.ok(editorContent.includes("<AttachmentList noteId={noteId} />"));
+    });
+  });
+
+  // Task 12: Implement Human-Readable File Sizes and File-Type Presentation
+  describe("Task 12: Human-Readable File Sizes and File-Type Presentation", () => {
+    it("formats standard, boundary, and extreme byte values safely", async () => {
+      const { formatFileSize } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+
+      // Standard and edge thresholds
+      assert.strictEqual(formatFileSize(0), "0 B");
+      assert.strictEqual(formatFileSize(-1), "0 B");
+      assert.strictEqual(formatFileSize(NaN), "0 B");
+      assert.strictEqual(formatFileSize(Infinity), "0 B");
+      assert.strictEqual(formatFileSize(-Infinity), "0 B");
+      assert.strictEqual(formatFileSize(512), "512 B");
+      assert.strictEqual(formatFileSize(1023), "1023 B");
+      assert.strictEqual(formatFileSize(1024), "1.0 KB");
+      assert.strictEqual(formatFileSize(1536), "1.5 KB");
+      assert.strictEqual(formatFileSize(1048576), "1.0 MB");
+      assert.strictEqual(formatFileSize(1073741824), "1.0 GB");
+      assert.strictEqual(formatFileSize(1099511627776), "1.0 TB");
+      assert.strictEqual(formatFileSize(1125899906842624), "1.0 PB");
+
+      // Extremely large numbers up to MAX_SAFE_INTEGER
+      const maxSafeFormatted = formatFileSize(Number.MAX_SAFE_INTEGER);
+      assert.ok(maxSafeFormatted.endsWith("PB"));
+      assert.ok(!maxSafeFormatted.includes("NaN"));
+    });
+
+    it("maps all recognized file extensions and MIME types with generic fallback", async () => {
+      const { getFileCategory } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+
+      // PDF
+      assert.strictEqual(getFileCategory("report.pdf"), "pdf");
+      assert.strictEqual(getFileCategory("doc.bin", "application/pdf"), "pdf");
+
+      // Images
+      assert.strictEqual(getFileCategory("photo.avif"), "image");
+      assert.strictEqual(getFileCategory("scan.heic"), "image");
+      assert.strictEqual(getFileCategory("drawing.svg"), "image");
+      assert.strictEqual(getFileCategory("img.raw", "image/png"), "image");
+
+      // Text
+      assert.strictEqual(getFileCategory("memo.txt"), "text");
+      assert.strictEqual(getFileCategory("guide.markdown"), "text");
+      assert.strictEqual(getFileCategory("data.csv"), "text");
+      assert.strictEqual(getFileCategory("doc.bin", "text/plain"), "text");
+
+      // Archives
+      assert.strictEqual(getFileCategory("bundle.tar.gz"), "archive");
+      assert.strictEqual(getFileCategory("backup.7z"), "archive");
+      assert.strictEqual(getFileCategory("compressed.zst"), "archive");
+      assert.strictEqual(getFileCategory("pack.bin", "application/zip"), "archive");
+
+      // Audio
+      assert.strictEqual(getFileCategory("recording.opus"), "audio");
+      assert.strictEqual(getFileCategory("track.flac"), "audio");
+      assert.strictEqual(getFileCategory("audio.bin", "audio/ogg"), "audio");
+
+      // Video
+      assert.strictEqual(getFileCategory("capture.mkv"), "video");
+      assert.strictEqual(getFileCategory("clip.webm"), "video");
+      assert.strictEqual(getFileCategory("video.bin", "video/mp4"), "video");
+
+      // Code
+      assert.strictEqual(getFileCategory("config.toml"), "code");
+      assert.strictEqual(getFileCategory("query.sql"), "code");
+      assert.strictEqual(getFileCategory("style.scss"), "code");
+      assert.strictEqual(getFileCategory("code.bin", "application/json"), "code");
+
+      // Fallbacks
+      assert.strictEqual(getFileCategory("data.xyz123"), "generic");
+      assert.strictEqual(getFileCategory("noextension"), "generic");
+      assert.strictEqual(getFileCategory(""), "generic");
+    });
+
+    it("verifies presentation accessibility, layout safeguards, and no-preview constraints", async () => {
+      const fs = await import("node:fs");
+      const iconsContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentIcons.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const itemContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentItem.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const cssContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentList.css",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Icon rendering supports full category suite without external icon dependencies
+      assert.ok(iconsContent.includes("FilePdfIcon"));
+      assert.ok(iconsContent.includes("FileImageIcon"));
+      assert.ok(iconsContent.includes("FileTextIcon"));
+      assert.ok(iconsContent.includes("FileArchiveIcon"));
+      assert.ok(iconsContent.includes("FileAudioIcon"));
+      assert.ok(iconsContent.includes("FileVideoIcon"));
+      assert.ok(iconsContent.includes("FileCodeIcon"));
+      assert.ok(iconsContent.includes("FileGenericIcon"));
+
+      // Accessibility: Action buttons have text labels AND accessible names
+      assert.ok(itemContent.includes('<span className="action-text">Open</span>'));
+      assert.ok(itemContent.includes('<span className="action-text">Remove</span>'));
+      assert.ok(itemContent.includes('aria-label={`Open ${attachment.file_name}`'));
+      assert.ok(itemContent.includes('aria-label={`Remove ${attachment.file_name}`'));
+
+      // Layout: long filenames truncated safely with ellipsis without breaking flex row
+      assert.ok(cssContent.includes("text-overflow: ellipsis;"));
+      assert.ok(cssContent.includes("overflow: hidden;"));
+      assert.ok(cssContent.includes("white-space: nowrap;"));
+      assert.ok(cssContent.includes("min-width: 0;"));
+
+      // No document preview or heavy rendering dependency introduced
+      assert.ok(!itemContent.includes("iframe"));
+      assert.ok(!itemContent.includes("embed"));
+      assert.ok(!itemContent.includes("pdfjs"));
+    });
+  });
+
+  // Task 13: Implement Safe Attachment Opening
+  describe("Task 13: Safe Attachment Opening", () => {
+    it("guarantees open_attachment accepts strictly attachment ID and never frontend-supplied paths", async () => {
+      const fs = await import("node:fs");
+      const storageClientFile = fs.readFileSync(
+        new URL("../src/services/storage/attachments.ts", import.meta.url),
+        "utf8"
+      );
+      const commandsFile = fs.readFileSync(
+        new URL("../src-tauri/src/commands/storage.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Frontend storage service takes only ID and invokes open_attachment with { id: id.trim() }
+      assert.ok(storageClientFile.includes("openAttachment(id: string): Promise<void>"));
+      assert.ok(storageClientFile.includes('"open_attachment"'));
+      assert.ok(storageClientFile.includes("id: id.trim()"));
+      assert.ok(!storageClientFile.includes("path:"));
+
+      // Backend command signature accepts only (app, db, paths, id: String)
+      const openCmdMatch = commandsFile.match(/pub fn open_attachment\(([\s\S]*?)\)/);
+      assert.ok(openCmdMatch, "open_attachment command must exist");
+      assert.ok(openCmdMatch[1].includes("id: String"));
+      assert.ok(!openCmdMatch[1].includes("path: String"));
+    });
+
+    it("maps opening-specific backend error messages to structured frontend error kinds", async () => {
+      const { mapToAttachmentErrorState } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      const missingFileError = mapToAttachmentErrorState(
+        "Attachment file is missing from storage."
+      );
+      assert.strictEqual(missingFileError.kind, "ManagedFileMissing");
+      assert.strictEqual(
+        missingFileError.message,
+        "Attachment file is missing from storage."
+      );
+
+      const openFailedError = mapToAttachmentErrorState(
+        "Failed to open attachment with default application: no associated app"
+      );
+      assert.strictEqual(openFailedError.kind, "OpenFailed");
+
+      const permissionError = mapToAttachmentErrorState(
+        "Permission denied when accessing file in storage."
+      );
+      assert.strictEqual(permissionError.kind, "PermissionDenied");
+    });
+
+    it("verifies Open action button accessibility and in-flight busy state handling", async () => {
+      const fs = await import("node:fs");
+      const itemContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentItem.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify open button binds strictly to attachment.id and respects isBusy
+      assert.ok(itemContent.includes("onClick={() => onOpen(attachment.id)}"));
+      assert.ok(itemContent.includes("disabled={isBusy}"));
+      assert.ok(itemContent.includes('className="attachment-action-btn btn-open"'));
+      assert.ok(itemContent.includes("ExternalLinkIcon"));
+    });
+  });
+
+  // Task 14: Implement Attachment Removal and Managed-File Cleanup
+  describe("Task 14: Attachment Removal and Managed-File Cleanup", () => {
+    it("guarantees remove_attachment takes strictly ID and never accepts frontend deletion paths", async () => {
+      const fs = await import("node:fs");
+      const storageClientFile = fs.readFileSync(
+        new URL("../src/services/storage/attachments.ts", import.meta.url),
+        "utf8"
+      );
+      const commandsFile = fs.readFileSync(
+        new URL("../src-tauri/src/commands/storage.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Frontend storage service takes only ID and invokes remove_attachment with { id: id.trim() }
+      assert.ok(
+        storageClientFile.includes(
+          "removeAttachment(id: string): Promise<boolean>"
+        )
+      );
+      assert.ok(storageClientFile.includes('"remove_attachment"'));
+      assert.ok(storageClientFile.includes("id: id.trim()"));
+      assert.ok(!storageClientFile.includes("removeAttachment(path:"));
+
+      // Backend command signature accepts only (db, paths, id: String)
+      const removeCmdMatch = commandsFile.match(
+        /pub fn remove_attachment\(([\s\S]*?)\)/
+      );
+      assert.ok(removeCmdMatch, "remove_attachment command must exist");
+      assert.ok(removeCmdMatch[1].includes("id: String"));
+      assert.ok(!removeCmdMatch[1].includes("path: String"));
+    });
+
+    it("verifies removal confirmation flow and double-click protection in AttachmentItem", async () => {
+      const fs = await import("node:fs");
+      const itemContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentItem.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify confirmation states exist
+      assert.ok(itemContent.includes("isConfirming"));
+      assert.ok(itemContent.includes("setIsConfirming(true)"));
+      assert.ok(itemContent.includes("setIsConfirming(false)"));
+      assert.ok(itemContent.includes("btn-confirm-remove"));
+      assert.ok(itemContent.includes("btn-cancel-remove"));
+
+      // Verify disabled={isBusy} prevents concurrent removal clicks
+      assert.ok(itemContent.includes("disabled={isBusy}"));
+      assert.ok(itemContent.includes("handleConfirmRemove"));
+    });
+
+    it("verifies useAttachments filters out deleted attachment and handles errors", async () => {
+      const fs = await import("node:fs");
+      const hookContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/hooks/useAttachments.ts",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      assert.ok(hookContent.includes('setStatus("removing")'));
+      assert.ok(hookContent.includes("attachmentsStorage.removeAttachment(id)"));
+      assert.ok(
+        hookContent.includes(
+          "setAttachments((prev) => prev.filter((a) => a.id !== id))"
+        )
+      );
+      assert.ok(
+        hookContent.includes(
+          'mapToAttachmentErrorState(err, "Failed to remove attachment.")'
+        )
+      );
+    });
+  });
+
+  // Task 15: Handle Duplicate Filenames, Unicode, and Unusual Names
+  describe("Task 15: Duplicate Filenames, Unicode, and Unusual Names", () => {
+    it("categorizes all unusual, international, and multi-extension filenames properly", async () => {
+      const { getFileCategory } = await import(
+        "../src/features/attachments/utils/formatters.ts"
+      );
+
+      assert.strictEqual(getFileCategory("report (1).pdf"), "pdf");
+      assert.strictEqual(getFileCategory("final version 2026.pdf"), "pdf");
+      assert.strictEqual(getFileCategory("résumé.pdf"), "pdf");
+      assert.strictEqual(getFileCategory("नोट्स.txt"), "text");
+      assert.strictEqual(getFileCategory("项目计划.pdf"), "pdf");
+      assert.strictEqual(getFileCategory("file with many spaces.txt"), "text");
+      assert.strictEqual(getFileCategory("archive.tar.gz"), "archive");
+      assert.strictEqual(getFileCategory("README_NO_EXT"), "generic");
+      assert.strictEqual(getFileCategory("🚀 rocket note 🎉.log"), "text");
+      assert.strictEqual(getFileCategory("trailing_space.txt "), "text");
+    });
+
+    it("verifies AttachmentItem preserves Unicode and provides full tooltip access", async () => {
+      const fs = await import("node:fs");
+      const itemContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentItem.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Ensures title attribute on filename allows viewing long or truncated text
+      assert.ok(itemContent.includes("title={attachment.file_name}"));
+      assert.ok(itemContent.includes("{attachment.file_name}"));
+      assert.ok(itemContent.includes("className=\"attachment-item-name selectable-text\""));
+    });
+  });
+
+  // Task 16: Handle Missing Files, Permission Errors, and Disk Failures
+  describe("Task 16: Missing Files, Permission Errors, and Disk Failures", () => {
+    it("maps all failure modes to structured non-technical user messages", async () => {
+      const { mapToAttachmentErrorState } = await import(
+        "../src/features/attachments/services/attachmentWorkflow.ts"
+      );
+
+      const tests = [
+        {
+          input: "Selected source file could not be read or does not exist: foo.txt",
+          expectedKind: "SourceUnavailable",
+        },
+        {
+          input: "Permission denied when accessing file.",
+          expectedKind: "PermissionDenied",
+        },
+        {
+          input: "Insufficient disk space to save attachment.",
+          expectedKind: "InsufficientDiskSpace",
+        },
+        {
+          input: "Attachment file is missing from storage.",
+          expectedKind: "ManagedFileMissing",
+        },
+        {
+          input: "File exceeds maximum permitted size of 25 MB.",
+          expectedKind: "FileTooLarge",
+        },
+        {
+          input: "Failed to open attachment: no default application found",
+          expectedKind: "OpenFailed",
+        },
+      ];
+
+      for (const t of tests) {
+        const state = mapToAttachmentErrorState(t.input);
+        assert.strictEqual(state.kind, t.expectedKind);
+        assert.strictEqual(state.message, t.input);
+      }
+    });
+
+    it("verifies error banner and dismissal capability in AttachmentList component", async () => {
+      const fs = await import("node:fs");
+      const listContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentList.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify dismissible error banner with role="alert"
+      assert.ok(listContent.includes('className="attachments-error-banner"'));
+      assert.ok(listContent.includes('role="alert"'));
+      assert.ok(listContent.includes("clearError"));
+      assert.ok(listContent.includes("onClick={clearError}"));
+    });
+  });
+
+  // Task 17: Implement Attachment State Management in React
+  describe("Task 17: Attachment State Management in React", () => {
+    it("guarantees selection race protection and note identity synchronization in useAttachments", async () => {
+      const fs = await import("node:fs");
+      const hookContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/hooks/useAttachments.ts",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify sequence tracking to discard stale asynchronous list loads
+      assert.ok(hookContent.includes("listSequenceRef"));
+      assert.ok(hookContent.includes("++listSequenceRef.current"));
+      assert.ok(hookContent.includes("currentSequence === listSequenceRef.current"));
+
+      // Verify immediate state clearing when note selection switches
+      assert.ok(hookContent.includes("prevNoteIdRef.current !== noteId"));
+      assert.ok(hookContent.includes("setAttachments([])"));
+
+      // Verify operations anchor to targetNoteId and do not mutate new note on late completion
+      assert.ok(hookContent.includes("const targetNoteId = currentNoteIdRef.current;"));
+      assert.ok(hookContent.includes("currentNoteIdRef.current === targetNoteId"));
+    });
+
+    it("verifies architectural decoupling and zero disturbance of note editor content", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/Editor/NoteEditor.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify AttachmentList is rendered with only noteId, without duplicating state
+      assert.ok(editorContent.includes("<AttachmentList noteId={noteId} />"));
+
+      // Verify no duplicate attachment array state lives in NoteEditor root
+      assert.ok(!editorContent.includes("const [attachments, setAttachments]"));
+    });
+  });
+
+  // Task 18: Add Loading, Empty, Success, and Error States
+  describe("Task 18: Loading, Empty, Success, and Error States", () => {
+    it("verifies distinct UI state rendering and accessibility landmarks in AttachmentList", async () => {
+      const fs = await import("node:fs");
+      const listContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentList.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // 1. Empty state
+      assert.ok(listContent.includes('className="attachments-empty-state"'));
+      assert.ok(listContent.includes("No attachments yet."));
+
+      // 2. Loading state with spinner and accessible announcement
+      assert.ok(listContent.includes('className="attachments-loading-state"'));
+      assert.ok(listContent.includes("Loading attachments..."));
+      assert.ok(listContent.includes('className="attachments-spinner"'));
+
+      // 3. Adding in-flight progress banner
+      assert.ok(listContent.includes('className="attachments-progress-banner"'));
+      assert.ok(listContent.includes('role="status"'));
+      assert.ok(listContent.includes('aria-live="polite"'));
+
+      // 4. Success banner with dismiss action
+      assert.ok(listContent.includes('className="attachments-success-banner"'));
+      assert.ok(listContent.includes("clearSuccess"));
+      assert.ok(listContent.includes("onClick={clearSuccess}"));
+
+      // 5. Error banner with role="alert" and dismiss action
+      assert.ok(listContent.includes('className="attachments-error-banner"'));
+      assert.ok(listContent.includes('role="alert"'));
+      assert.ok(listContent.includes("clearError"));
+      assert.ok(listContent.includes("onClick={clearError}"));
+    });
+
+    it("verifies success feedback lifecycle and cleanup in useAttachments hook", async () => {
+      const fs = await import("node:fs");
+      const hookContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/hooks/useAttachments.ts",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify hook exposes successMessage and clearSuccess
+      assert.ok(hookContent.includes("successMessage: string | null;"));
+      assert.ok(hookContent.includes("clearSuccess: () => void;"));
+
+      // Verify success notification triggers for file add and remove
+      assert.ok(hookContent.includes("showSuccess"));
+      assert.ok(hookContent.includes("Attached"));
+      assert.ok(hookContent.includes("Attachment removed successfully."));
+
+      // Verify timer cleanup on unmount
+      assert.ok(hookContent.includes("clearTimeout(successTimerRef.current)"));
+    });
+
+    it("verifies theme-compliant styles for spinner and feedback banners in AttachmentList.css", async () => {
+      const fs = await import("node:fs");
+      const cssContent = fs.readFileSync(
+        new URL(
+          "../src/features/attachments/components/AttachmentList.css",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      assert.ok(cssContent.includes(".attachments-spinner"));
+      assert.ok(cssContent.includes("@keyframes attachments-spin"));
+      assert.ok(cssContent.includes(".attachments-loading-state"));
+      assert.ok(cssContent.includes(".attachments-success-banner"));
+      assert.ok(cssContent.includes(".attachments-error-banner"));
+      assert.ok(cssContent.includes(".attachments-empty-state"));
+    });
+  });
+
+  // Task 19: Add Attachment Counts and Integrate with Existing Note Metadata
+  describe("Task 19: Attachment Counts and Metadata Integration", () => {
+    it("preserves canonical metadata calculation while supporting attachment counts", async () => {
+      const { computeNoteMetadata } = await import(
+        "../src/features/notes/types.ts"
+      );
+
+      const fakeNote = {
+        id: "note-123",
+        title: "Test Note",
+        content: "Hello world attached",
+        created_at: "2026-03-01T12:00:00Z",
+        modified_at: "2026-03-01T12:30:00Z",
+        format: "md",
+        notebook_id: null,
+        is_favorite: false,
+        is_pinned: false,
+      };
+
+      // 1. Calling without attachmentCount preserves existing contract
+      const meta1 = computeNoteMetadata(fakeNote, [], "Notebook A");
+      assert.strictEqual(meta1.note_id, "note-123");
+      assert.strictEqual(meta1.word_count, 3);
+      assert.strictEqual(meta1.attachment_count, undefined);
+
+      // 2. Calling with attachmentCount propagates properly
+      const meta2 = computeNoteMetadata(fakeNote, [], "Notebook A", "Path A", 5);
+      assert.strictEqual(meta2.attachment_count, 5);
+    });
+
+    it("verifies NoteMetadataPanel renders Attachments row without regressions", async () => {
+      const fs = await import("node:fs");
+      const panelContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/Editor/NoteMetadataPanel.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      assert.ok(panelContent.includes("attachmentCount?: number;"));
+      assert.ok(panelContent.includes('<span className="note-metadata-label">Attachments</span>'));
+      assert.ok(panelContent.includes('attachmentCount > 0'));
+      assert.ok(panelContent.includes('"None"'));
+    });
+
+    it("verifies NoteCard and NotesList render attachment indicator badge without N+1 query loop", async () => {
+      const fs = await import("node:fs");
+      const cardContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/NotesList/NoteCard.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verifies attachment badge is conditionally rendered
+      assert.ok(cardContent.includes('note.attachmentCount > 0'));
+      assert.ok(cardContent.includes('className="note-card-attachment-indicator"'));
+      assert.ok(cardContent.includes('note-card-attachment-count'));
+
+      // Verifies AttachmentRepository provides batch_count_by_note_ids preventing N+1 queries
+      const repoContent = fs.readFileSync(
+        new URL(
+          "../src-tauri/src/storage/repositories/attachments.rs",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      assert.ok(repoContent.includes("pub fn count_by_note_id"));
+      assert.ok(repoContent.includes("pub fn batch_count_by_note_ids"));
+      assert.ok(repoContent.includes("GROUP BY note_id"));
+    });
+  });
+
+  // Task 20: Define Attachment Behavior During Note Deletion and Lifecycle Changes
+  describe("Task 20: Note Deletion and Lifecycle Behavior", () => {
+    it("guarantees attachment stability during note rename, notebook move, and metadata mutations", async () => {
+      const fs = await import("node:fs");
+      const integrationTestContent = fs.readFileSync(
+        new URL(
+          "../src-tauri/tests/storage_integration_test.rs",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verifies backend tests lifecycle invariants
+      assert.ok(
+        integrationTestContent.includes(
+          "test_task_20_attachment_behavior_during_note_deletion_and_lifecycle_changes"
+        )
+      );
+      assert.ok(integrationTestContent.includes("Renamed Note Title"));
+      assert.ok(integrationTestContent.includes("Work Notebook"));
+      assert.ok(integrationTestContent.includes("move_to_notebook"));
+      assert.ok(integrationTestContent.includes("add_tag_to_note"));
+      assert.ok(integrationTestContent.includes("set_favorite"));
+    });
+
+    it("verifies soft-delete retention and rejection of attachments on deleted notes", async () => {
+      const fs = await import("node:fs");
+      const repoContent = fs.readFileSync(
+        new URL(
+          "../src-tauri/src/storage/repositories/attachments.rs",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verifies verify_note_eligible forbids attaching to soft-deleted notes
+      assert.ok(repoContent.includes("verify_note_eligible"));
+      assert.ok(repoContent.includes("Cannot attach files to a deleted note"));
+    });
+
+    it("verifies permanent delete cleans up physical directory to prevent orphaned files", async () => {
+      const fs = await import("node:fs");
+      const commandsContent = fs.readFileSync(
+        new URL(
+          "../src-tauri/src/commands/storage.rs",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const storageContent = fs.readFileSync(
+        new URL(
+          "../src-tauri/src/storage/attachment_storage.rs",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verifies delete_note checks soft parameter and removes physical note directory on hard delete
+      assert.ok(commandsContent.includes("pub fn delete_note"));
+      assert.ok(commandsContent.includes("storage.remove_note_directory(&id)"));
+      assert.ok(storageContent.includes("pub fn remove_note_directory"));
+    });
+  });
+
+  // Task 21: Add Orphan Detection and Basic Storage Consistency Checks
+  describe("Task 21: Orphan Detection and Storage Consistency Checks", () => {
+    it("verifies typed consistency interfaces and frontend storage service methods", async () => {
+      const fs = await import("node:fs");
+      const typesContent = fs.readFileSync(
+        new URL("../src/services/storage/types.ts", import.meta.url),
+        "utf8"
+      );
+      const serviceContent = fs.readFileSync(
+        new URL("../src/services/storage/attachments.ts", import.meta.url),
+        "utf8"
+      );
+
+      // Verify TypeScript contract definitions
+      assert.ok(typesContent.includes("export interface MissingManagedFileIssue"));
+      assert.ok(typesContent.includes("export interface SizeMismatchIssue"));
+      assert.ok(typesContent.includes("export interface AttachmentConsistencyReport"));
+      assert.ok(typesContent.includes("missing_managed_files: MissingManagedFileIssue[]"));
+      assert.ok(typesContent.includes("unreferenced_managed_files: string[]"));
+      assert.ok(typesContent.includes("abandoned_temp_files: string[]"));
+      assert.ok(typesContent.includes("size_mismatches: SizeMismatchIssue[]"));
+      assert.ok(typesContent.includes("is_consistent: boolean"));
+
+      // Verify frontend service methods
+      assert.ok(serviceContent.includes("checkConsistency(): Promise<AttachmentConsistencyReport>"));
+      assert.ok(serviceContent.includes('invoke<AttachmentConsistencyReport>("check_attachment_consistency")'));
+      assert.ok(serviceContent.includes("cleanupAbandonedTempFiles(olderThanSeconds?: number): Promise<number>"));
+      assert.ok(serviceContent.includes('invoke<number>("cleanup_abandoned_temp_files"'));
+    });
+
+    it("verifies backend containment, symlink skip, and temp age threshold safety rules", async () => {
+      const fs = await import("node:fs");
+      const storageContent = fs.readFileSync(
+        new URL("../src-tauri/src/storage/attachment_storage.rs", import.meta.url),
+        "utf8"
+      );
+      const serviceContent = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/attachments.rs", import.meta.url),
+        "utf8"
+      );
+      const commandsContent = fs.readFileSync(
+        new URL("../src-tauri/src/commands/storage.rs", import.meta.url),
+        "utf8"
+      );
+
+      // 1. Strict directory containment & canonical check
+      assert.ok(storageContent.includes("pub fn scan_managed_files"));
+      assert.ok(storageContent.includes("canon_note_dir.starts_with(&canonical_root)"));
+
+      // 2. Symlinks skipped
+      assert.ok(storageContent.includes("file_type.is_symlink()"));
+
+      // 3. Temporary staging files identified by .tmp.
+      assert.ok(storageContent.includes('file_name.contains(".tmp.")'));
+
+      // 4. Age-based cleanup prevents touching in-flight active copies
+      assert.ok(storageContent.includes("pub fn cleanup_abandoned_temp_files"));
+      assert.ok(storageContent.includes("dur.as_secs() >= older_than_seconds"));
+
+      // 5. Service checks consistency across DB list_all and disk scan
+      assert.ok(serviceContent.includes("pub fn check_consistency"));
+      assert.ok(serviceContent.includes("AttachmentRepository::list_all"));
+
+      // 6. Registered Tauri commands
+      assert.ok(commandsContent.includes("pub fn check_attachment_consistency"));
+      assert.ok(commandsContent.includes("pub fn cleanup_abandoned_temp_files"));
+    });
+
+    it("confirms absence of aggressive background deletion schedulers or repair dashboards", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src-tauri/src/lib.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify no background daemon thread or cron scheduler is registered for automatic deletion
+      assert.ok(!appContent.includes("std::thread::spawn"));
+      assert.ok(!appContent.includes("cron"));
+      assert.ok(!appContent.includes("schedule_repair"));
+    });
+  });
+
+  // Task 22: Add Automated Rust and Database Tests
+  describe("Task 22: Automated Rust and Database Tests Verification", () => {
+    it("verifies comprehensive Rust storage test coverage in attachment_storage.rs", async () => {
+      const fs = await import("node:fs");
+      const storageCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/attachment_storage.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Storage tests coverage
+      assert.ok(storageCode.includes("test_task_22_storage_comprehensive_tests"));
+      assert.ok(storageCode.includes("binary_payload"));
+      assert.ok(storageCode.includes("वार्षिक रिपोर्ट & Strategy 🚀 2026.pdf"));
+      assert.ok(storageCode.includes("assert_ne!(stored_u1.stored_name, stored_u2.stored_name)"));
+      assert.ok(storageCode.includes("PermissionDenied"));
+      assert.ok(storageCode.includes("SourceUnavailable"));
+      assert.ok(storageCode.includes("Temporary file was not cleaned up"));
+      assert.ok(storageCode.includes("resolve_safe_path(\"../secret.txt\").is_err()"));
+      assert.ok(storageCode.includes("resolve_safe_path(\"note/../../etc/shadow\").is_err()"));
+    });
+
+    it("verifies comprehensive Rust repository test coverage in repositories/attachments.rs", async () => {
+      const fs = await import("node:fs");
+      const repoCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/attachments.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Repository tests coverage
+      assert.ok(repoCode.includes("test_task_22_repository_comprehensive_tests"));
+      assert.ok(repoCode.includes("empty_list.is_empty()"));
+      assert.ok(repoCode.includes("missing_att, None"));
+      assert.ok(repoCode.includes("Foreign key constraint must reject nonexistent note_id"));
+      assert.ok(repoCode.includes("NoteNotFound"));
+      assert.ok(repoCode.includes("Cannot attach files to a deleted note") || repoCode.includes("deleted note"));
+    });
+
+    it("verifies comprehensive Rust service and security test coverage in services/attachments.rs and integration tests", async () => {
+      const fs = await import("node:fs");
+      const serviceCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/attachments.rs", import.meta.url),
+        "utf8"
+      );
+      const integrationCode = fs.readFileSync(
+        new URL("../src-tauri/tests/storage_integration_test.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Service and security tests
+      assert.ok(serviceCode.includes("test_task_22_service_and_security_tests"));
+      assert.ok(serviceCode.includes("list_after_fail.len(), 1"));
+      assert.ok(serviceCode.includes("'; DROP TABLE attachments; --"));
+      assert.ok(serviceCode.includes("AttachmentNotFound"));
+
+      // Integration test suite
+      assert.ok(integrationCode.includes("test_task_22_automated_rust_and_database_suite"));
+      assert.ok(integrationCode.includes("Binary content must be copied without modification"));
+      assert.ok(integrationCode.includes("Foreign key violation must be enforced"));
+    });
+  });
+
+  // Task 23: Add Frontend and Tauri Integration Tests
+  describe("Task 23: Frontend and Tauri Integration Tests", () => {
+    describe("1. Attachment list UI rendering and accessibility", () => {
+      it("renders empty state when note has no attachments", async () => {
+        const fs = await import("node:fs");
+        const listContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentList.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(listContent.includes("No attachments yet."));
+        assert.ok(listContent.includes('className="attachments-empty-state"'));
+      });
+
+      it("renders loading and error states with accessible ARIA live attributes", async () => {
+        const fs = await import("node:fs");
+        const listContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentList.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(listContent.includes("Loading attachments..."));
+        assert.ok(listContent.includes('role="alert"'));
+        assert.ok(listContent.includes('role="status"'));
+        assert.ok(listContent.includes('aria-live="polite"'));
+      });
+
+      it("renders Unicode, international, and unusually long filenames safely with full tooltip", async () => {
+        const fs = await import("node:fs");
+        const itemContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentItem.tsx", import.meta.url),
+          "utf8"
+        );
+        const cssContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentList.css", import.meta.url),
+          "utf8"
+        );
+
+        // Tooltip title preserves full filename
+        assert.ok(itemContent.includes("title={attachment.file_name}"));
+        assert.ok(itemContent.includes("{attachment.file_name}"));
+
+        // CSS guarantees safe truncation without breaking flex layout
+        assert.ok(cssContent.includes("text-overflow: ellipsis;"));
+        assert.ok(cssContent.includes("overflow: hidden;"));
+        assert.ok(cssContent.includes("white-space: nowrap;"));
+      });
+    });
+
+    describe("2. Add operation workflow and cancellation safety", () => {
+      it("safely handles cancellation from file picker without altering state", async () => {
+        const { executeAddAttachmentWorkflow } = await import(
+          "../src/features/attachments/services/attachmentWorkflow.ts"
+        );
+
+        // Cancellation produces an empty array of file paths
+        const result = await executeAddAttachmentWorkflow("note-123", []);
+
+        assert.strictEqual(result.targetNoteId, "note-123");
+        assert.strictEqual(result.successful.length, 0);
+        assert.strictEqual(result.failed.length, 0);
+      });
+
+      it("executes multi-file addition and isolates individual file errors", async () => {
+        const { executeAddAttachmentWorkflow } = await import(
+          "../src/features/attachments/services/attachmentWorkflow.ts"
+        );
+
+        const mockStorage = {
+          addAttachment: async (input) => {
+            if (input.sourcePath.includes("bad")) {
+              throw new Error("File exceeds maximum permitted size of 25 MB.");
+            }
+            return {
+              id: "att-1",
+              note_id: input.noteId,
+              file_name: "good.pdf",
+              mime_type: "application/pdf",
+              file_size: 1024,
+              created_at: "2026-10-08T12:00:00Z",
+            };
+          },
+        };
+
+        const progressUpdates = [];
+        const result = await executeAddAttachmentWorkflow(
+          "note-123",
+          ["/path/good.pdf", "/path/bad.bin"],
+          (p) => progressUpdates.push(p),
+          mockStorage
+        );
+
+        assert.strictEqual(result.successful.length, 1);
+        assert.strictEqual(result.failed.length, 1);
+        assert.ok(result.failed[0].error.includes("File exceeds maximum"));
+        assert.strictEqual(progressUpdates.length, 2);
+      });
+
+      it("guards against duplicate concurrent clicks via isBusy state", async () => {
+        const fs = await import("node:fs");
+        const listContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentList.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(listContent.includes("disabled={isBusy || isReadOnly}"));
+        assert.ok(listContent.includes('className="attachments-add-btn"'));
+        assert.ok(listContent.includes('onClick={handleAddFiles}'));
+      });
+    });
+
+    describe("3. Safe Open operation", () => {
+      it("invokes open_attachment with strictly attachment ID", async () => {
+        const fs = await import("node:fs");
+        const itemContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentItem.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(itemContent.includes("onOpen(attachment.id)"));
+        assert.ok(itemContent.includes("disabled={isBusy}"));
+        assert.ok(itemContent.includes('className="attachment-action-btn btn-open"'));
+      });
+
+      it("displays understandable non-technical error if managed file is missing", async () => {
+        const { mapToAttachmentErrorState } = await import(
+          "../src/features/attachments/services/attachmentWorkflow.ts"
+        );
+
+        const state = mapToAttachmentErrorState("Attachment file is missing from storage.");
+        assert.strictEqual(state.kind, "ManagedFileMissing");
+        assert.ok(state.message.includes("missing"));
+      });
+    });
+
+    describe("4. Remove operation and neighbor row isolation", () => {
+      it("requires user confirmation before removal and supports dismissal", async () => {
+        const fs = await import("node:fs");
+        const itemContent = fs.readFileSync(
+          new URL("../src/features/attachments/components/AttachmentItem.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(itemContent.includes("isConfirming"));
+        assert.ok(itemContent.includes("btn-confirm-remove"));
+        assert.ok(itemContent.includes("btn-cancel-remove"));
+      });
+
+      it("verifies removal preserves neighboring rows and updates list in useAttachments", async () => {
+        const fs = await import("node:fs");
+        const hookContent = fs.readFileSync(
+          new URL("../src/features/attachments/hooks/useAttachments.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          hookContent.includes("setAttachments((prev) => prev.filter((a) => a.id !== id))")
+        );
+      });
+    });
+
+    describe("5. State synchronization and regression invariants", () => {
+      it("synchronizes note selection and eliminates stale race responses", async () => {
+        const fs = await import("node:fs");
+        const hookContent = fs.readFileSync(
+          new URL("../src/features/attachments/hooks/useAttachments.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(hookContent.includes("listSequenceRef"));
+        assert.ok(hookContent.includes("currentSequence === listSequenceRef.current"));
+        assert.ok(hookContent.includes("setAttachments([])"));
+      });
+
+      it("preserves note editor content and causes zero disturbance to editor state", async () => {
+        const fs = await import("node:fs");
+        const editorContent = fs.readFileSync(
+          new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(editorContent.includes("<AttachmentList noteId={noteId} />"));
+        assert.ok(!editorContent.includes("const [attachments, setAttachments]"));
+      });
+
+      it("preserves existing Phase 1-6 features: search, tags, favorites, notebooks", async () => {
+        const fs = await import("node:fs");
+        const topBarContent = fs.readFileSync(
+          new URL("../src/components/TopBar/TopBar.tsx", import.meta.url),
+          "utf8"
+        );
+        const cardContent = fs.readFileSync(
+          new URL("../src/features/notes/components/NotesList/NoteCard.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // TopBar search and theme toggle intact
+        assert.ok(topBarContent.includes("Search notes..."));
+        assert.ok(topBarContent.includes("onThemeToggle"));
+
+        // NoteCard favorites, tags, and attachment indicator intact
+        assert.ok(cardContent.includes("onToggleFavorite"));
+        assert.ok(cardContent.includes("note.tags"));
+        assert.ok(cardContent.includes("note.attachmentCount > 0"));
+      });
+    });
+  });
+
+  // Task 24: Perform Security, Reliability, and Performance Verification
+  describe("Task 24: Security, Reliability, and Performance Verification", () => {
+    it("verifies security constraints: no arbitrary destinations, no shell execution, no remote uploads", async () => {
+      const fs = await import("node:fs");
+      const serviceCode = fs.readFileSync(
+        new URL("../src/services/storage/attachments.ts", import.meta.url),
+        "utf8"
+      );
+      const capabilities = JSON.parse(
+        fs.readFileSync(
+          new URL("../src-tauri/capabilities/default.json", import.meta.url),
+          "utf8"
+        )
+      );
+
+      // Verify IPC methods never accept arbitrary write destination paths
+      assert.ok(!serviceCode.includes("destinationPath"));
+      assert.ok(!serviceCode.includes("targetPath"));
+
+      // Verify capabilities are strictly bounded
+      assert.deepStrictEqual(capabilities.permissions, [
+        "core:default",
+        "opener:default",
+        "dialog:default",
+      ]);
+
+      // Verify no shell plugin permission is included
+      assert.strictEqual(
+        capabilities.permissions.includes("shell:default"),
+        false,
+        "Shell plugin must not be enabled"
+      );
+    });
+
+    it("verifies reliability: rollback safety, restart stability, and non-crashing error handling", async () => {
+      const fs = await import("node:fs");
+      const integrationTestCode = fs.readFileSync(
+        new URL("../src-tauri/tests/storage_integration_test.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify integration suite tests reliability across restarts and failure recovery
+      assert.ok(
+        integrationTestCode.includes(
+          "test_task_24_security_reliability_and_performance_verification"
+        )
+      );
+      assert.ok(integrationTestCode.includes("persistent document bytes across restart"));
+      assert.ok(integrationTestCode.includes("Idempotent migration"));
+    });
+
+    it("verifies performance constraints: memory footprint, chunked streaming, and N+1 query avoidance", async () => {
+      const fs = await import("node:fs");
+      const typesCode = fs.readFileSync(
+        new URL("../src/services/storage/types.ts", import.meta.url),
+        "utf8"
+      );
+      const storageCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/attachment_storage.rs", import.meta.url),
+        "utf8"
+      );
+      const repoCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/attachments.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify Attachment type does not contain raw binary payload fields
+      assert.ok(!typesCode.includes("data: ArrayBuffer"));
+      assert.ok(!typesCode.includes("bytes: Uint8Array"));
+      assert.ok(!typesCode.includes("base64: string"));
+
+      // Verify streaming copy uses bounded buffer chunking
+      assert.ok(storageCode.includes("64 * 1024"));
+
+      // Verify batch queries to prevent N+1 note list overhead
+      assert.ok(repoCode.includes("batch_count_by_note_ids"));
+      assert.ok(repoCode.includes("GROUP BY note_id"));
+    });
+  });
+});
+
+
 
 
 

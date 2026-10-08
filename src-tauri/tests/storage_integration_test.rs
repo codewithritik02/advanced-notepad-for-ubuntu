@@ -6975,6 +6975,1130 @@ fn test_task_15_backend_note_tag_commands_lifecycle() {
         assert_ne!(note_after_restart.modified_at, "");
     }
 
+    #[test]
+    fn test_task_8_typed_attachment_operations_and_dto_mapping() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            models::AttachmentMetadataDto,
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        // 1. Create a note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Task 8 Note".to_string()),
+                content: Some("Testing typed commands and DTO mapping".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("Create note failed");
+
+        // 2. Prepare sample source file
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src_file = src_dir.join("quarterly_results.pdf");
+        let content_bytes = b"%PDF-1.5 Quarterly Report Summary 2026";
+        std::fs::write(&src_file, content_bytes).unwrap();
+
+        // 3. Add attachment via service
+        let attachment = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file)
+            .expect("Add attachment should succeed");
+
+        // 4. Map to DTO (as done by Tauri add_attachment command)
+        let dto = AttachmentMetadataDto::from(attachment.clone());
+        assert_eq!(dto.id, attachment.id);
+        assert_eq!(dto.note_id, note.id);
+        assert_eq!(dto.file_name, "quarterly_results.pdf");
+        assert_eq!(dto.mime_type, Some("application/pdf".to_string()));
+        assert_eq!(dto.file_size, content_bytes.len() as i64);
+        assert!(!dto.created_at.is_empty());
+        assert!(!dto.modified_at.is_empty());
+
+        // Verify JSON serialization does not contain internal filesystem paths
+        let serialized = serde_json::to_string(&dto).expect("Serialize DTO");
+        assert!(!serialized.contains("relative_path"));
+        assert!(!serialized.contains("attachments/"));
+        assert!(!serialized.contains(&env.paths.attachments_dir.to_string_lossy().to_string()));
+
+        // 5. List attachments and map to DTOs (as done by Tauri list_attachments command)
+        let list = AttachmentService::list_attachments(&conn, &note.id)
+            .expect("List attachments should succeed");
+        let list_dtos: Vec<AttachmentMetadataDto> = list.into_iter().map(AttachmentMetadataDto::from).collect();
+        assert_eq!(list_dtos.len(), 1);
+        assert_eq!(list_dtos[0].id, dto.id);
+
+        // 6. Get safe path for open (as done by Tauri open_attachment command)
+        let open_path = AttachmentService::get_attachment_for_open(&conn, &storage, &dto.id)
+            .expect("Get safe path for open");
+        assert!(open_path.exists());
+        assert!(open_path.starts_with(&env.paths.attachments_dir));
+
+        // 7. Remove attachment (as done by Tauri remove_attachment command)
+        AttachmentService::remove_attachment(&conn, &storage, &dto.id)
+            .expect("Remove attachment should succeed");
+
+        // Verify deleted from DB and disk
+        let after_list = AttachmentService::list_attachments(&conn, &note.id).unwrap();
+        assert_eq!(after_list.len(), 0);
+        assert!(!storage.file_exists(&attachment.relative_path));
+    }
+
+    #[test]
+    fn test_task_8_input_validation_and_structured_error_masking() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src_file = src_dir.join("sample.txt");
+        std::fs::write(&src_file, b"sample text").unwrap();
+
+        // 1. Nonexistent note ID produces user-friendly error
+        let err1 = AttachmentService::add_attachment(&conn, &storage, "nonexistent-uuid", &src_file)
+            .unwrap_err();
+        assert_eq!(
+            err1.user_friendly_message(),
+            "The referenced note could not be found."
+        );
+
+        // 2. Soft-deleted note produces user-friendly rejection
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Soft-deleted Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        NoteRepository::delete(&conn, &note.id, true).unwrap();
+
+        let err2 = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file)
+            .unwrap_err();
+        assert!(err2.user_friendly_message().contains("Cannot attach files to a deleted note"));
+
+        // 3. Nonexistent source file produces user-friendly message
+        let active_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let missing_src = src_dir.join("does_not_exist.bin");
+        let err3 = AttachmentService::add_attachment(&conn, &storage, &active_note.id, &missing_src)
+            .unwrap_err();
+        assert!(err3.user_friendly_message().contains("Selected source file could not be read or does not exist"));
+
+        // 4. Nonexistent attachment ID produces user-friendly message
+        let err4 = AttachmentService::get_attachment(&conn, "missing-att-id").unwrap_err();
+        assert_eq!(err4.user_friendly_message(), "Attachment not found.");
+
+        // 5. Missing managed file on disk yields user-friendly message
+        let valid_att = AttachmentService::add_attachment(&conn, &storage, &active_note.id, &src_file).unwrap();
+        let safe_disk_path = storage.resolve_safe_path(&valid_att.relative_path).unwrap();
+        std::fs::remove_file(safe_disk_path).unwrap();
+
+        let err5 = AttachmentService::get_attachment_for_open(&conn, &storage, &valid_att.id).unwrap_err();
+        match err5 {
+            AttachmentError::ManagedFileMissing(_) => {
+                assert_eq!(err5.user_friendly_message(), "Attachment file is missing from storage.");
+            }
+            other => panic!("Expected ManagedFileMissing, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_task_13_safe_attachment_opening_sandbox_and_immutability() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            services::AttachmentService,
+            repositories::AttachmentRepository,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        // Create an active note and an attachment
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note with Attachment for Open".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src_file = src_dir.join("open_test.pdf");
+        std::fs::write(&src_file, b"%PDF-1.4 sample pdf content for open testing").unwrap();
+
+        let attachment = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file)
+            .expect("Add attachment should succeed");
+
+        // 1. Snapshot metadata before open operation
+        let before_att = AttachmentRepository::get_by_id(&conn, &attachment.id)
+            .unwrap()
+            .expect("Attachment must exist");
+
+        // 2. Perform safe path resolution for open
+        let resolved_path = AttachmentService::get_attachment_for_open(&conn, &storage, &attachment.id)
+            .expect("Path resolution for open must succeed");
+
+        // 3. Verify path containment: must reside strictly inside attachments_dir
+        assert!(resolved_path.exists());
+        assert!(resolved_path.is_file());
+        assert!(resolved_path.starts_with(&env.paths.attachments_dir));
+
+        // 4. Verify metadata immutability: opening must never silently alter DB records
+        let after_att = AttachmentRepository::get_by_id(&conn, &attachment.id)
+            .unwrap()
+            .expect("Attachment must still exist");
+        assert_eq!(before_att.id, after_att.id);
+        assert_eq!(before_att.note_id, after_att.note_id);
+        assert_eq!(before_att.file_name, after_att.file_name);
+        assert_eq!(before_att.relative_path, after_att.relative_path);
+        assert_eq!(before_att.file_size, after_att.file_size);
+        assert_eq!(before_att.mime_type, after_att.mime_type);
+        assert_eq!(before_att.created_at, after_att.created_at);
+
+        // 5. Arbitrary path traversal attack defense:
+        // Even if an attacker passes arbitrary system paths as the ID parameter, it must fail safely
+        let traversal_err = AttachmentService::get_attachment_for_open(&conn, &storage, "../../../etc/passwd")
+            .unwrap_err();
+        match traversal_err {
+            AttachmentError::AttachmentNotFound(_) => {}
+            other => panic!("Expected AttachmentNotFound for traversal ID, got: {other:?}"),
+        }
+
+        // 6. Empty / whitespace-only IDs are rejected
+        let empty_err = AttachmentService::get_attachment_for_open(&conn, &storage, "   ")
+            .unwrap_err();
+        match empty_err {
+            AttachmentError::InvalidRequest(_) => {}
+            other => panic!("Expected InvalidRequest for empty ID, got: {other:?}"),
+        }
+
+        // 7. Missing file on disk produces understandable ManagedFileMissing error
+        std::fs::remove_file(&resolved_path).expect("Remove file from disk to simulate missing file");
+        let missing_err = AttachmentService::get_attachment_for_open(&conn, &storage, &attachment.id)
+            .unwrap_err();
+        assert_eq!(
+            missing_err.user_friendly_message(),
+            "Attachment file is missing from storage."
+        );
+    }
+
+    #[test]
+    fn test_task_14_attachment_removal_and_managed_file_cleanup() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            services::AttachmentService,
+            repositories::AttachmentRepository,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Removal Test Note".to_string()),
+                content: Some("Existing untouched content".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let file1 = src_dir.join("file1.txt");
+        let file2 = src_dir.join("file2.txt");
+        std::fs::write(&file1, b"first attachment bytes").unwrap();
+        std::fs::write(&file2, b"second attachment bytes").unwrap();
+
+        let att1 = AttachmentService::add_attachment(&conn, &storage, &note.id, &file1).unwrap();
+        let att2 = AttachmentService::add_attachment(&conn, &storage, &note.id, &file2).unwrap();
+
+        let path1 = storage.resolve_safe_path(&att1.relative_path).unwrap();
+        let path2 = storage.resolve_safe_path(&att2.relative_path).unwrap();
+
+        assert!(path1.exists());
+        assert!(path2.exists());
+
+        // 1. Remove first attachment
+        AttachmentService::remove_attachment(&conn, &storage, &att1.id)
+            .expect("Removal of first attachment must succeed");
+
+        // First attachment is deleted from disk and DB
+        assert!(!path1.exists());
+        assert!(!storage.file_exists(&att1.relative_path));
+        assert!(AttachmentRepository::get_by_id(&conn, &att1.id).unwrap().is_none());
+
+        // 2. Unrelated attachment (att2) remains completely intact on disk and in DB
+        assert!(path2.exists());
+        assert!(storage.file_exists(&att2.relative_path));
+        let remaining_att2 = AttachmentRepository::get_by_id(&conn, &att2.id).unwrap();
+        assert!(remaining_att2.is_some());
+        assert_eq!(remaining_att2.unwrap().id, att2.id);
+
+        // 3. Note content and title remain untouched
+        let refreshed_note = NoteRepository::get_by_id(&conn, &note.id).unwrap().unwrap();
+        assert_eq!(refreshed_note.title, "Removal Test Note");
+        assert_eq!(refreshed_note.content, "Existing untouched content");
+
+        // 4. Stale metadata cleanup: if a file is already missing on disk, removal still succeeds cleanly
+        std::fs::remove_file(&path2).unwrap();
+        assert!(!path2.exists());
+        AttachmentService::remove_attachment(&conn, &storage, &att2.id)
+            .expect("Removing stale attachment with missing disk file must succeed");
+        assert!(AttachmentRepository::get_by_id(&conn, &att2.id).unwrap().is_none());
+
+        // 5. Deleting nonexistent attachment returns AttachmentNotFound
+        let not_found_err = AttachmentService::remove_attachment(&conn, &storage, "nonexistent-att-id")
+            .unwrap_err();
+        match not_found_err {
+            AttachmentError::AttachmentNotFound(_) => {}
+            other => panic!("Expected AttachmentNotFound, got {other:?}"),
+        }
+
+        // 6. Traversal ID attempts are rejected safely
+        let traversal_err = AttachmentService::remove_attachment(&conn, &storage, "../../../etc/passwd")
+            .unwrap_err();
+        match traversal_err {
+            AttachmentError::AttachmentNotFound(_) => {}
+            other => panic!("Expected AttachmentNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_task_15_duplicate_filenames_unicode_and_unusual_names() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::{sanitize_original_filename, AttachmentStorage},
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Unicode & Duplicate Filename Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // 1. Duplicate original filenames on the same note do not overwrite each other
+        let dup_file_a = src_dir.join("report.pdf");
+        std::fs::write(&dup_file_a, b"%PDF-1.4 duplicate instance 1").unwrap();
+
+        let att1 = AttachmentService::add_attachment(&conn, &storage, &note.id, &dup_file_a).unwrap();
+
+        // Now modify the source file and attach it again with the exact same name
+        std::fs::write(&dup_file_a, b"%PDF-1.4 duplicate instance 2").unwrap();
+        let att2 = AttachmentService::add_attachment(&conn, &storage, &note.id, &dup_file_a).unwrap();
+
+        assert_ne!(att1.id, att2.id, "Attachment IDs must be unique");
+        assert_eq!(att1.file_name, "report.pdf");
+        assert_eq!(att2.file_name, "report.pdf");
+        assert_ne!(att1.relative_path, att2.relative_path, "Storage paths must be distinct");
+
+        let path1 = storage.resolve_safe_path(&att1.relative_path).unwrap();
+        let path2 = storage.resolve_safe_path(&att2.relative_path).unwrap();
+        assert!(path1.exists());
+        assert!(path2.exists());
+
+        // Verify content isolation: instance 1 and instance 2 have different bytes
+        let bytes1 = std::fs::read(&path1).unwrap();
+        let bytes2 = std::fs::read(&path2).unwrap();
+        assert_eq!(bytes1, b"%PDF-1.4 duplicate instance 1");
+        assert_eq!(bytes2, b"%PDF-1.4 duplicate instance 2");
+
+        // Deleting att1 does not delete or affect att2
+        AttachmentService::remove_attachment(&conn, &storage, &att1.id).unwrap();
+        assert!(!path1.exists());
+        assert!(path2.exists());
+        assert_eq!(std::fs::read(&path2).unwrap(), b"%PDF-1.4 duplicate instance 2");
+
+        // 2. International Unicode filenames (Hindi, CJK, accents, spaces, multiple extensions, no extension)
+        let test_cases = vec![
+            ("report (1).pdf", b"data1" as &[u8]),
+            ("final version 2026.pdf", b"data2"),
+            ("résumé.pdf", b"data3"),
+            ("नोट्स.txt", b"data4"),
+            ("项目计划.pdf", b"data5"),
+            ("file with many spaces.txt", b"data6"),
+            ("archive.tar.gz", b"data7"),
+            ("README_NO_EXT", b"data8"),
+            ("🚀 rocket note 🎉.log", b"data9"),
+        ];
+
+        for (name, content) in test_cases {
+            let f = src_dir.join(name);
+            std::fs::write(&f, content).unwrap();
+
+            let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &f)
+                .unwrap_or_else(|e| panic!("Failed attaching '{name}': {e:?}"));
+
+            assert_eq!(att.file_name, name, "Original display name must be preserved");
+
+            let stored_path = storage.resolve_safe_path(&att.relative_path).unwrap();
+            assert!(stored_path.exists(), "Stored path for '{name}' must exist");
+            assert!(stored_path.starts_with(&env.paths.attachments_dir));
+
+            // Verify stored filename on disk is safe and does not leak raw spaces or Unicode into storage name
+            let stored_filename = stored_path.file_name().unwrap().to_string_lossy();
+            assert!(!stored_filename.contains(' '), "Storage filename must not contain spaces");
+            assert!(stored_filename.is_ascii(), "Storage filename must be safe ASCII UUID");
+
+            // Open path verification
+            let open_path = AttachmentService::get_attachment_for_open(&conn, &storage, &att.id).unwrap();
+            assert_eq!(open_path, stored_path);
+        }
+
+        // 3. Traversal stripping and sanitization unit checks
+        assert_eq!(sanitize_original_filename("../../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_original_filename("C:\\Users\\admin\\secrets.txt"), "secrets.txt");
+        assert_eq!(sanitize_original_filename("   "), "attachment");
+        assert_eq!(sanitize_original_filename("null\0byte.txt"), "nullbyte.txt");
+
+        // 4. Long filename truncation: stem truncated safely at 255 chars preserving extension
+        let long_stem = "a".repeat(300);
+        let long_name = format!("{long_stem}.pdf");
+        let sanitized_long = sanitize_original_filename(&long_name);
+        assert_eq!(sanitized_long.chars().count(), 255);
+        assert!(sanitized_long.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn test_task_16_missing_files_permission_errors_and_disk_failures() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            services::AttachmentService,
+            repositories::AttachmentRepository,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Error Resilience Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_dir = env.dir.join("sources");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // 1. Source file disappears before copying
+        let missing_src = src_dir.join("disappeared.txt");
+        let src_err = AttachmentService::add_attachment(&conn, &storage, &note.id, &missing_src)
+            .unwrap_err();
+        match src_err {
+            AttachmentError::SourceUnavailable(_) => {
+                assert!(src_err.user_friendly_message().contains("could not be read or does not exist"));
+            }
+            other => panic!("Expected SourceUnavailable, got {other:?}"),
+        }
+
+        // 2. Managed attachment file deleted outside application (out-of-band deletion)
+        let valid_src = src_dir.join("will_be_deleted_outside.txt");
+        std::fs::write(&valid_src, b"managed file to delete").unwrap();
+        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &valid_src).unwrap();
+
+        let disk_path = storage.resolve_safe_path(&att.relative_path).unwrap();
+        assert!(disk_path.exists());
+
+        // Delete from disk outside the app
+        std::fs::remove_file(&disk_path).unwrap();
+
+        // (a) list_attachments must still return the metadata; does not crash or silently delete
+        let list_after_external_delete = AttachmentService::list_attachments(&conn, &note.id).unwrap();
+        assert_eq!(list_after_external_delete.len(), 1);
+        assert_eq!(list_after_external_delete[0].id, att.id);
+
+        // (b) Opening the missing file returns user-friendly ManagedFileMissing error
+        let open_missing_err = AttachmentService::get_attachment_for_open(&conn, &storage, &att.id).unwrap_err();
+        match open_missing_err {
+            AttachmentError::ManagedFileMissing(_) => {
+                assert_eq!(
+                    open_missing_err.user_friendly_message(),
+                    "Attachment file is missing from storage."
+                );
+            }
+            other => panic!("Expected ManagedFileMissing, got {other:?}"),
+        }
+
+        // (c) Controlled removal succeeds in cleaning up stale metadata from SQLite
+        let remove_stale = AttachmentService::remove_attachment(&conn, &storage, &att.id);
+        assert!(remove_stale.is_ok(), "Controlled removal of stale record must succeed");
+        assert!(AttachmentRepository::get_by_id(&conn, &att.id).unwrap().is_none());
+
+        // 3. File unreadable / permission denied handling
+        let unreadable_src = src_dir.join("unreadable.txt");
+        std::fs::write(&unreadable_src, b"secret unreadable bytes").unwrap();
+        let att2 = AttachmentService::add_attachment(&conn, &storage, &note.id, &unreadable_src).unwrap();
+        let disk_path2 = storage.resolve_safe_path(&att2.relative_path).unwrap();
+
+        // Revoke read permissions on disk (Linux mode 0000)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&disk_path2).unwrap().permissions();
+            perms.set_mode(0o000);
+            let _ = std::fs::set_permissions(&disk_path2, perms);
+
+            let perm_err = AttachmentService::get_attachment_for_open(&conn, &storage, &att2.id).unwrap_err();
+            match perm_err {
+                AttachmentError::PermissionDenied(_) => {
+                    assert_eq!(perm_err.user_friendly_message(), "Permission denied when accessing file.");
+                }
+                other => panic!("Expected PermissionDenied, got {other:?}"),
+            }
+
+            // Restore permissions for clean tempdir teardown
+            let mut restore_perms = std::fs::metadata(&disk_path2).unwrap().permissions();
+            restore_perms.set_mode(0o644);
+            let _ = std::fs::set_permissions(&disk_path2, restore_perms);
+        }
+
+        // 4. Structured user-friendly messages for disk and open failures
+        assert_eq!(
+            AttachmentError::InsufficientDiskSpace.user_friendly_message(),
+            "Insufficient disk space to save attachment."
+        );
+        assert_eq!(
+            AttachmentError::OpenFailed("no associated application".to_string()).user_friendly_message(),
+            "Failed to open attachment: no associated application"
+        );
+    }
+
+    #[test]
+    fn test_task_20_attachment_behavior_during_note_deletion_and_lifecycle_changes() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            models::{CreateNotebookDto, UpdateNoteDto},
+            repositories::{AttachmentRepository, NotebookRepository, NoteRepository, TagRepository},
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+
+        // 1. Create a note and an attachment
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Lifecycle Test Note".to_string()),
+                content: Some("Lifecycle content".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_dir = env.dir.join("sources_lifecycle");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        let src_file = src_dir.join("sample.pdf");
+        std::fs::write(&src_file, b"%PDF-1.4 sample payload").unwrap();
+
+        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap();
+        let safe_disk_path = storage.resolve_safe_path(&att.relative_path).unwrap();
+        assert!(safe_disk_path.exists());
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+
+        // 2. Note rename must not alter attachments
+        NoteRepository::update(
+            &conn,
+            &note.id,
+            UpdateNoteDto {
+                title: Some("Renamed Note Title".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert!(safe_disk_path.exists());
+
+        // 3. Notebook move must not alter attachments
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        NoteRepository::move_to_notebook(&conn, &note.id, Some(&nb.id)).unwrap();
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert!(safe_disk_path.exists());
+
+        // 4. Tag assignment & favorite toggle must not alter attachments
+        let tag = TagRepository::create(&conn, "important").unwrap();
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
+        NoteRepository::set_favorite(&conn, &note.id, true).unwrap();
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert!(safe_disk_path.exists());
+
+        // 5. Soft deletion: preserves attachment metadata and managed files
+        NoteRepository::delete(&conn, &note.id, true).unwrap();
+        let soft_deleted_note = NoteRepository::get_by_id(&conn, &note.id).unwrap().unwrap();
+        assert!(soft_deleted_note.is_deleted);
+        // Metadata & file on disk remain 100% intact
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert!(safe_disk_path.exists());
+
+        // 6. Soft-deleted note cannot receive new attachments
+        let new_file = src_dir.join("rejected.txt");
+        std::fs::write(&new_file, b"cannot be added").unwrap();
+        let add_err = AttachmentService::add_attachment(&conn, &storage, &note.id, &new_file).unwrap_err();
+        match add_err {
+            AttachmentError::InvalidRequest(msg) => {
+                assert!(msg.contains("Cannot attach files to a deleted note"));
+            }
+            other => panic!("Expected InvalidRequest for deleted note, got: {other:?}"),
+        }
+
+        // 7. Restore note: attachments immediately valid and openable
+        NoteRepository::restore(&conn, &note.id).unwrap();
+        let restored_note = NoteRepository::get_by_id(&conn, &note.id).unwrap().unwrap();
+        assert!(!restored_note.is_deleted);
+        let open_res = AttachmentService::get_attachment_for_open(&conn, &storage, &att.id);
+        assert!(open_res.is_ok());
+
+        // 8. Permanent (hard) deletion: removes physical directory and cascades DB rows
+        storage.remove_note_directory(&note.id).unwrap();
+        NoteRepository::delete(&conn, &note.id, false).unwrap();
+
+        // Foreign key cascade deleted DB record
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 0);
+        assert_eq!(AttachmentRepository::get_by_id(&conn, &att.id).unwrap(), None);
+        // Physical directory cleaned up, leaving no untracked files
+        assert!(!safe_disk_path.exists());
+    }
+
+    #[test]
+    fn test_task_21_orphan_detection_and_storage_consistency_checks() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            repositories::NoteRepository,
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+        let src_dir = env.paths.root.join("src_files_t21");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Consistency Check Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // 1. Initial empty storage is fully consistent
+        let initial_report =
+            AttachmentService::check_consistency(&conn, &storage).expect("Check initial consistency");
+        assert!(initial_report.is_consistent);
+        assert_eq!(initial_report.total_attachments_checked, 0);
+        assert_eq!(initial_report.total_disk_files_checked, 0);
+
+        // 2. Add a valid attachment
+        let valid_src = src_dir.join("valid_doc.pdf");
+        let valid_bytes = b"%PDF-1.4 sample personal notepad consistency file";
+        std::fs::write(&valid_src, valid_bytes).unwrap();
+
+        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &valid_src)
+            .expect("Add attachment");
+        let att_disk_path = storage.resolve_safe_path(&att.relative_path).unwrap();
+
+        let clean_report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(clean_report.is_consistent);
+        assert_eq!(clean_report.total_attachments_checked, 1);
+        assert_eq!(clean_report.total_disk_files_checked, 1);
+        assert!(clean_report.missing_managed_files.is_empty());
+        assert!(clean_report.unreferenced_managed_files.is_empty());
+        assert!(clean_report.abandoned_temp_files.is_empty());
+        assert!(clean_report.size_mismatches.is_empty());
+
+        // 3. Unreferenced file detection
+        let note_dir = storage.get_note_dir(&note.id).unwrap();
+        let unref_path = note_dir.join("abandoned_manual_copy.png");
+        std::fs::write(&unref_path, b"unreferenced image bytes").unwrap();
+
+        let unref_report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(!unref_report.is_consistent);
+        assert_eq!(unref_report.unreferenced_managed_files.len(), 1);
+        assert!(unref_report.unreferenced_managed_files[0].ends_with("abandoned_manual_copy.png"));
+
+        // Clean up unreferenced file
+        std::fs::remove_file(&unref_path).unwrap();
+
+        // 4. Abandoned temporary staging file detection & safe cleanup
+        let temp_file_path = note_dir.join("in_flight_copy.pdf.tmp.99887766");
+        std::fs::write(&temp_file_path, b"partial staging bytes").unwrap();
+
+        let temp_report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(!temp_report.is_consistent);
+        assert_eq!(temp_report.abandoned_temp_files.len(), 1);
+        assert!(temp_report.abandoned_temp_files[0].contains(".tmp.99887766"));
+
+        // Cleanup abandoned temp files (older_than 0s for test)
+        let cleaned = AttachmentService::cleanup_abandoned_temp_files(&storage, 0).unwrap();
+        assert_eq!(cleaned, 1);
+        assert!(!temp_file_path.exists());
+        // Verify valid attachment was untouched
+        assert!(att_disk_path.exists());
+
+        // 5. Size mismatch detection
+        std::fs::write(&att_disk_path, b"modified byte length for consistency detection").unwrap();
+        let mismatch_report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(!mismatch_report.is_consistent);
+        assert_eq!(mismatch_report.size_mismatches.len(), 1);
+        let mismatch = &mismatch_report.size_mismatches[0];
+        assert_eq!(mismatch.attachment_id, att.id);
+        assert_eq!(mismatch.recorded_size, valid_bytes.len() as i64);
+        assert_eq!(mismatch.actual_size, b"modified byte length for consistency detection".len() as u64);
+
+        // 6. Missing managed file detection
+        std::fs::remove_file(&att_disk_path).unwrap();
+        let missing_report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(!missing_report.is_consistent);
+        assert_eq!(missing_report.missing_managed_files.len(), 1);
+        let missing = &missing_report.missing_managed_files[0];
+        assert_eq!(missing.attachment_id, att.id);
+        assert_eq!(missing.note_id, note.id);
+        assert_eq!(missing.file_name, att.file_name);
+        assert_eq!(missing.relative_path, att.relative_path);
+    }
+
+    #[test]
+    fn test_task_22_automated_rust_and_database_suite() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            models::CreateAttachmentDto,
+            repositories::{AttachmentRepository, NoteRepository},
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+        let src_dir = env.paths.root.join("src_files_t22");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // 1. Create active note
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Automated Tests Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // 2. Binary content exact preservation test
+        let binary_bytes: Vec<u8> = (0..=255).cycle().take(8192).collect();
+        let bin_file = src_dir.join("binary_test.bin");
+        std::fs::write(&bin_file, &binary_bytes).unwrap();
+
+        let att_bin = AttachmentService::add_attachment(&conn, &storage, &note.id, &bin_file)
+            .expect("Add binary attachment");
+        assert_eq!(att_bin.file_size, binary_bytes.len() as i64);
+
+        let open_bin_path = AttachmentService::get_attachment_for_open(&conn, &storage, &att_bin.id)
+            .expect("Get open path");
+        let read_back_bytes = std::fs::read(&open_bin_path).unwrap();
+        assert_eq!(read_back_bytes, binary_bytes, "Binary content must be copied without modification");
+
+        // 3. Duplicate original filenames with Unicode and spaces
+        let unicode_name = "दस्तावेज़ & Specification 🚀.pdf";
+        let unicode_file = src_dir.join(unicode_name);
+        std::fs::write(&unicode_file, b"%PDF-1.4 unicode content").unwrap();
+
+        let att_u1 = AttachmentService::add_attachment(&conn, &storage, &note.id, &unicode_file)
+            .expect("Add unicode attachment 1");
+        let att_u2 = AttachmentService::add_attachment(&conn, &storage, &note.id, &unicode_file)
+            .expect("Add unicode attachment 2");
+
+        assert_eq!(att_u1.file_name, unicode_name);
+        assert_eq!(att_u2.file_name, unicode_name);
+        assert_ne!(att_u1.id, att_u2.id);
+        assert_ne!(att_u1.relative_path, att_u2.relative_path);
+        assert!(storage.file_exists(&att_u1.relative_path));
+        assert!(storage.file_exists(&att_u2.relative_path));
+
+        // 4. Repository tests: empty list, retrieval, deletion, foreign key safety
+        let empty_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Empty Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(AttachmentRepository::list_by_note_id(&conn, &empty_note.id).unwrap().len(), 0);
+
+        let fetched_u1 = AttachmentRepository::get_by_id(&conn, &att_u1.id).unwrap().unwrap();
+        assert_eq!(fetched_u1.id, att_u1.id);
+        assert_eq!(fetched_u1.file_name, unicode_name);
+
+        // Delete attachment record via repository
+        assert!(AttachmentRepository::delete(&conn, &att_u2.id).unwrap());
+        assert_eq!(AttachmentRepository::get_by_id(&conn, &att_u2.id).unwrap(), None);
+
+        // Foreign key constraint failure for invalid note ID
+        let fk_fail = AttachmentRepository::create(
+            &conn,
+            CreateAttachmentDto {
+                note_id: "non-existent-note".to_string(),
+                file_name: "fail.txt".to_string(),
+                relative_path: "non-existent-note/fail.txt".to_string(),
+                mime_type: None,
+                file_size: 10,
+            },
+        );
+        assert!(fk_fail.is_err(), "Foreign key violation must be enforced");
+
+        // 5. Service tests: note validation, failed operation isolation
+        let missing_note_err = AttachmentService::add_attachment(&conn, &storage, "fake-note-id", &bin_file)
+            .unwrap_err();
+        match missing_note_err {
+            AttachmentError::NoteNotFound(_) => {}
+            other => panic!("Expected NoteNotFound, got: {other:?}"),
+        }
+
+        // Soft-deleted note validation
+        NoteRepository::delete(&conn, &empty_note.id, true).unwrap();
+        let deleted_note_err = AttachmentService::add_attachment(&conn, &storage, &empty_note.id, &bin_file)
+            .unwrap_err();
+        match deleted_note_err {
+            AttachmentError::InvalidRequest(msg) => {
+                assert!(msg.contains("deleted note"));
+            }
+            other => panic!("Expected InvalidRequest, got: {other:?}"),
+        }
+
+        // Failed operation isolation: failing to add a non-existent file does not delete att_bin
+        let non_existent_src = src_dir.join("missing.png");
+        assert!(AttachmentService::add_attachment(&conn, &storage, &note.id, &non_existent_src).is_err());
+        assert!(storage.file_exists(&att_bin.relative_path));
+
+        // 6. Security tests: SQL injection strings and path traversal
+        let malicious_notes = ["' OR '1'='1", "'; DROP TABLE attachments; --"];
+        for bad_id in malicious_notes {
+            assert!(AttachmentService::add_attachment(&conn, &storage, bad_id, &bin_file).is_err());
+        }
+
+        let traversal_paths = ["../outside.txt", "note/../../etc/passwd", "/tmp/bad"];
+        for bad_path in traversal_paths {
+            assert!(storage.resolve_safe_path(bad_path).is_err());
+        }
+
+        // 7. Cleanup & Cascade verification
+        AttachmentService::remove_attachment(&conn, &storage, &att_bin.id).unwrap();
+        assert!(!storage.file_exists(&att_bin.relative_path));
+        assert_eq!(AttachmentRepository::get_by_id(&conn, &att_bin.id).unwrap(), None);
+    }
+
+    #[test]
+    fn test_task_23_frontend_and_tauri_integration_suite() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            errors::AttachmentError,
+            repositories::{AttachmentRepository, NoteRepository},
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+        let src_dir = env.paths.root.join("src_files_t23");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // 1. Create Note A and Note B
+        let note_a = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note A - Working".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let note_b = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note B - Isolated".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // 2. Initial state: Note A has empty attachment list and count 0
+        let initial_list_a = AttachmentService::list_attachments(&conn, &note_a.id).unwrap();
+        assert_eq!(initial_list_a.len(), 0);
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_a.id).unwrap(), 0);
+
+        // 3. Add attachments to Note A: document.pdf and photo.png
+        let pdf_src = src_dir.join("Quarterly Report.pdf");
+        std::fs::write(&pdf_src, b"%PDF-1.4 report bytes").unwrap();
+        let att_pdf = AttachmentService::add_attachment(&conn, &storage, &note_a.id, &pdf_src)
+            .expect("Add PDF");
+
+        let png_src = src_dir.join("Diagram 📊.png");
+        std::fs::write(&png_src, b"\x89PNG\r\n\x1a\n png bytes").unwrap();
+        let att_png = AttachmentService::add_attachment(&conn, &storage, &note_a.id, &png_src)
+            .expect("Add PNG");
+
+        // 4. Verify Note A count is 2 and Note B count is 0
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_a.id).unwrap(), 2);
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_b.id).unwrap(), 0);
+
+        // 5. Note switching simulation:
+        // When user switches to Note B, attachments list is strictly empty
+        let list_b = AttachmentService::list_attachments(&conn, &note_b.id).unwrap();
+        assert_eq!(list_b.len(), 0);
+
+        // When user switches back to Note A, both attachments are returned deterministically
+        let list_a = AttachmentService::list_attachments(&conn, &note_a.id).unwrap();
+        assert_eq!(list_a.len(), 2);
+        assert_eq!(list_a[0].id, att_pdf.id);
+        assert_eq!(list_a[1].id, att_png.id);
+
+        // 6. Neighboring row preservation:
+        // Removing PDF attachment leaves PNG attachment completely untouched
+        AttachmentService::remove_attachment(&conn, &storage, &att_pdf.id).unwrap();
+        let list_a_after = AttachmentService::list_attachments(&conn, &note_a.id).unwrap();
+        assert_eq!(list_a_after.len(), 1);
+        assert_eq!(list_a_after[0].id, att_png.id);
+        assert!(storage.file_exists(&att_png.relative_path));
+        assert!(!storage.file_exists(&att_pdf.relative_path));
+
+        // 7. Open attachment path resolution
+        let open_png_path = AttachmentService::get_attachment_for_open(&conn, &storage, &att_png.id)
+            .expect("Open PNG path");
+        assert!(open_png_path.exists());
+
+        // 8. Missing managed file error resilience
+        std::fs::remove_file(&open_png_path).unwrap();
+        let open_err = AttachmentService::get_attachment_for_open(&conn, &storage, &att_png.id)
+            .unwrap_err();
+        match open_err {
+            AttachmentError::ManagedFileMissing(_) => {}
+            other => panic!("Expected ManagedFileMissing, got: {other:?}"),
+        }
+
+        // 9. Permanent note deletion cascades
+        storage.remove_note_directory(&note_a.id).unwrap();
+        NoteRepository::delete(&conn, &note_a.id, false).unwrap();
+        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_a.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_task_24_security_reliability_and_performance_verification() {
+        use personal_notepad_lib::storage::{
+            attachment_storage::AttachmentStorage,
+            repositories::{AttachmentRepository, NoteRepository},
+            services::AttachmentService,
+        };
+
+        let env = TestEnv::new();
+        let db_path = env.paths.database_file.clone();
+        let mut conn = init_connection(&db_path).expect("Connection failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+        let src_dir = env.paths.root.join("src_files_t24");
+        std::fs::create_dir_all(&src_dir).unwrap();
+
+        // ==========================================
+        // 1. SECURITY VERIFICATION
+        // ==========================================
+        let sec_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Security Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Filenames with shell metacharacters and command injection payloads
+        let malicious_shell_names = [
+            "report; rm -rf $(whoami).pdf",
+            "test | cat passwd | nc.txt",
+            "`calc.exe` & calc.png",
+            "safe_name$HOME.pdf",
+        ];
+
+        for shell_name in malicious_shell_names {
+            let malicious_file = src_dir.join(shell_name);
+            std::fs::write(&malicious_file, b"safe file payload").unwrap();
+
+            // When sanitized and stored, shell characters cannot escape sandbox or execute commands
+            let att = AttachmentService::add_attachment(&conn, &storage, &sec_note.id, &malicious_file)
+                .expect("Attachment with unusual name should safely store");
+            assert!(!att.id.is_empty());
+            assert!(storage.file_exists(&att.relative_path));
+
+            // Clean up
+            AttachmentService::remove_attachment(&conn, &storage, &att.id).unwrap();
+        }
+
+        // Path traversal attempts in relative path
+        assert!(storage.resolve_safe_path("../../../etc/passwd").is_err());
+        assert!(storage.resolve_safe_path("sec_note/../../etc/shadow").is_err());
+        assert!(storage.resolve_safe_path("/absolute/root").is_err());
+
+        // ==========================================
+        // 2. RELIABILITY & RESTART VERIFICATION
+        // ==========================================
+        let rel_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Reliability Restart Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let doc_src = src_dir.join("persistent_doc.pdf");
+        let doc_payload = b"%PDF-1.4 persistent document bytes across restart";
+        std::fs::write(&doc_src, doc_payload).unwrap();
+
+        let att_doc = AttachmentService::add_attachment(&conn, &storage, &rel_note.id, &doc_src)
+            .expect("Add persistent attachment");
+
+        // Simulate application restart: drop connection, reopen, rerun idempotent migrations
+        drop(conn);
+        let mut conn_restarted = init_connection(&db_path).expect("Reopen failed");
+        run_migrations(&mut conn_restarted).expect("Idempotent migration failed");
+
+        let reloaded_list = AttachmentService::list_attachments(&conn_restarted, &rel_note.id).unwrap();
+        assert_eq!(reloaded_list.len(), 1);
+        assert_eq!(reloaded_list[0].id, att_doc.id);
+        assert_eq!(reloaded_list[0].file_size, doc_payload.len() as i64);
+
+        let reloaded_path = AttachmentService::get_attachment_for_open(&conn_restarted, &storage, &att_doc.id)
+            .expect("Get path after restart");
+        assert!(reloaded_path.exists());
+        let reloaded_content = std::fs::read(reloaded_path).unwrap();
+        assert_eq!(reloaded_content, doc_payload);
+
+        // ==========================================
+        // 3. PERFORMANCE & PROFILE VERIFICATION
+        // ==========================================
+        let perf_note = NoteRepository::create(
+            &conn_restarted,
+            CreateNoteDto {
+                title: Some("Performance Benchmark Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A. Small text file (100 B)
+        let small_txt = src_dir.join("small_note.txt");
+        std::fs::write(&small_txt, vec![b'A'; 100]).unwrap();
+        let att_small = AttachmentService::add_attachment(&conn_restarted, &storage, &perf_note.id, &small_txt)
+            .expect("Add small");
+        assert_eq!(att_small.file_size, 100);
+
+        // B. Typical PDF (50 KiB)
+        let med_pdf = src_dir.join("medium_report.pdf");
+        let mut pdf_data = b"%PDF-1.4 ".to_vec();
+        pdf_data.extend(vec![b'B'; 50 * 1024]);
+        std::fs::write(&med_pdf, &pdf_data).unwrap();
+        let att_pdf = AttachmentService::add_attachment(&conn_restarted, &storage, &perf_note.id, &med_pdf)
+            .expect("Add PDF");
+        assert_eq!(att_pdf.mime_type, Some("application/pdf".to_string()));
+
+        // C. Typical Image (200 KiB)
+        let img_file = src_dir.join("photo.png");
+        let mut png_data = b"\x89PNG\r\n\x1a\n".to_vec();
+        png_data.extend(vec![b'C'; 200 * 1024]);
+        std::fs::write(&img_file, &png_data).unwrap();
+        let att_img = AttachmentService::add_attachment(&conn_restarted, &storage, &perf_note.id, &img_file)
+            .expect("Add PNG");
+        assert_eq!(att_img.mime_type, Some("image/png".to_string()));
+
+        // D. Relatively large file near limit (2 MiB) copied via 64 KiB chunks
+        let large_file = src_dir.join("large_dataset.bin");
+        let large_bytes: Vec<u8> = vec![0x42; 2 * 1024 * 1024]; // 2 MiB
+        std::fs::write(&large_file, &large_bytes).unwrap();
+
+        let start_time = std::time::Instant::now();
+        let att_large = AttachmentService::add_attachment(&conn_restarted, &storage, &perf_note.id, &large_file)
+            .expect("Add 2 MiB large file");
+        let elapsed = start_time.elapsed();
+
+        assert_eq!(att_large.file_size, 2 * 1024 * 1024);
+        assert!(elapsed.as_millis() < 500, "2 MiB copy must be fast and responsive");
+
+        // E. Multi-note attachment batch resolution avoiding N+1
+        let note_ids = vec![sec_note.id.clone(), rel_note.id.clone(), perf_note.id.clone()];
+        let batch_counts = AttachmentRepository::batch_count_by_note_ids(&conn_restarted, &note_ids).unwrap();
+        assert_eq!(batch_counts.get(&perf_note.id), Some(&4));
+        assert_eq!(batch_counts.get(&rel_note.id), Some(&1));
+    }
+
 
 
 

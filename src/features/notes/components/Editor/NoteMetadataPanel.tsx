@@ -15,6 +15,7 @@ export interface NoteMetadataPanelProps {
   wordCount?: number;
   characterCount?: number;
   byteSize?: number;
+  attachmentCount?: number;
   onMoveNote?: () => void;
   onToggleFavorite?: () => void;
 }
@@ -49,6 +50,7 @@ export const NoteMetadataPanel: React.FC<NoteMetadataPanelProps> = ({
   wordCount = 0,
   characterCount = 0,
   byteSize = 0,
+  attachmentCount = 0,
   onMoveNote,
   onToggleFavorite,
 }) => {
@@ -143,6 +145,15 @@ export const NoteMetadataPanel: React.FC<NoteMetadataPanelProps> = ({
               <span className="note-metadata-label">Length</span>
               <span className="note-metadata-value">
                 {wordCount} words, {characterCount} chars ({byteSize} bytes)
+              </span>
+            </div>
+
+            <div className="note-metadata-row is-informational">
+              <span className="note-metadata-label">Attachments</span>
+              <span className="note-metadata-value">
+                {attachmentCount > 0
+                  ? `${attachmentCount} file${attachmentCount === 1 ? "" : "s"}`
+                  : "None"}
               </span>
             </div>
           </div>

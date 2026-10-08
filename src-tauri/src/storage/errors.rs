@@ -34,6 +34,9 @@ pub enum StorageError {
 
     #[error("Search error: {0}")]
     SearchError(String),
+
+    #[error("Attachment error: {0}")]
+    AttachmentError(String),
 }
 
 #[derive(Debug, Error)]
@@ -57,12 +60,116 @@ impl SearchError {
     }
 }
 
+/// Strongly-typed attachment operation errors (Phase 7, Task 2)
+#[derive(Debug, Error)]
+pub enum AttachmentError {
+    #[error("Note not found: {0}")]
+    NoteNotFound(String),
+
+    #[error("Attachment not found: {0}")]
+    AttachmentNotFound(String),
+
+    #[error("Invalid attachment request: {0}")]
+    InvalidRequest(String),
+
+    #[error("File size ({size_bytes} bytes) exceeds maximum limit of {max_bytes} bytes")]
+    FileTooLarge { size_bytes: u64, max_bytes: u64 },
+
+    #[error("Source file unavailable or invalid: {0}")]
+    SourceUnavailable(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Insufficient disk space")]
+    InsufficientDiskSpace,
+
+    #[error("Managed attachment file missing on disk: {0}")]
+    ManagedFileMissing(String),
+
+    #[error("File operation failed: {0}")]
+    FileOperationFailed(String),
+
+    #[error("Failed to open file with default application: {0}")]
+    OpenFailed(String),
+
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Filesystem IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl AttachmentError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            AttachmentError::NoteNotFound(_) => "The referenced note could not be found.".to_string(),
+            AttachmentError::AttachmentNotFound(_) => "Attachment not found.".to_string(),
+            AttachmentError::InvalidRequest(msg) => msg.clone(),
+            AttachmentError::FileTooLarge { size_bytes: _, max_bytes } => {
+                let max_mb = max_bytes / (1024 * 1024);
+                format!("File exceeds maximum permitted size of {max_mb} MB.")
+            }
+            AttachmentError::SourceUnavailable(msg) => {
+                format!("Selected source file could not be read or does not exist: {msg}")
+            }
+            AttachmentError::PermissionDenied(_) => {
+                "Permission denied when accessing file.".to_string()
+            }
+            AttachmentError::InsufficientDiskSpace => {
+                "Insufficient disk space to save attachment.".to_string()
+            }
+            AttachmentError::ManagedFileMissing(_) => {
+                "Attachment file is missing from storage.".to_string()
+            }
+            AttachmentError::FileOperationFailed(msg) => {
+                format!("File operation failed: {msg}")
+            }
+            AttachmentError::OpenFailed(msg) => {
+                format!("Failed to open attachment: {msg}")
+            }
+            AttachmentError::Database(_) => {
+                "A database error occurred while processing attachment.".to_string()
+            }
+            AttachmentError::Io(err) => match err.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    "Permission denied when accessing attachment file.".to_string()
+                }
+                std::io::ErrorKind::NotFound => {
+                    "Attachment file was not found.".to_string()
+                }
+                _ => "A filesystem error occurred while processing attachment.".to_string(),
+            },
+        }
+    }
+}
+
+impl From<AttachmentError> for StorageError {
+    fn from(err: AttachmentError) -> Self {
+        StorageError::AttachmentError(err.user_friendly_message())
+    }
+}
+
+impl From<StorageError> for AttachmentError {
+    fn from(err: StorageError) -> Self {
+        match err {
+            StorageError::Database(e) => AttachmentError::Database(e),
+            StorageError::Io(e) => AttachmentError::Io(e),
+            StorageError::NotFound(msg) => AttachmentError::AttachmentNotFound(msg),
+            StorageError::Validation(msg) => AttachmentError::InvalidRequest(msg),
+            StorageError::AttachmentError(msg) => AttachmentError::FileOperationFailed(msg),
+            _ => AttachmentError::FileOperationFailed(err.to_string()),
+        }
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
     pub fn user_friendly_message(&self) -> String {
         match self {
             StorageError::SearchError(_) => "Unable to search notes.".to_string(),
+            StorageError::AttachmentError(msg) => msg.clone(),
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => {
                 match err.code {
                     rusqlite::ErrorCode::ConstraintViolation => {
@@ -125,5 +232,33 @@ mod tests {
             "Access denied",
         ));
         assert!(io_err.user_friendly_message().contains("Permission denied"));
+
+        let att_err = StorageError::AttachmentError("Attachment not found.".to_string());
+        assert_eq!(att_err.user_friendly_message(), "Attachment not found.");
+    }
+
+    #[test]
+    fn test_attachment_error_user_friendly_messages() {
+        let not_found = AttachmentError::AttachmentNotFound("att-1".to_string());
+        assert!(not_found.user_friendly_message().contains("Attachment not found"));
+
+        let too_large = AttachmentError::FileTooLarge {
+            size_bytes: 150 * 1024 * 1024,
+            max_bytes: 100 * 1024 * 1024,
+        };
+        assert!(too_large.user_friendly_message().contains("100 MB"));
+
+        let perm = AttachmentError::PermissionDenied("protected.pdf".to_string());
+        assert!(perm.user_friendly_message().contains("Permission denied"));
+
+        let space = AttachmentError::InsufficientDiskSpace;
+        assert!(space.user_friendly_message().contains("Insufficient disk space"));
+
+        let missing = AttachmentError::ManagedFileMissing("att-1.pdf".to_string());
+        assert!(missing.user_friendly_message().contains("missing from storage"));
+
+        let converted: StorageError = too_large.into();
+        assert!(converted.user_friendly_message().contains("100 MB"));
     }
 }
+

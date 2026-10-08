@@ -8,6 +8,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let storage_paths = StoragePaths::from_root(app_data_dir);
@@ -60,6 +61,13 @@ pub fn run() {
             commands::get_setting,
             commands::set_setting,
             commands::search_notes,
+            commands::add_attachment,
+            commands::list_attachments,
+            commands::remove_attachment,
+            commands::open_attachment,
+            commands::get_attachment_count,
+            commands::check_attachment_consistency,
+            commands::cleanup_abandoned_temp_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

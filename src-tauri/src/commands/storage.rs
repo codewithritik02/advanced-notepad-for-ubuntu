@@ -1,15 +1,19 @@
 use serde::Serialize;
 use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 use crate::storage::{
+    attachment_storage::AttachmentStorage,
+    errors::{AttachmentError, StorageError},
     models::{
-        CreateNotebookDto, CreateNoteDto, Note, Notebook, SearchResult, Tag, UpdateNoteDto,
-        UpdateNotebookDto, UpdateTagDto,
+        AttachmentConsistencyReport, AttachmentMetadataDto, CreateNotebookDto, CreateNoteDto, Note,
+        Notebook, SearchResult, Tag, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
-        NotebookRepository, NoteRepository, SettingsRepository, TagRepository,
+        AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
+        TagRepository,
     },
-    services::SearchService,
-    Database, StoragePaths, StorageError,
+    services::{AttachmentService, SearchService},
+    Database, StoragePaths,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,11 +74,17 @@ pub fn update_note(
 #[tauri::command]
 pub fn delete_note(
     db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
     id: String,
     soft: Option<bool>,
 ) -> Result<bool, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::delete(&conn, &id, soft.unwrap_or(true)).map_err(|e| e.to_string())
+    let is_soft = soft.unwrap_or(true);
+    if !is_soft {
+        let storage = AttachmentStorage::new((*paths).clone());
+        let _ = storage.remove_note_directory(&id);
+    }
+    NoteRepository::delete(&conn, &id, is_soft).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -306,4 +316,161 @@ pub fn search_notes(
         StorageError::SearchError(_) | StorageError::Database(_) => "Unable to search notes.".to_string(),
         other => other.user_friendly_message(),
     })
+}
+
+/// Adds a file as an attachment to a note (Phase 7, Task 8).
+/// Validates input, delegates to AttachmentService, and returns a sanitized AttachmentMetadataDto.
+#[tauri::command]
+pub fn add_attachment(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+    note_id: String,
+    source_path: String,
+) -> Result<AttachmentMetadataDto, String> {
+    let trimmed_note_id = note_id.trim();
+    if trimmed_note_id.is_empty() {
+        return Err("Note ID cannot be empty.".to_string());
+    }
+    let trimmed_source = source_path.trim();
+    if trimmed_source.is_empty() {
+        return Err("Source file path cannot be empty.".to_string());
+    }
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+    let src = std::path::Path::new(trimmed_source);
+
+    let attachment = AttachmentService::add_attachment(&conn, &storage, trimmed_note_id, src)
+        .map_err(|e| e.user_friendly_message())?;
+
+    Ok(AttachmentMetadataDto::from(attachment))
+}
+
+/// Lists all attachments for a specific note (Phase 7, Task 8).
+/// Returns deterministic, frontend-safe AttachmentMetadataDto items without leaking internal storage paths.
+#[tauri::command]
+pub fn list_attachments(
+    db: State<'_, Database>,
+    note_id: String,
+) -> Result<Vec<AttachmentMetadataDto>, String> {
+    let trimmed_note_id = note_id.trim();
+    if trimmed_note_id.is_empty() {
+        return Err("Note ID cannot be empty.".to_string());
+    }
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+
+    let attachments = AttachmentService::list_attachments(&conn, trimmed_note_id)
+        .map_err(|e| e.user_friendly_message())?;
+
+    Ok(attachments.into_iter().map(AttachmentMetadataDto::from).collect())
+}
+
+/// Removes an attachment from a note and cleans up its managed file safely (Phase 7, Task 8).
+#[tauri::command]
+pub fn remove_attachment(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+    id: String,
+) -> Result<bool, String> {
+    let trimmed_id = id.trim();
+    if trimmed_id.is_empty() {
+        return Err("Attachment ID cannot be empty.".to_string());
+    }
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+
+    AttachmentService::remove_attachment(&conn, &storage, trimmed_id)
+        .map_err(|e| e.user_friendly_message())?;
+
+    Ok(true)
+}
+
+/// Opens an attachment using the operating system's default viewer via the approved Tauri opener (Phase 7, Task 8).
+/// Resolves and validates the safe managed path without allowing arbitrary filesystem opening.
+#[tauri::command]
+pub fn open_attachment(
+    app: tauri::AppHandle,
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+    id: String,
+) -> Result<(), String> {
+    let trimmed_id = id.trim();
+    if trimmed_id.is_empty() {
+        return Err("Attachment ID cannot be empty.".to_string());
+    }
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+
+    let safe_path = AttachmentService::get_attachment_for_open(&conn, &storage, trimmed_id)
+        .map_err(|e| e.user_friendly_message())?;
+
+    app.opener()
+        .open_path(safe_path.to_string_lossy(), None::<&str>)
+        .map_err(|e| AttachmentError::OpenFailed(e.to_string()).user_friendly_message())?;
+
+    Ok(())
+}
+
+/// Returns the number of attachments associated with a note (Phase 7, Task 19).
+#[tauri::command]
+pub fn get_attachment_count(
+    db: State<'_, Database>,
+    note_id: String,
+) -> Result<usize, String> {
+    let trimmed_note_id = note_id.trim();
+    if trimmed_note_id.is_empty() {
+        return Ok(0);
+    }
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+
+    AttachmentRepository::count_by_note_id(&conn, trimmed_note_id)
+        .map_err(|_| "Failed to count attachments for note.".to_string())
+}
+
+/// Inspects attachment consistency and detects orphaned or missing files (Phase 7, Task 21).
+#[tauri::command]
+pub fn check_attachment_consistency(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+) -> Result<AttachmentConsistencyReport, String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+
+    AttachmentService::check_consistency(&conn, &storage)
+        .map_err(|e| e.user_friendly_message())
+}
+
+/// Cleans up abandoned temporary staging files left behind by interrupted operations (Phase 7, Task 21).
+#[tauri::command]
+pub fn cleanup_abandoned_temp_files(
+    paths: State<'_, StoragePaths>,
+    older_than_seconds: Option<u64>,
+) -> Result<usize, String> {
+    let storage = AttachmentStorage::new((*paths).clone());
+    let age = older_than_seconds.unwrap_or(60);
+
+    AttachmentService::cleanup_abandoned_temp_files(&storage, age)
+        .map_err(|e| e.user_friendly_message())
 }

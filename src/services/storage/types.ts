@@ -32,6 +32,7 @@ export interface NoteMetadata {
   word_count: number;
   character_count: number;
   byte_size: number;
+  attachment_count?: number;
 }
 
 export interface ListNotesOptions {
@@ -119,12 +120,55 @@ export interface Attachment {
   id: string;
   note_id: string;
   file_name: string;
-  relative_path: string;
-  mime_type: string;
+  relative_path?: string;
+  mime_type: string | null;
   file_size: number;
   created_at: string;
-  modified_at: string;
+  modified_at?: string;
+  // Convenience aliases for specification compatibility
+  original_name?: string;
+  size_bytes?: number;
 }
+
+export interface AddAttachmentInput {
+  note_id: string;
+  source_path: string;
+}
+
+export interface CreateAttachmentInput {
+  note_id: string;
+  file_name: string;
+  relative_path: string;
+  mime_type: string | null;
+  file_size: number;
+}
+
+export interface MissingManagedFileIssue {
+  attachment_id: string;
+  note_id: string;
+  file_name: string;
+  relative_path: string;
+}
+
+export interface SizeMismatchIssue {
+  attachment_id: string;
+  note_id: string;
+  file_name: string;
+  relative_path: string;
+  recorded_size: number;
+  actual_size: number;
+}
+
+export interface AttachmentConsistencyReport {
+  missing_managed_files: MissingManagedFileIssue[];
+  unreferenced_managed_files: string[];
+  abandoned_temp_files: string[];
+  size_mismatches: SizeMismatchIssue[];
+  total_attachments_checked: number;
+  total_disk_files_checked: number;
+  is_consistent: boolean;
+}
+
 
 export interface Setting {
   key: string;

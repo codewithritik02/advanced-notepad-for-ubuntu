@@ -89,17 +89,103 @@ pub struct NoteTag {
     pub tag_id: String,
 }
 
-/// File attachment metadata model
+/// File attachment metadata model (Phase 7, Task 2)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: String,
     pub note_id: String,
     pub file_name: String,
     pub relative_path: String,
-    pub mime_type: String,
+    pub mime_type: Option<String>,
     pub file_size: i64,
     pub created_at: String,
     pub modified_at: String,
+}
+
+impl Attachment {
+    /// Validates essential attachment invariants.
+    pub fn is_valid(&self) -> bool {
+        !self.id.trim().is_empty()
+            && !self.note_id.trim().is_empty()
+            && !self.file_name.trim().is_empty()
+            && !self.relative_path.trim().is_empty()
+            && self.file_size >= 0
+    }
+}
+
+/// DTO for requesting an attachment to be added to a note
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddAttachmentDto {
+    pub note_id: String,
+    pub source_path: String,
+}
+
+/// DTO for inserting an attachment record into the database
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateAttachmentDto {
+    pub note_id: String,
+    pub file_name: String,
+    pub relative_path: String,
+    pub mime_type: Option<String>,
+    pub file_size: i64,
+}
+
+/// Public frontend-safe attachment metadata DTO
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentMetadataDto {
+    pub id: String,
+    pub note_id: String,
+    pub file_name: String,
+    pub mime_type: Option<String>,
+    pub file_size: i64,
+    pub created_at: String,
+    pub modified_at: String,
+}
+
+impl From<Attachment> for AttachmentMetadataDto {
+    fn from(att: Attachment) -> Self {
+        Self {
+            id: att.id,
+            note_id: att.note_id,
+            file_name: att.file_name,
+            mime_type: att.mime_type,
+            file_size: att.file_size,
+            created_at: att.created_at,
+            modified_at: att.modified_at,
+        }
+    }
+}
+
+/// Detailed issue when a database attachment points to a missing file on disk (Phase 7, Task 21)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingManagedFileIssue {
+    pub attachment_id: String,
+    pub note_id: String,
+    pub file_name: String,
+    pub relative_path: String,
+}
+
+/// Detailed issue when recorded attachment size does not match byte size on disk (Phase 7, Task 21)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SizeMismatchIssue {
+    pub attachment_id: String,
+    pub note_id: String,
+    pub file_name: String,
+    pub relative_path: String,
+    pub recorded_size: i64,
+    pub actual_size: u64,
+}
+
+/// Comprehensive report produced by storage consistency and orphan checks (Phase 7, Task 21)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentConsistencyReport {
+    pub missing_managed_files: Vec<MissingManagedFileIssue>,
+    pub unreferenced_managed_files: Vec<String>,
+    pub abandoned_temp_files: Vec<String>,
+    pub size_mismatches: Vec<SizeMismatchIssue>,
+    pub total_attachments_checked: usize,
+    pub total_disk_files_checked: usize,
+    pub is_consistent: bool,
 }
 
 /// Application setting key-value pair
@@ -174,4 +260,59 @@ pub struct SearchResult {
     pub notebook_id: Option<String>,
     pub favorite: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_attachment_model_validation_and_serialization() {
+        let att = Attachment {
+            id: "att-123".to_string(),
+            note_id: "note-456".to_string(),
+            file_name: "Project Document.pdf".to_string(),
+            relative_path: "note-456/uuid.pdf".to_string(),
+            mime_type: Some("application/pdf".to_string()),
+            file_size: 1048576,
+            created_at: "2026-10-08T12:00:00Z".to_string(),
+            modified_at: "2026-10-08T12:00:00Z".to_string(),
+        };
+
+        assert!(att.is_valid());
+
+        // Test JSON serialization & deserialization round-trip
+        let json = serde_json::to_string(&att).expect("Serialize attachment");
+        assert!(json.contains("\"file_name\":\"Project Document.pdf\""));
+        assert!(json.contains("\"mime_type\":\"application/pdf\""));
+        assert!(json.contains("\"file_size\":1048576"));
+
+        let deserialized: Attachment = serde_json::from_str(&json).expect("Deserialize attachment");
+        assert_eq!(att, deserialized);
+
+        // Test nullable MIME type serialization
+        let mut att_no_mime = att.clone();
+        att_no_mime.mime_type = None;
+        let json_no_mime = serde_json::to_string(&att_no_mime).expect("Serialize null mime");
+        assert!(json_no_mime.contains("\"mime_type\":null"));
+        let deserialized_no_mime: Attachment = serde_json::from_str(&json_no_mime).expect("Deserialize null mime");
+        assert_eq!(deserialized_no_mime.mime_type, None);
+
+        // Test negative size validation rejection
+        let mut invalid_att = att.clone();
+        invalid_att.file_size = -1;
+        assert!(!invalid_att.is_valid());
+
+        // Test empty id validation rejection
+        let mut empty_id_att = att.clone();
+        empty_id_att.id = "   ".to_string();
+        assert!(!empty_id_att.is_valid());
+
+        // Test AttachmentMetadataDto conversion
+        let dto: AttachmentMetadataDto = att.into();
+        assert_eq!(dto.id, "att-123");
+        assert_eq!(dto.file_name, "Project Document.pdf");
+        assert_eq!(dto.file_size, 1048576);
+    }
+}
+
 
