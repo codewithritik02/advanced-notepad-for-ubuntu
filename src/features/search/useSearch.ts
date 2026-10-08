@@ -64,6 +64,17 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
         return;
       }
 
+      // Task 88 & 89: Search Query Size Validation (<= 1000 characters)
+      if (trimmed.length > 1000) {
+        requestIdRef.current += 1;
+        setSearchState({
+          status: "error",
+          query: trimmed,
+          message: "Search query is too long.",
+        });
+        return;
+      }
+
       // Task 54: Flush pending autosaves before searching to ensure FTS consistency
       if (onBeforeSearchRef.current) {
         try {

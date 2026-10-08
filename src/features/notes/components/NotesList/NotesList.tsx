@@ -57,7 +57,7 @@ export const NotesList: React.FC<NotesListProps> = ({
   const resolvedErrorMessage =
     errorMessage ??
     (isSearchMode
-      ? "Unable to search notes right now. Please try again."
+      ? "Unable to search notes."
       : "Unable to load notes.");
 
   const resolvedEmptyTitle =

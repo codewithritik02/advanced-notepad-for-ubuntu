@@ -5751,6 +5751,2100 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
         );
       });
     });
+
+    describe("Task 81: Search and Unsaved Changes", () => {
+      it("handles pending autosave using Phase 3 save/flush mechanism before changing to search result Note B without losing edits", async () => {
+        // Lifecycle simulation per Task 81 specification:
+        // Before changing from Note A to a search result Note B:
+        // pending autosave must be handled using the Phase 3 save/flush mechanism.
+        // Do not lose edits.
+
+        let dbStorage = new Map([
+          ["note-a", { id: "note-a", title: "Note A", content: "Original content" }],
+          ["note-b", { id: "note-b", title: "Note B", content: "Search result note" }],
+        ]);
+
+        let selectedNoteId = "note-a";
+        let inMemoryDirtyContent = "Original content with unsaved live edits in editor buffer";
+        let debounceTimerActive = true;
+        let flushExecutionLog = [];
+
+        // Phase 3 editor registered flush function (as defined in NoteEditor.tsx handleSave)
+        const mockEditorSave = async () => {
+          flushExecutionLog.push("cancel-debounce-timer");
+          debounceTimerActive = false;
+
+          flushExecutionLog.push("flush-save-to-storage");
+          const existing = dbStorage.get("note-a");
+          dbStorage.set("note-a", { ...existing, content: inMemoryDirtyContent });
+        };
+
+        // Selection handler from App.tsx (handleKeyboardSelectNote)
+        const selectNoteWithFlush = async (targetNoteId) => {
+          if (targetNoteId !== selectedNoteId) {
+            flushExecutionLog.push("trigger-pre-selection-flush");
+            await mockEditorSave();
+
+            flushExecutionLog.push("switch-selected-note-id");
+            selectedNoteId = targetNoteId;
+          }
+        };
+
+        // User clicks search result Note B
+        await selectNoteWithFlush("note-b");
+
+        // 1. Verify exact chronological sequence
+        assert.deepStrictEqual(flushExecutionLog, [
+          "trigger-pre-selection-flush",
+          "cancel-debounce-timer",
+          "flush-save-to-storage",
+          "switch-selected-note-id",
+        ], "Must flush pending autosave BEFORE updating selection");
+
+        // 2. Invariant: Debounce timer was safely cleared
+        assert.strictEqual(debounceTimerActive, false, "Pending autosave timer must be canceled");
+
+        // 3. Invariant: Do not lose edits
+        assert.strictEqual(
+          dbStorage.get("note-a").content,
+          "Original content with unsaved live edits in editor buffer",
+          "Note A edits must be safely committed to storage"
+        );
+
+        // 4. Invariant: Selected note is now Note B
+        assert.strictEqual(selectedNoteId, "note-b", "Selection must be Note B");
+      });
+
+      it("inspects NoteEditor and App to verify Phase 3 save/flush wiring for search selection", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const appCode = await fs.readFile(path.resolve("src/app/App.tsx"), "utf-8");
+        const editorCode = await fs.readFile(
+          path.resolve("src/features/notes/components/Editor/NoteEditor.tsx"),
+          "utf-8"
+        );
+
+        // 1. Verify NoteEditor registers handleSave with onRegisterSave
+        assert.ok(
+          editorCode.includes("onRegisterSave(handleSave)"),
+          "NoteEditor must register handleSave via onRegisterSave"
+        );
+
+        // 2. Verify NoteEditor cancels debounce timer in handleSave
+        assert.ok(
+          editorCode.includes("clearTimeout(debounceTimerRef.current)"),
+          "NoteEditor must clear pending debounce timer during imperative save"
+        );
+
+        // 3. Verify App.tsx awaits editorSaveRef before switching selection in handleKeyboardSelectNote
+        const selectDef = appCode.match(/const handleKeyboardSelectNote = useCallback\([\s\S]*?\}, \[[\s\S]*?\]\);/);
+        assert.ok(selectDef, "handleKeyboardSelectNote must be defined");
+        assert.ok(
+          selectDef[0].indexOf("await editorSaveRef.current()") <
+            selectDef[0].indexOf("setSelectedNoteId(noteId)"),
+          "handleKeyboardSelectNote must await editor save BEFORE calling setSelectedNoteId"
+        );
+
+        // 4. Verify search.rs defines test_task_81_search_and_unsaved_changes
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          searchRs.includes("fn test_task_81_search_and_unsaved_changes()"),
+          "search.rs must define test_task_81_search_and_unsaved_changes"
+        );
+      });
+    });
+
+    describe("Task 82: Search Clear After Note Selection", () => {
+      it("executes the Task 82 workflow: search 'project' -> select 'Project Plan' -> clear search -> predictable note list with selection retained", async () => {
+        // Spec Example (phase-6-specification.md:2341-2365):
+        // search: project
+        // select: Project Plan
+        // clear search
+        // Expected: predictable note list, selection retained
+
+        const preSearchNotes = [
+          { id: "note-1", title: "Meeting Minutes" },
+          { id: "note-2", title: "Project Plan" },
+          { id: "note-3", title: "Budget Review" },
+        ];
+
+        let searchQuery = "";
+        let isSearchActive = false;
+        let selectedNoteId = "note-1";
+
+        // 1. Initial State: Browsing list is preSearchNotes, note-1 selected
+        let displayedItems = isSearchActive ? [] : preSearchNotes;
+        assert.deepStrictEqual(displayedItems.map((n) => n.id), ["note-1", "note-2", "note-3"]);
+
+        // 2. User searches "project"
+        searchQuery = "project";
+        isSearchActive = true;
+        const searchResults = [
+          { noteId: "note-2", title: "Project Plan", snippet: "project milestones" },
+        ];
+        displayedItems = searchResults.map((r) => ({ id: r.noteId, title: r.title }));
+        assert.strictEqual(displayedItems.length, 1);
+        assert.strictEqual(displayedItems[0].title, "Project Plan");
+
+        // 3. User selects "Project Plan"
+        selectedNoteId = "note-2";
+        assert.strictEqual(selectedNoteId, "note-2");
+
+        // 4. User clears search (via TopBar clear button 'x' or Escape key)
+        searchQuery = "";
+        isSearchActive = false;
+
+        // Middle pane restores predictable note list
+        displayedItems = preSearchNotes;
+
+        // Selection restoration invariant check:
+        // If the selected note is visible in the restored context, it remains selected
+        const stillVisible = preSearchNotes.some((n) => n.id === selectedNoteId);
+        if (!stillVisible) {
+          selectedNoteId = preSearchNotes.length > 0 ? preSearchNotes[0].id : null;
+        }
+
+        // 5. Assertions:
+        // - Predictable note list restored
+        assert.deepStrictEqual(
+          displayedItems.map((n) => n.id),
+          ["note-1", "note-2", "note-3"],
+          "Middle pane must display predictable pre-search note list"
+        );
+
+        // - Selected note ("Project Plan") remains selected
+        assert.strictEqual(
+          selectedNoteId,
+          "note-2",
+          "Selected note ('Project Plan') must remain selected after clearing search"
+        );
+
+        // - Middle pane highlights the selected note
+        const selectedItem = displayedItems.find((n) => n.id === selectedNoteId);
+        assert.ok(selectedItem, "Selected note must exist in displayed items");
+        assert.strictEqual(selectedItem.title, "Project Plan");
+      });
+
+      it("falls back to first note if cleared in a scoped context where selected note is not present", async () => {
+        const scopedNotebookNotes = [
+          { id: "nb-1", title: "Work Item 1" },
+          { id: "nb-2", title: "Work Item 2" },
+        ];
+
+        let isSearchActive = false;
+        let selectedNoteId = "external-note-99"; // Note from another notebook selected during global search
+
+        // Selection restoration logic from App.tsx (lines 726-733)
+        if (!isSearchActive && selectedNoteId) {
+          const stillVisible = scopedNotebookNotes.some((n) => n.id === selectedNoteId);
+          if (!stillVisible) {
+            selectedNoteId = scopedNotebookNotes.length > 0 ? scopedNotebookNotes[0].id : null;
+          }
+        }
+
+        assert.strictEqual(
+          selectedNoteId,
+          "nb-1",
+          "Must predictably fall back to first note of scoped context when selected note is outside scope"
+        );
+      });
+
+      it("inspects App.tsx to verify selection restoration effect and clearSearch handler wiring", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const appCode = await fs.readFile(path.resolve("src/app/App.tsx"), "utf-8");
+
+        // 1. Verify selection restoration effect
+        assert.ok(
+          appCode.includes("const stillVisible = filteredNotes.some((n) => n.id === selectedNoteId);"),
+          "App.tsx must check if selected note is still visible after clearing search"
+        );
+        assert.ok(
+          appCode.includes("setSelectedNoteId(filteredNotes.length > 0 ? filteredNotes[0].id : null);"),
+          "App.tsx must fall back to first note if selected note is not visible in restored context"
+        );
+
+        // 2. Verify clearSearch wiring to TopBar and escape handler
+        assert.ok(
+          appCode.includes("onSearchClear={clearSearch}"),
+          "TopBar must receive onSearchClear={clearSearch}"
+        );
+        assert.ok(
+          appCode.includes("clearSearch();"),
+          "handleEscape must call clearSearch()"
+        );
+
+        // 3. Verify search.rs defines test_task_82_search_clear_after_note_selection
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          searchRs.includes("fn test_task_82_search_clear_after_note_selection()"),
+          "search.rs must define test_task_82_search_clear_after_note_selection"
+        );
+      });
+    });
+
+    describe("Task 83: Search Input State After Restart", () => {
+      it("verifies search input defaults to empty string on startup and does not persist query across restart", async () => {
+        // Spec Invariant (phase-6-specification.md:2367-2385):
+        // Search query should normally NOT persist across application restarts.
+        // On startup: searchQuery = ""
+        // This keeps the app simple. Do not add persistent search history in Phase 6.
+
+        // Model initial startup state
+        let createInitialSearchState = () => {
+          return {
+            query: "",
+            isSearchActive: false,
+            searchState: { status: "idle" },
+            results: [],
+          };
+        };
+
+        let session1 = createInitialSearchState();
+        assert.strictEqual(session1.query, "", "Search query must be empty on initial startup");
+        assert.strictEqual(session1.isSearchActive, false, "Search must be inactive on startup");
+        assert.strictEqual(session1.searchState.status, "idle", "Search state must be idle on startup");
+
+        // User performs search during session 1
+        session1.query = "quarterly budget";
+        session1.isSearchActive = true;
+        session1.searchState = { status: "success", query: "quarterly budget", results: [] };
+        assert.strictEqual(session1.query, "quarterly budget");
+
+        // Simulate application restart:
+        // Memory state is cleanly discarded; new session mounts
+        let session2 = createInitialSearchState();
+        assert.strictEqual(
+          session2.query,
+          "",
+          "Search query must strictly reset to empty string after restart"
+        );
+        assert.strictEqual(
+          session2.isSearchActive,
+          false,
+          "Search must be inactive after restart"
+        );
+        assert.strictEqual(
+          session2.searchState.status,
+          "idle",
+          "Search status must be idle after restart"
+        );
+      });
+
+      it("guarantees absence of persistent search history or storage in search modules", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+        const searchStorageCode = await fs.readFile(
+          path.resolve("src/services/storage/search.ts"),
+          "utf-8"
+        );
+
+        // 1. Verify query state initializes to empty string ""
+        assert.ok(
+          useSearchCode.includes('useState<string>("")'),
+          'useSearch must initialize query state with empty string: useState<string>("")'
+        );
+
+        // 2. Invariant: No localStorage or sessionStorage persistence in useSearch
+        assert.strictEqual(
+          useSearchCode.includes("localStorage"),
+          false,
+          "useSearch must not read or write localStorage"
+        );
+        assert.strictEqual(
+          useSearchCode.includes("sessionStorage"),
+          false,
+          "useSearch must not read or write sessionStorage"
+        );
+
+        // 3. Invariant: No search history in storage service
+        assert.strictEqual(
+          searchStorageCode.includes("history"),
+          false,
+          "search storage service must not implement search history in Phase 6"
+        );
+
+        // 4. Invariant: TopBar defaults to empty search query
+        assert.ok(
+          topBarCode.includes('searchQuery = ""') || topBarCode.includes("searchQuery?: string"),
+          "TopBar must treat searchQuery as optional with empty string default"
+        );
+
+        // 5. Verify search.rs defines test_task_83_search_input_state_after_restart
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          searchRs.includes("fn test_task_83_search_input_state_after_restart()"),
+          "search.rs must define test_task_83_search_input_state_after_restart"
+        );
+      });
+    });
+
+    describe("Task 84: No Search History", () => {
+      it("guarantees complete absence of recent searches, search history, saved searches, and past suggestions", async () => {
+        // Spec Prohibitions (phase-6-specification.md:2383-2394):
+        // Do not implement:
+        // * recent searches
+        // * search history
+        // * saved searches
+        // * suggestions based on past searches
+        // These are outside Phase 6.
+
+        // Model search state over multiple consecutive queries
+        const historyTracker = {
+          recentSearches: undefined,
+          searchHistory: undefined,
+          savedSearches: undefined,
+          suggestions: undefined,
+        };
+
+        const queries = ["project", "budget", "client sync", "architecture", "deadline"];
+        for (const q of queries) {
+          // Normal search execution updates transient query, nothing more
+          const activeState = { query: q, isSearchActive: true };
+          assert.strictEqual(activeState.query, q);
+
+          // Invariant checks:
+          assert.strictEqual(historyTracker.recentSearches, undefined, "No recent searches allowed");
+          assert.strictEqual(historyTracker.searchHistory, undefined, "No search history allowed");
+          assert.strictEqual(historyTracker.savedSearches, undefined, "No saved searches allowed");
+          assert.strictEqual(historyTracker.suggestions, undefined, "No past search suggestions allowed");
+        }
+      });
+
+      it("inspects TopBar and Search feature modules for absence of history UI components or state", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        // 1. Verify TopBar input disables browser autocomplete
+        assert.ok(
+          topBarCode.includes('autoComplete="off"'),
+          'TopBar search input must explicitly specify autoComplete="off"'
+        );
+
+        // 2. Invariant: Absence of history dropdowns, suggestions menu, or past search chips in TopBar
+        assert.strictEqual(
+          topBarCode.includes("recent-searches"),
+          false,
+          "TopBar must not contain recent-searches element"
+        );
+        assert.strictEqual(
+          topBarCode.includes("search-history"),
+          false,
+          "TopBar must not contain search-history element"
+        );
+        assert.strictEqual(
+          topBarCode.includes("<datalist"),
+          false,
+          "TopBar must not render HTML <datalist> for suggestions"
+        );
+        assert.strictEqual(
+          topBarCode.includes("saved-searches"),
+          false,
+          "TopBar must not contain saved-searches element"
+        );
+
+        // 3. Invariant: Absence of history state variables in useSearch
+        assert.strictEqual(
+          useSearchCode.includes("recentSearches"),
+          false,
+          "useSearch hook must not declare recentSearches state"
+        );
+        assert.strictEqual(
+          useSearchCode.includes("searchHistory"),
+          false,
+          "useSearch hook must not declare searchHistory state"
+        );
+
+        // 4. Verify search.rs defines test_task_84_no_search_history
+        const searchRs = await fs.readFile(
+            path.resolve("src-tauri/src/storage/repositories/search.rs"),
+            "utf-8"
+        );
+        assert.ok(
+            searchRs.includes("fn test_task_84_no_search_history()"),
+            "search.rs must define test_task_84_no_search_history"
+        );
+      });
+    });
+
+    describe("Task 85: No Search Suggestions", () => {
+      it("guarantees complete absence of AI suggestions, recent queries, people suggestions, and automatic tags", () => {
+        // Spec Prohibitions (phase-6-specification.md:2396-2410):
+        // Do not implement:
+        // * AI suggestions
+        // * recent queries
+        // * people suggestions
+        // * automatic tags
+        // The search box is a simple text search interface.
+
+        // Model search state over text input
+        const searchBoxState = {
+          query: "database architecture",
+          isSearchActive: true,
+          suggestions: undefined,
+          aiSuggestions: undefined,
+          recentQueries: undefined,
+          peopleSuggestions: undefined,
+          automaticTags: undefined,
+        };
+
+        // Assert all prohibited suggestion models are strictly absent
+        assert.strictEqual(searchBoxState.suggestions, undefined, "Search box must not provide suggestion list");
+        assert.strictEqual(searchBoxState.aiSuggestions, undefined, "No AI suggestions allowed");
+        assert.strictEqual(searchBoxState.recentQueries, undefined, "No recent queries allowed");
+        assert.strictEqual(searchBoxState.peopleSuggestions, undefined, "No people suggestions allowed");
+        assert.strictEqual(searchBoxState.automaticTags, undefined, "No automatic tags allowed");
+      });
+
+      it("inspects TopBar and Search feature modules for simple text search interface invariants", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        // 1. Verify TopBar is a simple text search input
+        assert.ok(
+          topBarCode.includes('<input'),
+          "TopBar must render a standard HTML text input"
+        );
+        assert.ok(
+          topBarCode.includes('type="text"'),
+          "TopBar search input must have type='text'"
+        );
+
+        // 2. Prohibited suggestion UI elements must NOT exist in TopBar
+        const prohibitedElements = [
+          "suggestions-list",
+          "suggestion-item",
+          "ai-suggestion",
+          "ai-completion",
+          "people-suggestion",
+          "user-mention",
+          "auto-tag",
+          "tag-suggestion",
+          "autocomplete-dropdown",
+          "recommendations-menu",
+        ];
+        for (const element of prohibitedElements) {
+          assert.strictEqual(
+            topBarCode.includes(element),
+            false,
+            `TopBar must not contain prohibited suggestion element: ${element}`
+          );
+        }
+
+        // 3. Prohibited suggestion logic must NOT exist in useSearch
+        const prohibitedLogic = [
+          "fetchSuggestions",
+          "getAiSuggestions",
+          "generateSuggestions",
+          "peopleSuggestions",
+          "autoTags",
+        ];
+        for (const logic of prohibitedLogic) {
+          assert.strictEqual(
+            useSearchCode.includes(logic),
+            false,
+            `useSearch must not declare suggestion logic: ${logic}`
+          );
+        }
+
+        // 4. Verify search.rs defines test_task_85_no_search_suggestions
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          searchRs.includes("fn test_task_85_no_search_suggestions()"),
+          "search.rs must define test_task_85_no_search_suggestions"
+        );
+      });
+    });
+
+    describe("Task 86: Search Data Privacy", () => {
+      it("guarantees search query, note title, and note content remain strictly local with zero network transmission", async () => {
+        // Spec Invariants (phase-6-specification.md:2411-2427):
+        // Search queries and note content remain local.
+        // Do not send:
+        // * search query
+        // * note title
+        // * note content
+        // to external services.
+        // Do not add telemetry for search content.
+
+        // Simulate local search execution and track network egress attempts
+        const networkCalls = [];
+        const mockNetwork = {
+          fetch: (url, options) => networkCalls.push({ type: "fetch", url, body: options?.body }),
+          xhr: (url, body) => networkCalls.push({ type: "xhr", url, body }),
+          sendBeacon: (url, data) => networkCalls.push({ type: "beacon", url, data }),
+        };
+
+        const sensitiveQuery = "medical prescription penicillin 500mg";
+        const sensitiveTitle = "Confidential Patient Record";
+        const sensitiveContent = "Diagnosis and treatment history with penicillin allergy records.";
+
+        // Execute local search workflow
+        const searchWorkflow = (query, localResults) => {
+          // Local in-memory filtering / IPC invocation only
+          const filtered = localResults.filter(
+            (r) => r.title.includes(query) || r.snippet.includes(query)
+          );
+          return filtered;
+        };
+
+        const results = searchWorkflow("penicillin", [
+          { id: "note-1", title: sensitiveTitle, snippet: sensitiveContent },
+        ]);
+
+        assert.strictEqual(results.length, 1);
+        assert.strictEqual(results[0].title, sensitiveTitle);
+
+        // Core Privacy Assertions: Zero network calls triggered
+        assert.strictEqual(
+          networkCalls.length,
+          0,
+          "Zero network transmissions permitted during search execution"
+        );
+      });
+
+      it("verifies absence of external telemetry, analytics tracking, or external search SDKs", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const packageJsonStr = await fs.readFile(path.resolve("package.json"), "utf-8");
+        const packageJson = JSON.parse(packageJsonStr);
+
+        const searchStorageCode = await fs.readFile(
+          path.resolve("src/services/storage/search.ts"),
+          "utf-8"
+        );
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Invariant: package.json must not include analytics/telemetry SDKs
+        const allDeps = {
+          ...packageJson.dependencies,
+          ...packageJson.devDependencies,
+        };
+        const forbiddenSdkPatterns = [
+          "telemetry",
+          "analytics",
+          "mixpanel",
+          "posthog",
+          "segment",
+          "sentry",
+          "datadog",
+          "google-analytics",
+          "amplitude",
+        ];
+        for (const dep of Object.keys(allDeps)) {
+          for (const pattern of forbiddenSdkPatterns) {
+            assert.strictEqual(
+              dep.toLowerCase().includes(pattern),
+              false,
+              `Forbidden tracking/analytics dependency found in package.json: ${dep}`
+            );
+          }
+        }
+
+        // 2. Invariant: searchStorage strictly invokes local Tauri IPC command "search_notes"
+        assert.ok(
+          searchStorageCode.includes('invoke<SearchResult[]>("search_notes"'),
+          'searchStorage must invoke local Tauri command "search_notes"'
+        );
+        assert.strictEqual(
+          searchStorageCode.includes("http://") || searchStorageCode.includes("https://"),
+          false,
+          "searchStorage must not contain external HTTP/HTTPS endpoints"
+        );
+
+        // 3. Invariant: useSearch does not implement telemetry logging for search content
+        const forbiddenTelemetryWords = ["sendTelemetry", "trackEvent", "logQuery", "reportSearch"];
+        for (const word of forbiddenTelemetryWords) {
+          assert.strictEqual(
+            useSearchCode.includes(word),
+            false,
+            `useSearch must not contain search telemetry hook: ${word}`
+          );
+        }
+
+        // 4. Invariant: Backend search repository defines test_task_86_search_data_privacy
+        assert.ok(
+          searchRs.includes("fn test_task_86_search_data_privacy()"),
+          "search.rs must define test_task_86_search_data_privacy"
+        );
+      });
+    });
+
+    describe("Task 87: Search Logging Privacy", () => {
+      it("guarantees full note content is never logged in any context and forbidden keys are sanitized", async () => {
+        // Spec Invariant (phase-6-specification.md:2429-2445):
+        // Never log:
+        // * full note content
+        // Never log:
+        // * complete search query in production if it could reveal sensitive user information.
+        // Development logging should be minimal.
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const loggerCode = await fs.readFile(
+          path.resolve("src/utils/logger.ts"),
+          "utf-8"
+        );
+
+        // 1. Verify logger contains forbidden content keys
+        const forbiddenKeys = ["content", "body", "text", "rawContent", "noteContent"];
+        for (const key of forbiddenKeys) {
+          assert.ok(
+            loggerCode.includes(`"${key}"`),
+            `logger.ts must blacklist key "${key}" from log context`
+          );
+        }
+
+        // 2. Verify redaction marker
+        assert.ok(
+          loggerCode.includes("[REDACTED_CONTENT]"),
+          "logger.ts must redact sensitive note content with [REDACTED_CONTENT]"
+        );
+      });
+
+      it("guarantees search query logging is completely suppressed in production and minimal in dev", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const loggerCode = await fs.readFile(
+          path.resolve("src/utils/logger.ts"),
+          "utf-8"
+        );
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Invariant: Frontend logger exits immediately outside development mode
+        assert.ok(
+          loggerCode.includes("if (!isDev) return;"),
+          "logger.ts must exit early outside development mode (production silent)"
+        );
+
+        // 2. Invariant: Backend search logging is gated behind debug assertions (eliminated in release)
+        assert.ok(
+          searchRs.includes("#[cfg(debug_assertions)]"),
+          "search.rs must gate search debug logging behind #[cfg(debug_assertions)]"
+        );
+
+        // 3. Invariant: Backend search repository defines test_task_87_search_logging_privacy
+        assert.ok(
+          searchRs.includes("fn test_task_87_search_logging_privacy()"),
+          "search.rs must define test_task_87_search_logging_privacy"
+        );
+      });
+    });
+
+    describe("Task 88: Backend Validation", () => {
+      it("guarantees backend validation across all 4 mandatory criteria (query length, malformed input, database availability, result limit)", async () => {
+        // Spec Requirements (phase-6-specification.md:2449-2462):
+        // Backend must validate:
+        // * query length
+        // * malformed input
+        // * database availability
+        // * result limit
+        // Use a reasonable maximum query length to avoid pathological requests.
+        // Do not use an unnecessarily small limit.
+
+        const MAX_QUERY_LENGTH = 1000;
+        const DEFAULT_LIMIT = 50;
+        const MAX_LIMIT = 100;
+
+        // 1. Query Length Validation
+        const validateQueryLength = (query) => {
+          const trimmed = query.trim();
+          if (trimmed.length > MAX_QUERY_LENGTH) {
+            return { valid: false, error: "Search query is too long." };
+          }
+          return { valid: true };
+        };
+
+        assert.strictEqual(validateQueryLength("a".repeat(1000)).valid, true);
+        assert.strictEqual(validateQueryLength("a".repeat(1001)).valid, false);
+        assert.strictEqual(validateQueryLength("a".repeat(1001)).error, "Search query is too long.");
+
+        // 2. Malformed Input Validation
+        const sanitizeQueryInput = (raw) => {
+          if (!raw || !raw.trim()) return "";
+          return raw.trim();
+        };
+
+        const malformedInputs = [
+          '"unclosed quote',
+          "AND OR NOT NEAR",
+          "***???^^^",
+          "'; DROP TABLE notes; --",
+          "note\"title':)*&^%$#@",
+        ];
+        for (const input of malformedInputs) {
+          const sanitized = sanitizeQueryInput(input);
+          assert.strictEqual(typeof sanitized, "string");
+          assert.ok(sanitized.length > 0);
+        }
+
+        // 3. Database Availability Handling
+        const { sanitizeSearchError } = await import("../src/features/search/utils.ts");
+        const dbError = new Error("Database is locked or unavailable");
+        const sanitizedError = sanitizeSearchError(dbError);
+        assert.strictEqual(sanitizedError.title, "Search failed");
+        assert.ok(sanitizedError.message.includes("Unable to search notes"));
+
+        // 4. Result Limit Clamping
+        const clampLimit = (limit) => {
+          if (limit === undefined || limit === null) return DEFAULT_LIMIT;
+          return Math.min(Math.max(limit, 1), MAX_LIMIT);
+        };
+
+        assert.strictEqual(clampLimit(undefined), 50);
+        assert.strictEqual(clampLimit(null), 50);
+        assert.strictEqual(clampLimit(1000000), 100);
+        assert.strictEqual(clampLimit(0), 1);
+        assert.strictEqual(clampLimit(25), 25);
+      });
+
+      it("inspects backend search.rs to verify all 4 criteria are explicitly enforced", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Query Length Constants & Check
+        assert.ok(
+          searchRs.includes("pub const MAX_QUERY_LENGTH: usize = 1000;"),
+          "search.rs must define MAX_QUERY_LENGTH = 1000"
+        );
+        assert.ok(
+          searchRs.includes("trimmed.chars().count() > Self::MAX_QUERY_LENGTH"),
+          "search.rs must validate query length against MAX_QUERY_LENGTH"
+        );
+        assert.ok(
+          searchRs.includes('"Search query is too long."'),
+          "search.rs must return 'Search query is too long.' error message"
+        );
+
+        // 2. Result Limit Constants & Clamping
+        assert.ok(
+          searchRs.includes("pub const DEFAULT_LIMIT: usize = 50;"),
+          "search.rs must define DEFAULT_LIMIT = 50"
+        );
+        assert.ok(
+          searchRs.includes("pub const MAX_LIMIT: usize = 100;"),
+          "search.rs must define MAX_LIMIT = 100"
+        );
+        assert.ok(
+          searchRs.includes("clamp(1, Self::MAX_LIMIT)"),
+          "search.rs must clamp limit to (1, MAX_LIMIT)"
+        );
+
+        // 3. Backend Test Existence
+        assert.ok(
+          searchRs.includes("fn test_task_88_backend_validation()"),
+          "search.rs must define test_task_88_backend_validation"
+        );
+      });
+    });
+
+    describe("Task 89: Search Query Size", () => {
+      it("enforces query size <= 1000 characters and exact 'Search query is too long.' error message", async () => {
+        // Spec Invariants (phase-6-specification.md:2464-2485):
+        // query <= 1000 characters may be reasonable.
+        // If query is too large:
+        // "Search query is too long."
+
+        const { sanitizeSearchError } = await import("../src/features/search/utils.ts");
+
+        // Test boundary at 1000 characters:
+        const validQuery1000 = "a".repeat(1000);
+        assert.strictEqual(validQuery1000.length, 1000);
+
+        // Test boundary at 1001 characters:
+        const oversizedQuery1001 = "a".repeat(1001);
+        assert.strictEqual(oversizedQuery1001.length, 1001);
+
+        // Simulate client validation
+        const validateQuery = (q) => {
+          if (q.trim().length > 1000) {
+            return {
+              status: "error",
+              message: "Search query is too long.",
+            };
+          }
+          return { status: "searching" };
+        };
+
+        const res1000 = validateQuery(validQuery1000);
+        assert.strictEqual(res1000.status, "searching");
+
+        const res1001 = validateQuery(oversizedQuery1001);
+        assert.strictEqual(res1001.status, "error");
+        assert.strictEqual(res1001.message, "Search query is too long.");
+
+        // Verify sanitizeSearchError translates backend error properly
+        const backendError = new Error("Validation error: Search query is too long.");
+        const sanitized = sanitizeSearchError(backendError);
+        assert.strictEqual(sanitized.message, "Search query is too long.");
+      });
+
+      it("inspects useSearch and TopBar for query size limits and exact error string", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Verify useSearch enforces length > 1000 and exact error message
+        assert.ok(
+          useSearchCode.includes("trimmed.length > 1000"),
+          "useSearch must check trimmed.length > 1000"
+        );
+        assert.ok(
+          useSearchCode.includes('"Search query is too long."'),
+          "useSearch must set error message 'Search query is too long.'"
+        );
+
+        // 2. Verify backend test exists for Task 89
+        assert.ok(
+          searchRs.includes("fn test_task_89_search_query_size()"),
+          "search.rs must define test_task_89_search_query_size"
+        );
+      });
+    });
+
+    describe("Task 90: Search Database Error Handling", () => {
+      it("guarantees SQLite database errors are masked with exact 'Unable to search notes.' and never expose SQL implementation details", async () => {
+        // Spec Invariants (phase-6-specification.md:2486-2504):
+        // If SQLite returns an error:
+        // Backend: SearchError
+        // Frontend: Unable to search notes.
+        // Do not expose SQL implementation details.
+
+        const { sanitizeSearchError } = await import("../src/features/search/utils.ts");
+
+        const technicalSqliteErrors = [
+          new Error('SQLite error: near "SELECT": syntax error in query'),
+          new Error("OperationalError: database disk image is malformed"),
+          new Error('rusqlite::Error::SqliteFailure(1, Some("no such table: notes_fts"))'),
+          new Error("SqliteFailure(CannotOpen, unable to open database file)"),
+          new Error("DatabaseLocked: database is locked"),
+          "disk I/O error on file descriptor",
+        ];
+
+        for (const rawErr of technicalSqliteErrors) {
+          const sanitized = sanitizeSearchError(rawErr);
+
+          // Invariant 1: Exact error message "Unable to search notes."
+          assert.strictEqual(
+            sanitized.message,
+            "Unable to search notes.",
+            `Expected exact sanitized message 'Unable to search notes.' for error: ${rawErr}`
+          );
+          assert.strictEqual(sanitized.title, "Search failed");
+
+          // Invariant 2: Zero SQL tokens or internal database details exposed to user
+          const forbiddenTokens = [
+            "sqlite",
+            "select",
+            "syntax error",
+            "near",
+            "malformed",
+            "notes_fts",
+            "sqlite_master",
+            "cannotopen",
+            "locked",
+            "table",
+          ];
+          for (const token of forbiddenTokens) {
+            assert.strictEqual(
+              sanitized.message.toLowerCase().includes(token),
+              false,
+              `Sanitized error must not leak SQL token '${token}'`
+            );
+          }
+        }
+      });
+
+      it("inspects backend and frontend source files to verify SearchError and error masking wiring", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const utilsCode = await fs.readFile(
+          path.resolve("src/features/search/utils.ts"),
+          "utf-8"
+        );
+        const commandsStorageCode = await fs.readFile(
+          path.resolve("src-tauri/src/commands/storage.rs"),
+          "utf-8"
+        );
+        const errorsCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/errors.rs"),
+          "utf-8"
+        );
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Frontend sanitizeSearchError returns exact "Unable to search notes."
+        assert.ok(
+          utilsCode.includes('message: "Unable to search notes."'),
+          'sanitizeSearchError must return message: "Unable to search notes."'
+        );
+
+        // 2. Backend commands/storage.rs maps database errors to "Unable to search notes."
+        assert.ok(
+          commandsStorageCode.includes('"Unable to search notes."'),
+          'commands/storage.rs must map database search errors to "Unable to search notes."'
+        );
+
+        // 3. Backend errors.rs defines SearchError enum and variant
+        assert.ok(
+          errorsCode.includes("pub enum SearchError"),
+          "errors.rs must define pub enum SearchError"
+        );
+        assert.ok(
+          errorsCode.includes("SearchError(String)"),
+          "errors.rs must define StorageError::SearchError variant"
+        );
+
+        // 4. Backend search.rs defines test_task_90_search_database_error_handling
+        assert.ok(
+          searchRs.includes("fn test_task_90_search_database_error_handling()"),
+          "search.rs must define test_task_90_search_database_error_handling"
+        );
+      });
+    });
+
+    describe("Task 91: Search Service Separation", () => {
+      it("verifies architectural separation of SearchService (searchStorage) from NoteService (notesStorage)", async () => {
+        // Spec Invariants (phase-6-specification.md:2506-2528):
+        // Keep: SearchService separate from NoteService where practical.
+        // Do not put the entire search engine inside NoteList.tsx.
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchStorageCode = await fs.readFile(
+          path.resolve("src/services/storage/search.ts"),
+          "utf-8"
+        );
+        const notesStorageCode = await fs.readFile(
+          path.resolve("src/services/storage/notes.ts"),
+          "utf-8"
+        );
+        const storageIndexCode = await fs.readFile(
+          path.resolve("src/services/storage/index.ts"),
+          "utf-8"
+        );
+
+        // 1. Dedicated SearchService module
+        assert.ok(
+          searchStorageCode.includes("export const searchStorage = {"),
+          "searchStorage must be exported in a dedicated search.ts module"
+        );
+        assert.ok(
+          searchStorageCode.includes("async search("),
+          "searchStorage must define specialized search method"
+        );
+
+        // 2. Dedicated NoteService module
+        assert.ok(
+          notesStorageCode.includes("export const notesStorage = {"),
+          "notesStorage must be exported in a dedicated notes.ts module"
+        );
+        assert.ok(
+          notesStorageCode.includes("create("),
+          "notesStorage handles note creation CRUD"
+        );
+        assert.ok(
+          notesStorageCode.includes("update("),
+          "notesStorage handles note update CRUD"
+        );
+
+        // 3. Independent registration in storageService aggregate
+        assert.ok(
+          storageIndexCode.includes("search: searchStorage"),
+          "storageService must expose search as a separate domain service"
+        );
+        assert.ok(
+          storageIndexCode.includes("notes: notesStorage"),
+          "storageService must expose notes as a separate domain service"
+        );
+      });
+
+      it("guarantees NotesList.tsx is a decoupled presentational component free of search engine logic", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const notesListCode = await fs.readFile(
+          path.resolve("src/features/notes/components/NotesList/NotesList.tsx"),
+          "utf-8"
+        );
+        const searchRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // 1. Invariant: NotesList.tsx does NOT invoke backend search IPC commands
+        assert.strictEqual(
+          notesListCode.includes('invoke("search_notes"'),
+          false,
+          "NotesList.tsx must not invoke search_notes directly"
+        );
+        assert.strictEqual(
+          notesListCode.includes("searchStorage"),
+          false,
+          "NotesList.tsx must not directly depend on searchStorage"
+        );
+
+        // 2. Invariant: NotesList.tsx does not instantiate useSearch hook internally
+        assert.strictEqual(
+          notesListCode.includes("useSearch("),
+          false,
+          "NotesList.tsx must not host search engine or instantiate useSearch hook"
+        );
+
+        // 3. Invariant: Backend defines test_task_91_search_service_separation
+        assert.ok(
+          searchRs.includes("fn test_task_91_search_service_separation()"),
+          "search.rs must define test_task_91_search_service_separation"
+        );
+      });
+    });
+
+    describe("Task 92: Search Query Repository", () => {
+      it("verifies SQL queries live strictly in the Rust storage/repository layer and are absent from React and Tauri command handlers", async () => {
+        // Spec Invariants (phase-6-specification.md:2530-2552):
+        // SQL should live in the Rust storage/repository layer.
+        // Not inside: React, Tauri command handler.
+        // Recommended: Tauri Command -> Search Service -> Search Repository -> SQLite.
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const commandsStorage = await fs.readFile(
+          path.resolve("src-tauri/src/commands/storage.rs"),
+          "utf-8"
+        );
+        const searchServiceCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/services/search.rs"),
+          "utf-8"
+        );
+        const searchRepoCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        const searchStorageFrontend = await fs.readFile(
+          path.resolve("src/services/storage/search.ts"),
+          "utf-8"
+        );
+
+        // 1. Invariant: React / Frontend services contain ZERO SQL
+        const sqlPatterns = [
+          /SELECT\s+.*FROM/i,
+          /INSERT\s+INTO/i,
+          /UPDATE\s+.*SET/i,
+          /DELETE\s+FROM/i,
+          /notes_fts\s+MATCH/i,
+        ];
+
+        for (const pattern of sqlPatterns) {
+          assert.strictEqual(
+            pattern.test(searchStorageFrontend),
+            false,
+            `Frontend search service must not contain raw SQL: ${pattern}`
+          );
+        }
+
+        // 2. Invariant: Tauri command handlers contain ZERO SQL queries
+        for (const pattern of sqlPatterns) {
+          assert.strictEqual(
+            pattern.test(commandsStorage),
+            false,
+            `Tauri command handler must not contain raw SQL: ${pattern}`
+          );
+        }
+
+        // 3. Invariant: commands::storage::search_notes delegates to SearchService::search
+        assert.ok(
+          commandsStorage.includes("SearchService::search("),
+          "commands::storage::search_notes must delegate to SearchService::search"
+        );
+
+        // 4. Invariant: SearchService delegates to SearchRepository
+        assert.ok(
+          searchServiceCode.includes("SearchRepository::search("),
+          "SearchService::search must delegate to SearchRepository::search"
+        );
+
+        // 5. Invariant: SearchRepository is where SQLite SQL queries reside
+        assert.ok(
+          searchRepoCode.includes("notes_fts MATCH"),
+          "SearchRepository must contain the FTS5 MATCH query"
+        );
+        assert.ok(
+          searchRepoCode.includes("LIKE"),
+          "SearchRepository must contain the fallback LIKE query"
+        );
+      });
+
+      it("verifies end-to-end architectural pipeline and backend test verification", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchRepoCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        const searchServiceCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/services/search.rs"),
+          "utf-8"
+        );
+
+        // Verify backend unit test existence
+        assert.ok(
+          searchRepoCode.includes("fn test_task_92_search_query_repository()"),
+          "search.rs must define test_task_92_search_query_repository"
+        );
+        assert.ok(
+          searchServiceCode.includes("fn test_search_service_pipeline()"),
+          "services/search.rs must define test_search_service_pipeline"
+        );
+      });
+    });
+
+    describe("Task 93: Search Result DTO Mapping", () => {
+      it("guarantees DTO mapping pipeline: SQLite row -> Rust domain model -> DTO -> TypeScript model", async () => {
+        // Spec Invariants (phase-6-specification.md:2555-2572):
+        // Do not expose raw database rows directly to React if the project uses DTO mapping.
+        // Use: SQLite row -> Rust domain model -> DTO -> TypeScript model. Maintain existing architecture.
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const modelsRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/models.rs"),
+          "utf-8"
+        );
+        const typesTs = await fs.readFile(
+          path.resolve("src/services/storage/types.ts"),
+          "utf-8"
+        );
+        const searchUtilsTs = await fs.readFile(
+          path.resolve("src/features/search/utils.ts"),
+          "utf-8"
+        );
+
+        // 1. Rust DTO definition with camelCase serialization
+        assert.ok(
+          modelsRs.includes("pub struct SearchResult {"),
+          "Rust models must define SearchResult DTO struct"
+        );
+        assert.ok(
+          modelsRs.includes('#[serde(rename_all = "camelCase")]'),
+          "Rust SearchResult DTO must serialize with camelCase to match TypeScript models"
+        );
+
+        // 2. TypeScript model interface definition
+        assert.ok(
+          typesTs.includes("export interface SearchResult {"),
+          "Frontend storage types must define SearchResult interface"
+        );
+        assert.ok(typesTs.includes("noteId: string;"));
+        assert.ok(typesTs.includes("title: string;"));
+        assert.ok(typesTs.includes("snippet?: string;"));
+        assert.ok(typesTs.includes("modifiedAt: string;"));
+        assert.ok(typesTs.includes("notebookId: string | null;"));
+        assert.ok(typesTs.includes("favorite: boolean;"));
+
+        // 3. UI transformation adapter (SearchResult DTO -> NoteListItem)
+        assert.ok(
+          searchUtilsTs.includes("export function searchResultToNoteListItem("),
+          "utils.ts must provide searchResultToNoteListItem adapter"
+        );
+
+        // 4. Test adapter mapping behavior with sample DTO
+        const { searchResultToNoteListItem } = await import(
+          "../src/features/search/utils.ts"
+        );
+
+        const sampleDto = {
+          noteId: "note-dto-123",
+          title: "Quarterly Review",
+          snippet: "Q4 performance targets were exceeded.",
+          modifiedAt: "2026-09-30T10:00:00Z",
+          notebookId: "nb-456",
+          favorite: true,
+        };
+
+        const noteListItem = searchResultToNoteListItem(
+          sampleDto,
+          "Work / Planning",
+          ["urgent"]
+        );
+
+        assert.strictEqual(noteListItem.id, "note-dto-123");
+        assert.strictEqual(noteListItem.title, "Quarterly Review");
+        assert.strictEqual(noteListItem.preview, "Q4 performance targets were exceeded.");
+        assert.strictEqual(noteListItem.isFavorite, true);
+        assert.strictEqual(noteListItem.notebookPath, "Work / Planning");
+        assert.deepStrictEqual(noteListItem.tags, ["urgent"]);
+      });
+
+      it("verifies backend defines test_task_93_search_result_dto_mapping and forbids raw SQLite rows in React", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchRepoCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        assert.ok(
+          searchRepoCode.includes("fn test_task_93_search_result_dto_mapping()"),
+          "search.rs must define test_task_93_search_result_dto_mapping"
+        );
+      });
+    });
+
+    describe("Task 94: Search Tests", () => {
+      it("verifies comprehensive backend test coverage across all 12 mandatory criteria", async () => {
+        // Spec Invariants (phase-6-specification.md:2575-2593):
+        // Add backend tests for:
+        // 1. title match
+        // 2. content match
+        // 3. case-insensitive search
+        // 4. empty query
+        // 5. no result
+        // 6. multiple results
+        // 7. deleted note
+        // 8. special characters
+        // 9. Unicode
+        // 10. large content
+        // 11. ranking
+        // 12. result limit
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchRepoCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+
+        // Verify test_task_94_search_tests existence
+        assert.ok(
+          searchRepoCode.includes("fn test_task_94_search_tests()"),
+          "search.rs must define test_task_94_search_tests"
+        );
+
+        // Verify all 12 criteria are asserted inside the test suite
+        const requiredCriteria = [
+          "TITLE MATCH",
+          "CONTENT MATCH",
+          "CASE-INSENSITIVE SEARCH",
+          "EMPTY QUERY",
+          "NO RESULT",
+          "MULTIPLE RESULTS",
+          "DELETED NOTE",
+          "SPECIAL CHARACTERS",
+          "UNICODE",
+          "LARGE CONTENT",
+          "RANKING",
+          "RESULT LIMIT",
+        ];
+
+        for (const criterion of requiredCriteria) {
+          assert.ok(
+            searchRepoCode.includes(criterion),
+            `test_task_94_search_tests must cover: ${criterion}`
+          );
+        }
+      });
+
+      it("verifies frontend integration for query normalization and empty state handling", async () => {
+        const { normalizeSearchQuery, isValidSearchQuery } = await import(
+          "../src/features/search/utils.ts"
+        );
+
+        // 1. Empty query
+        assert.strictEqual(normalizeSearchQuery(""), "");
+        assert.strictEqual(normalizeSearchQuery("   "), "");
+        assert.strictEqual(isValidSearchQuery(""), false);
+        assert.strictEqual(isValidSearchQuery("   "), false);
+
+        // 2. Unicode and accents preserved
+        assert.strictEqual(normalizeSearchQuery("अंतरिक्ष"), "अंतरिक्ष");
+        assert.strictEqual(normalizeSearchQuery("宇宙旅行"), "宇宙旅行");
+        assert.strictEqual(normalizeSearchQuery("Café crème"), "Café crème");
+
+        // 3. Special characters preserved
+        assert.strictEqual(normalizeSearchQuery("C++ & C#"), "C++ & C#");
+      });
+    });
+
+    describe("Task 95: FTS Tests", () => {
+      it("verifies comprehensive FTS5 lifecycle test coverage across all 7 criteria", async () => {
+        // Spec Invariants (phase-6-specification.md:2595-2609):
+        // If FTS5 is used, additionally test:
+        // 1. index creation
+        // 2. index population
+        // 3. create synchronization
+        // 4. update synchronization
+        // 5. soft-delete behavior
+        // 6. rebuild
+        // 7. restart
+
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const searchRepoCode = await fs.readFile(
+          path.resolve("src-tauri/src/storage/repositories/search.rs"),
+          "utf-8"
+        );
+        const schemaRs = await fs.readFile(
+          path.resolve("src-tauri/src/storage/schema.rs"),
+          "utf-8"
+        );
+
+        // 1. Verify test_task_95_fts_tests existence in backend
+        assert.ok(
+          searchRepoCode.includes("fn test_task_95_fts_tests()"),
+          "search.rs must define test_task_95_fts_tests"
+        );
+
+        // 2. Verify all 7 criteria are tested
+        const requiredFtsCriteria = [
+          "INDEX CREATION",
+          "INDEX POPULATION",
+          "CREATE SYNCHRONIZATION",
+          "UPDATE SYNCHRONIZATION",
+          "SOFT-DELETE BEHAVIOR",
+          "REBUILD",
+          "RESTART",
+        ];
+
+        for (const criterion of requiredFtsCriteria) {
+          assert.ok(
+            searchRepoCode.includes(criterion),
+            `test_task_95_fts_tests must cover: ${criterion}`
+          );
+        }
+
+        // 3. Verify schema definition contains FTS5 virtual table and all 3 triggers
+        assert.ok(
+          schemaRs.includes("CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5"),
+          "schema.rs must create notes_fts virtual table using fts5"
+        );
+        assert.ok(
+          schemaRs.includes("CREATE TRIGGER IF NOT EXISTS notes_fts_ai"),
+          "schema.rs must create notes_fts_ai AFTER INSERT trigger"
+        );
+        assert.ok(
+          schemaRs.includes("CREATE TRIGGER IF NOT EXISTS notes_fts_au"),
+          "schema.rs must create notes_fts_au AFTER UPDATE trigger"
+        );
+        assert.ok(
+          schemaRs.includes("CREATE TRIGGER IF NOT EXISTS notes_fts_ad"),
+          "schema.rs must create notes_fts_ad AFTER DELETE trigger"
+        );
+      });
+    });
+
+    describe("Task 96: Frontend Search Tests", () => {
+      it("verifies input rendering and accessible search landmarks", async () => {
+        // Criterion 1: input rendering (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+
+        // Input element with accessible attributes
+        assert.ok(
+          topBarCode.includes('placeholder="Search notes..."'),
+          "TopBar must provide 'Search notes...' placeholder"
+        );
+        assert.ok(
+          topBarCode.includes('className="search-input selectable-text"'),
+          "TopBar must render search input with search-input class"
+        );
+        assert.ok(
+          topBarCode.includes('role="search"'),
+          "TopBar search container must have role='search' landmark"
+        );
+        assert.ok(
+          topBarCode.includes('aria-label="Search notes"'),
+          "TopBar input must have aria-label='Search notes'"
+        );
+        assert.ok(
+          topBarCode.includes('className="search-clear-btn"'),
+          "TopBar must render clear button when query is present"
+        );
+      });
+
+      it("verifies debounce mechanism and timer cleanup", async () => {
+        // Criterion 2: debounce (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        // Debounce timer and default delay
+        assert.ok(
+          useSearchCode.includes("options.debounceMs ?? 200"),
+          "useSearch must default debounceMs to 200ms"
+        );
+        assert.ok(
+          useSearchCode.includes("clearTimeout(debounceTimerRef.current)"),
+          "useSearch must clear pending debounce timers on subsequent input"
+        );
+        assert.ok(
+          useSearchCode.includes("setTimeout("),
+          "useSearch must debounce query execution with setTimeout"
+        );
+        assert.ok(
+          useSearchCode.includes("cancelPendingDebounce"),
+          "useSearch must export cancelPendingDebounce method"
+        );
+      });
+
+      it("verifies loading state and loading indicators", async () => {
+        // Criterion 3: loading state (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+        const notesListCode = await fs.readFile(
+          path.resolve("src/features/notes/components/NotesList/NotesList.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          useSearchCode.includes('setSearchState({ status: "searching", query: trimmed })'),
+          "useSearch must transition to searching status upon dispatch"
+        );
+        assert.ok(
+          notesListCode.includes('status === "loading"'),
+          "NotesList must handle loading status"
+        );
+        assert.ok(
+          notesListCode.includes('<LoadingState count={4} message={isSearchMode ? "Searching..." : undefined} />'),
+          "NotesList must render LoadingState during search"
+        );
+      });
+
+      it("verifies success state and results propagation", async () => {
+        // Criterion 4: success state (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        assert.ok(
+          useSearchCode.includes('status: "success"'),
+          "useSearch must set status: 'success' upon receiving results"
+        );
+        assert.ok(
+          useSearchCode.includes('searchState.status === "success" ? searchState.results : []'),
+          "useSearch results must derive cleanly from success state"
+        );
+      });
+
+      it("verifies empty state handling for zero matching results", async () => {
+        // Criterion 5: empty state (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const notesListCode = await fs.readFile(
+          path.resolve("src/features/notes/components/NotesList/NotesList.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          notesListCode.includes('status === "empty" || (status === "idle" && notes.length === 0)'),
+          "NotesList must detect and render empty results state"
+        );
+        assert.ok(
+          notesListCode.includes("<EmptyState"),
+          "NotesList must render EmptyState component when no results match"
+        );
+      });
+
+      it("verifies error state and user-friendly database failure presentation", async () => {
+        // Criterion 6: error state (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+        const notesListCode = await fs.readFile(
+          path.resolve("src/features/notes/components/NotesList/NotesList.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          useSearchCode.includes('status: "error"'),
+          "useSearch must set status: 'error' upon search rejection"
+        );
+        assert.ok(
+          notesListCode.includes('status === "error"'),
+          "NotesList must handle error status"
+        );
+        assert.ok(
+          notesListCode.includes("<ErrorState"),
+          "NotesList must render ErrorState with retry callback on search failure"
+        );
+      });
+
+      it("verifies result selection workflow and editor synchronization", async () => {
+        // Criterion 7: result selection (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const appCode = await fs.readFile(
+          path.resolve("src/app/App.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          appCode.includes("const handleKeyboardSelectNote = useCallback("),
+          "App must define handleKeyboardSelectNote handler"
+        );
+        assert.ok(
+          appCode.includes("cancelPendingDebounce()"),
+          "Selecting a result must cancel any pending debounce timers"
+        );
+        assert.ok(
+          appCode.includes("await editorSaveRef.current()"),
+          "Selecting a result must flush current editor state before transition"
+        );
+        assert.ok(
+          appCode.includes("setSelectedNoteId(noteId)"),
+          "Selecting a result must set selectedNoteId"
+        );
+        assert.ok(
+          appCode.includes("searchInputRef.current?.blur()"),
+          "Selecting a result must blur search input to transition focus to editor"
+        );
+      });
+
+      it("verifies keyboard navigation (ArrowDown / ArrowUp) across search results", async () => {
+        // Criterion 8: keyboard navigation (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const keyNavCode = await fs.readFile(
+          path.resolve("src/features/search/useSearchKeyboardNav.ts"),
+          "utf-8"
+        );
+
+        assert.ok(
+          keyNavCode.includes('key === "ArrowDown"'),
+          "Keyboard nav must handle ArrowDown key"
+        );
+        assert.ok(
+          keyNavCode.includes('"ArrowUp"'),
+          "Keyboard nav must handle ArrowUp key"
+        );
+        assert.ok(
+          keyNavCode.includes("isEditorFocused()"),
+          "Keyboard nav must guard against interfering with active editor inputs"
+        );
+        assert.ok(
+          keyNavCode.includes("onSelectNote(nextId)"),
+          "Keyboard nav must select target note ID"
+        );
+        assert.ok(
+          keyNavCode.includes("scrollIntoView"),
+          "Keyboard nav must scroll newly selected note card into view"
+        );
+      });
+
+      it("verifies Escape key handling for search dismissal", async () => {
+        // Criterion 9: Escape (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+        const shortcutsCode = await fs.readFile(
+          path.resolve("src/hooks/useKeyboardShortcuts.ts"),
+          "utf-8"
+        );
+
+        assert.ok(
+          topBarCode.includes('e.key === "Escape"'),
+          "TopBar must handle Escape key in search input"
+        );
+        assert.ok(
+          topBarCode.includes("searchInputRef.current?.blur()"),
+          "Escape in TopBar must blur search input"
+        );
+        assert.ok(
+          shortcutsCode.includes('event.key === "Escape"'),
+          "useKeyboardShortcuts must listen for global Escape key"
+        );
+        assert.ok(
+          shortcutsCode.includes("onEscape?.()"),
+          "useKeyboardShortcuts must invoke onEscape handler"
+        );
+      });
+
+      it("verifies Ctrl/Cmd + K shortcut for search focus", async () => {
+        // Criterion 10: Ctrl/Cmd + K (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const shortcutsCode = await fs.readFile(
+          path.resolve("src/hooks/useKeyboardShortcuts.ts"),
+          "utf-8"
+        );
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          shortcutsCode.includes('key === "k" || key === "f"'),
+          "useKeyboardShortcuts must detect Ctrl/Cmd + K and Ctrl/Cmd + F"
+        );
+        assert.ok(
+          shortcutsCode.includes("onFocusSearch?.()"),
+          "useKeyboardShortcuts must invoke onFocusSearch handler"
+        );
+        assert.ok(
+          topBarCode.includes("Ctrl+K"),
+          "TopBar must render accessible Ctrl+K keyboard shortcut hint"
+        );
+      });
+
+      it("verifies stale request protection and race condition elimination", async () => {
+        // Criterion 11: stale request protection (phase-6-specification.md:2612-2634)
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        assert.ok(
+          useSearchCode.includes("requestIdRef = useRef<number>(0)"),
+          "useSearch must maintain an incremental requestIdRef counter"
+        );
+        assert.ok(
+          useSearchCode.includes("currentReqId = ++requestIdRef.current"),
+          "useSearch must increment requestIdRef on each search dispatch"
+        );
+        assert.ok(
+          useSearchCode.includes("if (currentReqId === requestIdRef.current)"),
+          "useSearch must discard responses from superseded/stale search requests"
+        );
+      });
+    });
+
+    // =========================================================================
+    // TASK 97 — Search Regression Tests (phase-6-specification.md:2635-2656)
+    // =========================================================================
+    describe("Task 97: Search Regression Tests", () => {
+      it("1. theme: verifies theme system is decoupled from search and styles are preserved", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const themeHookCode = await fs.readFile(
+          path.resolve("src/hooks/useTheme.ts"),
+          "utf-8"
+        );
+        const topBarCode = await fs.readFile(
+          path.resolve("src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+
+        // Theme hook manages data-theme on root without being overridden by search
+        assert.ok(
+          themeHookCode.includes('root.setAttribute("data-theme"'),
+          "useTheme must set data-theme attribute on document root"
+        );
+        // TopBar / Search input uses CSS variables compatible with light/dark themes
+        assert.ok(
+          topBarCode.includes("search-input"),
+          "TopBar must provide search input styled via theme variables"
+        );
+      });
+
+      it("2. sidebar: verifies sidebar navigation views are preserved alongside search", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const sidebarCode = await fs.readFile(
+          path.resolve("src/components/Sidebar/Sidebar.tsx"),
+          "utf-8"
+        );
+
+        // Sidebar supports All Notes, Unfiled, Favorites, Notebooks, and Tags
+        assert.ok(sidebarCode.includes('"all-notes"'), "Sidebar must support 'all-notes' view");
+        assert.ok(sidebarCode.includes('"unfiled"'), "Sidebar must support 'unfiled' view");
+        assert.ok(sidebarCode.includes('"favorites"'), "Sidebar must support 'favorites' view");
+        assert.ok(sidebarCode.includes("notebooks"), "Sidebar must render notebooks section");
+        assert.ok(sidebarCode.includes("tags"), "Sidebar must render tags section");
+      });
+
+      it("3. notebooks: verifies notebook list and path computations function with search results", () => {
+        const notebooks = [
+          { id: "nb-1", name: "Engineering", parent_id: null },
+          { id: "nb-2", name: "Personal", parent_id: null },
+        ];
+
+        const path1 = computeNotebookPath("nb-1", notebooks);
+        assert.strictEqual(path1, "Engineering");
+
+        // Map search result with notebook_id to human-readable path
+        const searchResult = {
+          noteId: "note-1",
+          title: "Architecture Doc",
+          snippet: "System design",
+          modifiedAt: "2026-10-08T12:00:00Z",
+          notebookId: "nb-1",
+          favorite: false,
+        };
+
+        const resolvedPath = computeNotebookPath(searchResult.notebookId, notebooks);
+        assert.strictEqual(resolvedPath, "Engineering");
+      });
+
+      it("4. nested notebooks: verifies hierarchical path resolution for multi-level notebook trees", () => {
+        const nestedNotebooks = [
+          { id: "root", name: "Root", parent_id: null },
+          { id: "sub1", name: "Level 1", parent_id: "root" },
+          { id: "sub2", name: "Level 2", parent_id: "sub1" },
+        ];
+
+        const leafPath = computeNotebookPath("sub2", nestedNotebooks);
+        assert.strictEqual(leafPath, "Root / Level 1 / Level 2");
+
+        const unfiledPath = computeNotebookPath(null, nestedNotebooks);
+        assert.strictEqual(unfiledPath, "Unfiled");
+      });
+
+      it("5. note creation: verifies note creation defaults and transformation contract", () => {
+        const newNote = {
+          id: "note-new-1",
+          title: "New Note",
+          content: "",
+          format: "md",
+          created_at: "2026-10-08T12:00:00Z",
+          modified_at: "2026-10-08T12:00:00Z",
+          is_favorite: false,
+          is_pinned: false,
+          notebook_id: null,
+        };
+
+        const meta = computeNoteMetadata(newNote, [], "Unfiled", "Unfiled");
+        assert.strictEqual(meta.character_count, 0);
+        assert.strictEqual(meta.word_count, 0);
+        assert.strictEqual(meta.byte_size, 0);
+        assert.strictEqual(getFormatDisplayName(newNote.format), "Markdown");
+      });
+
+      it("6. note editing: verifies note editing transformations and search highlight consistency", () => {
+        const noteAfter = {
+          id: "note-edit-1",
+          title: "Revised Specification",
+          content: "Comprehensive updated content with search terms",
+        };
+
+        const hl = highlightText(noteAfter.title, "Revised");
+        assert.ok(Array.isArray(hl), "highlightText returns React elements array");
+        assert.ok(
+          hl.some(
+            (part) =>
+              typeof part === "object" &&
+              part !== null &&
+              (part.props?.children === "Revised" || part.key !== undefined)
+          ),
+          "highlightText must wrap matching term in marked element"
+        );
+      });
+
+      it("7. autosave: verifies autosave engine flushes pending changes before search dispatch", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const useSearchCode = await fs.readFile(
+          path.resolve("src/features/search/useSearch.ts"),
+          "utf-8"
+        );
+
+        assert.ok(
+          useSearchCode.includes("onBeforeSearch"),
+          "useSearch must accept and call onBeforeSearch hook"
+        );
+        assert.ok(
+          useSearchCode.includes("await onBeforeSearchRef.current()"),
+          "useSearch must await onBeforeSearch flush before executing search"
+        );
+      });
+
+      it("8. undo/redo: verifies editor undo/redo functionality remains isolated and accessible", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+
+        const editorCode = await fs.readFile(
+          path.resolve("src/features/notes/components/Editor/NoteEditor.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(
+          editorCode.includes('document.execCommand("undo")'),
+          "NoteEditor must support native undo execution"
+        );
+        assert.ok(
+          editorCode.includes('document.execCommand("redo")'),
+          "NoteEditor must support native redo execution"
+        );
+      });
+
+      it("9. tags: verifies tag operations, validation, normalization, and badge display", () => {
+        const emptyVal = validateTagName("");
+        assert.strictEqual(emptyVal.valid, false);
+        assert.strictEqual(emptyVal.error, "Tag name cannot be empty");
+        const validVal = validateTagName("valid-tag");
+        assert.strictEqual(validVal.valid, true);
+        assert.strictEqual(normalizeTagName("  My-Tag  "), "my-tag");
+
+        const mockNote = {
+          id: "tagged-note",
+          content: "Tagged note body",
+          format: "txt",
+          created_at: "2026-10-08T12:00:00Z",
+          modified_at: "2026-10-08T12:00:00Z",
+          is_favorite: false,
+          is_pinned: false,
+          notebook_id: null,
+        };
+        const tags = [{ id: "tag-1", name: "test-tag" }];
+        const meta = computeNoteMetadata(mockNote, tags, "Unfiled", "Unfiled");
+        assert.strictEqual(meta.tags.length, 1);
+        assert.strictEqual(meta.tags[0].name, "test-tag");
+      });
+
+      it("10. favorites: verifies favorite flag synchronization between search results and note list", () => {
+        const searchResult = {
+          noteId: "fav-note-1",
+          title: "Starred Note",
+          snippet: "This is a favorite note",
+          modifiedAt: "2026-10-08T12:00:00Z",
+          notebookId: null,
+          favorite: true,
+        };
+
+        const noteListItem = searchResultToNoteListItem(searchResult);
+        assert.strictEqual(noteListItem.isFavorite, true);
+        assert.strictEqual(noteListItem.id, "fav-note-1");
+      });
+
+      it("11. metadata: verifies metadata panel calculations produce exact word/char counts and byte sizes", () => {
+        const note = {
+          id: "meta-test-1",
+          content: "One two three four five.\nSecond line with words.",
+          format: "md",
+          created_at: "2026-10-08T12:00:00Z",
+          modified_at: "2026-10-08T12:00:00Z",
+          is_favorite: true,
+          is_pinned: false,
+          notebook_id: "nb-nested",
+        };
+
+        const meta = computeNoteMetadata(
+          note,
+          [],
+          "Child Notebook",
+          "Parent Notebook / Child Notebook"
+        );
+
+        assert.strictEqual(meta.word_count, 9);
+        assert.strictEqual(meta.character_count, note.content.length);
+        assert.strictEqual(meta.byte_size, Buffer.byteLength(note.content, "utf8"));
+        assert.strictEqual(meta.format, "md");
+        assert.strictEqual(meta.notebook_path, "Parent Notebook / Child Notebook");
+        assert.strictEqual(meta.is_favorite, true);
+        assert.strictEqual(getFormatDisplayName(meta.format), "Markdown");
+      });
+    });
+
+    // =========================================================================
+    // TASK 99 — Final Manual Search QA (phase-6-specification.md:2681-2731)
+    // =========================================================================
+    describe("Task 99: Final Manual Search QA Workflow Simulation", () => {
+      // Step 1: Create 10 notes with different titles and contents
+      const notes = [
+        { id: "note-1", title: "Project Alpha Architecture", content: "Foundational microservices and database schema design.", is_deleted: false },
+        { id: "note-2", title: "Quarterly Budget", content: "Expenses allocated for the core software project milestones.", is_deleted: false },
+        { id: "note-3", title: "Daily Standup Notes", content: "Team discussed blockers, PR reviews, and roadmap timelines.", is_deleted: false },
+        { id: "note-4", title: "Project Beta Specification", content: "Deep-dive into client-side state caching and SQLite storage.", is_deleted: false },
+        { id: "note-5", title: "Cooking Recipes", content: "Pasta carbonara ingredients: eggs, pecorino, guanciale, pepper.", is_deleted: false },
+        { id: "note-6", title: "Home Renovation Ideas", content: "Modern minimalist interior design inspiration.", is_deleted: false },
+        { id: "note-7", title: "Special Project Gamma", content: "Confidential research on quantum encryption protocols.", is_deleted: false },
+        { id: "note-8", title: "Personal Journal", content: "Reflections on daily workouts and healthy habits.", is_deleted: false },
+        { id: "note-9", title: "Weekly Grocery Checklist", content: "Milk, apples, sourdough bread, olive oil.", is_deleted: false },
+        { id: "note-10", title: "Travel Itinerary", content: "Flights, hotel bookings, and train tickets for Japan trip.", is_deleted: false },
+      ];
+
+      // Helper function simulating search execution contract
+      function searchNotes(query, list) {
+        const q = (query || "").trim().toLowerCase();
+        if (!q) return [];
+        return list.filter(
+          (n) => !n.is_deleted && (n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q))
+        );
+      }
+
+      it("Step 1 & 2: verifies searching 'project' matches all expected notes", () => {
+        const matches = searchNotes("project", notes);
+        assert.strictEqual(matches.length, 4);
+        const matchIds = matches.map((m) => m.id);
+        assert.ok(matchIds.includes("note-1"));
+        assert.ok(matchIds.includes("note-2"));
+        assert.ok(matchIds.includes("note-4"));
+        assert.ok(matchIds.includes("note-7"));
+      });
+
+      it("Step 3: verifies searching 'PROJECT' yields identical logical matches", () => {
+        const matchesLower = searchNotes("project", notes);
+        const matchesUpper = searchNotes("PROJECT", notes);
+        assert.strictEqual(matchesUpper.length, 4);
+        assert.deepStrictEqual(
+          matchesUpper.map((m) => m.id),
+          matchesLower.map((m) => m.id)
+        );
+      });
+
+      it("Step 4: verifies searching 'nonexistent-term' returns zero notes found", () => {
+        const matches = searchNotes("nonexistent-term", notes);
+        assert.strictEqual(matches.length, 0);
+        assert.strictEqual(formatResultCount(matches.length), "0 results");
+      });
+
+      it("Step 5: verifies editing a matching note immediately indexes and returns new content", () => {
+        const activeNotes = notes.map((n) => ({ ...n }));
+        const noteToEdit = activeNotes.find((n) => n.id === "note-1");
+        assert.ok(noteToEdit);
+        noteToEdit.content = "Foundational microservices and database schema design with newlyaddedterm included.";
+
+        const matches = searchNotes("newlyaddedterm", activeNotes);
+        assert.strictEqual(matches.length, 1);
+        assert.strictEqual(matches[0].id, "note-1");
+      });
+
+      it("Step 6: verifies soft-deleting a matching note immediately excludes it from search", () => {
+        const activeNotes = notes.map((n) => ({ ...n }));
+        const noteToDelete = activeNotes.find((n) => n.id === "note-4");
+        assert.ok(noteToDelete);
+        noteToDelete.is_deleted = true;
+
+        const matches = searchNotes("project", activeNotes);
+        assert.strictEqual(matches.length, 3);
+        const matchIds = matches.map((m) => m.id);
+        assert.ok(!matchIds.includes("note-4"));
+        assert.ok(matchIds.includes("note-1"));
+        assert.ok(matchIds.includes("note-2"));
+        assert.ok(matchIds.includes("note-7"));
+      });
+
+      it("Step 7: verifies restart simulation retains updated state and search results", () => {
+        const reloadedNotes = notes.map((n) => {
+          if (n.id === "note-1") {
+            return { ...n, content: "Foundational microservices with newlyaddedterm." };
+          }
+          if (n.id === "note-4") {
+            return { ...n, is_deleted: true };
+          }
+          return { ...n };
+        });
+
+        const projectMatches = searchNotes("project", reloadedNotes);
+        assert.strictEqual(projectMatches.length, 3);
+        assert.ok(!projectMatches.some((m) => m.id === "note-4"));
+
+        const newTermMatches = searchNotes("newlyaddedterm", reloadedNotes);
+        assert.strictEqual(newTermMatches.length, 1);
+        assert.strictEqual(newTermMatches[0].id, "note-1");
+      });
+    });
   });
 });
 

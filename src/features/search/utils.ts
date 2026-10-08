@@ -1,3 +1,8 @@
+import React from "react";
+import type { SearchResult, SearchState } from "./types";
+import type { NoteListItem } from "../notes/types";
+import type { NoteLocation } from "../notebooks/types";
+
 /**
  * Search input normalization utility (Phase 6, Task 8).
  * 
@@ -18,11 +23,6 @@ export function normalizeSearchQuery(query: string): string {
 export function isValidSearchQuery(query: string): boolean {
   return normalizeSearchQuery(query).length > 0;
 }
-
-import React from "react";
-import type { SearchResult, SearchState } from "./types";
-import type { NoteListItem } from "../notes/types";
-import type { NoteLocation } from "../notebooks/types";
 
 /**
  * Transforms a SearchResult domain object into a NoteListItem for unified display in NotesList (Task 14).
@@ -150,6 +150,14 @@ export function formatResultCount(count: number, hasMore?: boolean): string {
  * are not leaked to normal users, while logging diagnostics to the console.
  */
 export function sanitizeSearchError(err: unknown): { title: string; message: string } {
+  const errMsg = typeof err === "string" ? err : err instanceof Error ? err.message : "";
+  if (errMsg.includes("Search query is too long.")) {
+    return {
+      title: "Query too long",
+      message: "Search query is too long.",
+    };
+  }
+
   // Always log raw error to development console
   if (typeof console !== "undefined" && console.error) {
     console.error("[Search] SQLite/backend search operation failed:", err);
@@ -157,7 +165,7 @@ export function sanitizeSearchError(err: unknown): { title: string; message: str
 
   return {
     title: "Search failed",
-    message: "Unable to search notes right now. Please try again.",
+    message: "Unable to search notes.",
   };
 }
 

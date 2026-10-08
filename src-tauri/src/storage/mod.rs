@@ -5,6 +5,7 @@ pub mod models;
 pub mod paths;
 pub mod repositories;
 pub mod schema;
+pub mod services;
 
 pub use database::{init_connection, Database};
 pub use errors::StorageError;
@@ -13,3 +14,4 @@ pub use models::*;
 pub use paths::StoragePaths;
 pub use repositories::*;
 pub use schema::{apply_initial_schema, INITIAL_SCHEMA_SQL};
+pub use services::SearchService;

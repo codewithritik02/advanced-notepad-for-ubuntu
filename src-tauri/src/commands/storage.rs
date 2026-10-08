@@ -6,9 +6,10 @@ use crate::storage::{
         UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
-        NotebookRepository, NoteRepository, SearchRepository, SettingsRepository, TagRepository,
+        NotebookRepository, NoteRepository, SettingsRepository, TagRepository,
     },
-    Database, StoragePaths,
+    services::SearchService,
+    Database, StoragePaths, StorageError,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -299,6 +300,10 @@ pub fn search_notes(
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    SearchRepository::search(&conn, &query, limit).map_err(|e| e.user_friendly_message())
+    let conn = db.conn.lock().map_err(|_| "Unable to search notes.".to_string())?;
+    SearchService::search(&conn, &query, limit).map_err(|e| match e {
+        StorageError::Validation(msg) => msg,
+        StorageError::SearchError(_) | StorageError::Database(_) => "Unable to search notes.".to_string(),
+        other => other.user_friendly_message(),
+    })
 }

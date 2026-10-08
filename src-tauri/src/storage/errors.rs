@@ -31,6 +31,30 @@ pub enum StorageError {
 
     #[error("Storage initialization failed: {0}")]
     InitializationFailed(String),
+
+    #[error("Search error: {0}")]
+    SearchError(String),
+}
+
+#[derive(Debug, Error)]
+pub enum SearchError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Validation error: {0}")]
+    Validation(String),
+
+    #[error("Search execution failed: {0}")]
+    Execution(String),
+}
+
+impl SearchError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            SearchError::Validation(msg) => msg.clone(),
+            _ => "Unable to search notes.".to_string(),
+        }
+    }
 }
 
 impl StorageError {
@@ -38,6 +62,7 @@ impl StorageError {
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
     pub fn user_friendly_message(&self) -> String {
         match self {
+            StorageError::SearchError(_) => "Unable to search notes.".to_string(),
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => {
                 match err.code {
                     rusqlite::ErrorCode::ConstraintViolation => {
