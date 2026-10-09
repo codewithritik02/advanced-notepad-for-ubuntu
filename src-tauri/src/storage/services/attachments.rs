@@ -143,6 +143,20 @@ impl AttachmentService {
             }
         };
 
+        // Task 20: Do not allow removing attachments from trashed notes
+        let is_parent_deleted: bool = conn
+            .query_row(
+                "SELECT is_deleted FROM notes WHERE id = ?1",
+                rusqlite::params![&attachment.note_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if is_parent_deleted {
+            return Err(AttachmentError::InvalidRequest(
+                "Cannot remove attachments from a deleted note. Restore it first.".to_string(),
+            ));
+        }
+
         // 1. Remove managed file from storage first.
         // If the file is already missing from storage, remove_file returns Ok(()) so stale records can be cleaned up.
         // If filesystem errors (e.g. permission denied) occur, we fail fast without deleting the database record,

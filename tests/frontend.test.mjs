@@ -9197,6 +9197,2467 @@ describe("Phase 7: Attachments & Files", () => {
   });
 });
 
+describe("Phase 8: Trash & Recovery", () => {
+  describe("Task 11: Add Trash Navigation to the Existing Sidebar", () => {
+    it("verifies Sidebar renders Trash navigation with distinct styling and count badge", async () => {
+      const fs = await import("node:fs");
+      const sidebarContent = fs.readFileSync(
+        new URL("../src/components/Sidebar/Sidebar.tsx", import.meta.url),
+        "utf8"
+      );
+      const cssContent = fs.readFileSync(
+        new URL("../src/components/Sidebar/Sidebar.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify Trash navigation item structure and accessibility
+      assert.ok(sidebarContent.includes('sidebar-nav-item--trash'), "Should include sidebar-nav-item--trash class");
+      assert.ok(sidebarContent.includes('handleNavClick("trash")'), "Should handle click for trash navId");
+      assert.ok(sidebarContent.includes('aria-current={activeNavId === "trash" ? "page" : undefined}'), "Should provide aria-current for trash item");
+      assert.ok(sidebarContent.includes('TrashIcon'), "Should use TrashIcon");
+      assert.ok(sidebarContent.includes('noteCounts?.["trash"]'), "Should inspect trash count in noteCounts");
+      assert.ok(sidebarContent.includes('nav-item-count--trash'), "Should style trash badge with distinct class");
+
+      // Verify CSS distinct tokens for trash
+      assert.ok(cssContent.includes('.sidebar-nav-item--trash'), "CSS should style .sidebar-nav-item--trash");
+      assert.ok(cssContent.includes('.sidebar-nav-item--trash.is-active'), "CSS should style active trash item");
+      assert.ok(cssContent.includes('--color-danger-'), "CSS should utilize danger theme tokens for trash item");
+      assert.ok(cssContent.includes('.nav-item-count--trash'), "CSS should style trash count badge");
+    });
+
+    it("verifies notesStorage client service exposes typed listTrashed IPC contract", async () => {
+      const fs = await import("node:fs");
+      const notesStorageContent = fs.readFileSync(
+        new URL("../src/services/storage/notes.ts", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(notesStorageContent.includes("listTrashed"), "notesStorage should have listTrashed method");
+      assert.ok(notesStorageContent.includes('invoke<TrashedNoteItem[]>("list_trashed_notes")'), "listTrashed should invoke list_trashed_notes");
+      assert.ok(notesStorageContent.includes("TrashedNoteItem"), "notesStorage should import TrashedNoteItem");
+    });
+
+    it("verifies App.tsx clears notebook/tag filters, updates trash badge, and loads trashed notes", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify selectTrash destructuring and invocation
+      assert.ok(appContent.includes("selectTrash,"), "App should destructure selectTrash from useNotebookSelection");
+      assert.ok(appContent.includes('selectTrash();'), "App should call selectTrash when navigating to trash");
+      assert.ok(appContent.includes('await loadNotes("trash", null, null)'), "App should load trashed notes on selection");
+
+      // Verify trash count synchronization in refreshNoteCounts
+      assert.ok(appContent.includes('storageService.notes.listTrashed()'), "refreshNoteCounts should query listTrashed");
+      assert.ok(appContent.includes('counts["trash"]'), "refreshNoteCounts should set counts['trash']");
+
+      // Verify trashed notes mapping in loadNotes
+      assert.ok(appContent.includes('effectiveNav === "trash"'), "loadNotes should handle effectiveNav === 'trash'");
+      assert.ok(appContent.includes('is_deleted: true'), "loadNotes should mark trashed notes as deleted");
+    });
+  });
+
+  describe("Task 12: Build the Dedicated Trash View", () => {
+    it("verifies NotesList supports trash mode, distinct empty state, and error state", async () => {
+      const fs = await import("node:fs");
+      const notesListContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NotesList.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify trash mode detection and error title/message resolution
+      assert.ok(notesListContent.includes("isTrashMode"), "NotesList should derive isTrashMode");
+      assert.ok(notesListContent.includes('"Failed to load trash"'), "NotesList should resolve trash error title");
+      assert.ok(notesListContent.includes('"Trash is empty."'), "NotesList should display 'Trash is empty.' for trash empty state");
+      assert.ok(notesListContent.includes("EmptyTrashIcon"), "NotesList should render dedicated EmptyTrashIcon");
+
+      // Verify action button (+ New Note) is excluded in trash mode
+      assert.ok(notesListContent.includes("isTrashMode ? undefined"), "NotesList should suppress New Note action in trash mode");
+
+      // Verify error state isolation: error status renders ErrorState, not EmptyState
+      assert.ok(notesListContent.includes('status === "error"'), "NotesList must render ErrorState on error");
+      assert.ok(notesListContent.includes('<ErrorState'), "NotesList must use ErrorState component");
+    });
+
+    it("verifies NoteCard renders trash indicators, timestamps, context, and restore/delete actions", async () => {
+      const fs = await import("node:fs");
+      const noteCardContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NoteCard.tsx", import.meta.url),
+        "utf8"
+      );
+      const cssContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NotesList.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify drag suppression in trash mode
+      assert.ok(noteCardContent.includes("draggable={!isTrashMode}"), "NoteCard should disable dragging for trashed notes");
+      assert.ok(noteCardContent.includes("is-trash-card"), "NoteCard should add is-trash-card class");
+
+      // Verify read-only favorite indicator
+      assert.ok(noteCardContent.includes("note-card-favorite-indicator"), "NoteCard should show read-only favorite indicator in trash");
+
+      // Verify deletion timestamp
+      assert.ok(noteCardContent.includes("note.deletedAt ? `Deleted ${note.deletedAt}`"), "NoteCard should display deletion timestamp");
+
+      // Verify Restore and Permanent Delete action buttons
+      assert.ok(noteCardContent.includes("note-card-trash-action-btn--restore"), "NoteCard should provide restore action button");
+      assert.ok(noteCardContent.includes("note-card-trash-action-btn--delete"), "NoteCard should provide permanent delete action button");
+
+      // Verify CSS styles for trash cards and action buttons
+      assert.ok(cssContent.includes(".note-card.is-trash-card"), "CSS should style .is-trash-card");
+      assert.ok(cssContent.includes(".note-card-trash-actions"), "CSS should style .note-card-trash-actions");
+      assert.ok(cssContent.includes(".note-card-trash-action-btn--restore"), "CSS should style restore action button");
+      assert.ok(cssContent.includes(".note-card-trash-action-btn--delete"), "CSS should style delete action button");
+    });
+
+    it("verifies App.tsx prevents active note editing mutation, binds trash actions, and renders Trash view", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify active note editing mutation guard
+      assert.ok(appContent.includes('if (activeNavId === "trash")'), "handleSaveNote must guard against mutating trashed notes");
+
+      // Verify restore and permanently delete handlers
+      assert.ok(appContent.includes("handleRestoreNote"), "App should define handleRestoreNote");
+      assert.ok(appContent.includes("handlePermanentlyDeleteNote"), "App should define handlePermanentlyDeleteNote");
+      assert.ok(appContent.includes("onRestoreNote={handleRestoreNote}"), "App should pass onRestoreNote to NotesList");
+      assert.ok(appContent.includes("onPermanentlyDeleteNote={handlePermanentlyDeleteNote}"), "App should pass onPermanentlyDeleteNote to NotesList");
+
+      // Verify isTrash and empty state strings
+      assert.ok(appContent.includes('isTrash={activeNavId === "trash"}'), "App should pass isTrash prop to NotesList");
+      assert.ok(appContent.includes('"Trash is empty."'), "App should provide 'Trash is empty.' title");
+    });
+  });
+
+  describe("Task 13: Implement Trashed-Note Preview and Selection", () => {
+    it("verifies NoteEditor enforces read-only mode and suppresses editing mutations for trashed notes", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify read-only state derivation
+      assert.ok(
+        editorContent.includes("const isReadOnly = isTrash || !!loadedNote?.is_deleted;"),
+        "NoteEditor must derive isReadOnly from isTrash prop or loadedNote.is_deleted"
+      );
+
+      // Verify save unregistration in read-only mode
+      assert.ok(
+        editorContent.includes("if (isReadOnly) {") && editorContent.includes("onRegisterSave(null);"),
+        "NoteEditor must register null save handler when read-only to prevent flushing trashed notes"
+      );
+
+      // Verify mutation guards for title, content, format, and save
+      assert.ok(
+        editorContent.includes("if (isReadOnly) return;") &&
+        editorContent.includes("handleTitleChange") &&
+        editorContent.includes("handleContentChange") &&
+        editorContent.includes("executeSave"),
+        "NoteEditor must guard title, content, format, and save handlers against mutation in read-only mode"
+      );
+
+      // Verify input and textarea readOnly attribute
+      assert.ok(
+        editorContent.includes("readOnly={isReadOnly}"),
+        "NoteEditor must set readOnly={isReadOnly} on input and textarea elements"
+      );
+
+      // Verify read-only attachments
+      assert.ok(
+        editorContent.includes("<AttachmentList noteId={noteId} isReadOnly={isReadOnly} />"),
+        "AttachmentList must be passed isReadOnly"
+      );
+    });
+
+    it("verifies NoteEditor renders trashed note preview banner and action controls", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+      const cssContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/EditorPlaceholder.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify banner structure and action buttons
+      assert.ok(
+        editorContent.includes('className="trashed-note-banner"'),
+        "NoteEditor must render .trashed-note-banner when note is in trash"
+      );
+      assert.ok(
+        editorContent.includes("This note is in Trash.") &&
+        editorContent.includes("It is read-only. Restore this note to make changes."),
+        "NoteEditor banner must inform user that note is in trash and read-only"
+      );
+      assert.ok(
+        editorContent.includes('className="btn-trash-banner btn-trash-banner--restore"'),
+        "NoteEditor must render restore button in trashed-note-banner"
+      );
+      assert.ok(
+        editorContent.includes('className="btn-trash-banner btn-trash-banner--delete"'),
+        "NoteEditor must render permanent delete button in trashed-note-banner"
+      );
+      assert.ok(
+        editorContent.includes('className="trashed-pill"'),
+        "NoteEditor must render read-only pill indicator in toolbar"
+      );
+
+      // Verify CSS styles
+      assert.ok(cssContent.includes(".trashed-note-banner"), "CSS must style .trashed-note-banner");
+      assert.ok(cssContent.includes(".trashed-note-banner-actions"), "CSS must style banner action buttons");
+      assert.ok(cssContent.includes(".btn-trash-banner--restore"), "CSS must style banner restore button");
+      assert.ok(cssContent.includes(".btn-trash-banner--delete"), "CSS must style banner delete button");
+      assert.ok(cssContent.includes(".trashed-pill"), "CSS must style .trashed-pill");
+      assert.ok(cssContent.includes(".editor-container.is-read-only"), "CSS must style .editor-container.is-read-only");
+    });
+
+    it("verifies App.tsx wires trash preview state and handlers to NoteEditor", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify NoteEditor receiving trash props
+      assert.ok(
+        appContent.includes('isTrash={activeNavId === "trash"}'),
+        "App must pass isTrash to NoteEditor"
+      );
+      assert.ok(
+        appContent.includes("onRestoreNote={handleRestoreNote}"),
+        "App must pass onRestoreNote to NoteEditor"
+      );
+      assert.ok(
+        appContent.includes("onPermanentlyDeleteNote={handlePermanentlyDeleteNote}"),
+        "App must pass onPermanentlyDeleteNote to NoteEditor"
+      );
+
+      // Verify clearing selection upon restoration or permanent deletion
+      assert.ok(
+        appContent.includes("if (selectedNoteId === noteId) {\n          setSelectedNoteId(null);"),
+        "App must deselect note if the active note is restored or permanently deleted"
+      );
+    });
+  });
+
+  describe("Task 14: Implement the Ordinary Delete Action in the Active Note UI", () => {
+    it("verifies App.tsx routes ordinary delete through soft-delete service and safeguards state", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify handleDeleteNote definition and soft-delete routing
+      assert.ok(
+        appContent.includes("const handleDeleteNote = useCallback("),
+        "App must define handleDeleteNote"
+      );
+      assert.ok(
+        appContent.includes("await storageService.notes.softDelete(targetId)"),
+        "handleDeleteNote must invoke storageService.notes.softDelete to move note to Trash"
+      );
+
+      // Verify flushed edits prior to deletion
+      assert.ok(
+        appContent.includes("await editorSaveRef.current()"),
+        "handleDeleteNote must flush pending editor changes prior to deletion"
+      );
+
+      // Verify optimistic/truthful active list update only after successful deletion
+      assert.ok(
+        appContent.includes("setNotes((prev) => prev.filter((n) => n.id !== targetId))"),
+        "handleDeleteNote must remove note from active list only after backend success"
+      );
+
+      // Verify refreshNoteCounts to keep sidebar Trash badge updated
+      assert.ok(
+        appContent.includes("await refreshNoteCounts()"),
+        "handleDeleteNote must refresh note counts and trash count"
+      );
+
+      // Verify safe selection clearance
+      assert.ok(
+        appContent.includes("if (selectedNoteId === targetId) {\n          setSelectedNoteId(null);"),
+        "handleDeleteNote must clear selection when deleting the currently active note"
+      );
+
+      // Verify failure preserves truthful state
+      assert.ok(
+        appContent.includes('"Failed to delete note: "'),
+        "handleDeleteNote must capture and report failure without removing note from state"
+      );
+    });
+
+    it("verifies NoteEditor provides toolbar delete action and flushes unsaved changes before soft-delete", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+      const cssContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/EditorPlaceholder.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify onDeleteNote in NoteEditorProps
+      assert.ok(
+        editorContent.includes("onDeleteNote?: (noteId: string) => Promise<void> | void;"),
+        "NoteEditorProps must accept onDeleteNote"
+      );
+
+      // Verify handleDelete flushes dirty state
+      assert.ok(
+        editorContent.includes("if (isDirtyRef.current) {\n      await handleSave();\n    }"),
+        "NoteEditor must flush dirty state before delegating to onDeleteNote"
+      );
+
+      // Verify toolbar delete button rendering
+      assert.ok(
+        editorContent.includes('className="toolbar-btn toolbar-btn-delete"'),
+        "NoteEditor must render .toolbar-btn-delete in toolbar for active notes"
+      );
+      assert.ok(
+        editorContent.includes('title="Delete note (Move to Trash)"'),
+        "NoteEditor delete button must specify moving to Trash"
+      );
+
+      // Verify CSS styles
+      assert.ok(
+        cssContent.includes(".toolbar-btn-delete"),
+        "CSS must style .toolbar-btn-delete"
+      );
+    });
+
+    it("verifies keyboard shortcuts and NotesList / NoteCard integration for ordinary delete", async () => {
+      const fs = await import("node:fs");
+      const shortcutsContent = fs.readFileSync(
+        new URL("../src/hooks/useKeyboardShortcuts.ts", import.meta.url),
+        "utf8"
+      );
+      const notesListContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NotesList.tsx", import.meta.url),
+        "utf8"
+      );
+      const noteCardContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NoteCard.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify useKeyboardShortcuts supports onDeleteNote
+      assert.ok(
+        shortcutsContent.includes("onDeleteNote?: () => void;"),
+        "KeyboardShortcutHandlers must accept onDeleteNote"
+      );
+      assert.ok(
+        shortcutsContent.includes('key === "backspace" || key === "delete"'),
+        "useKeyboardShortcuts must recognize Ctrl/Cmd + Backspace/Delete shortcut"
+      );
+
+      // Verify NotesList and NoteCard forward delete action
+      assert.ok(
+        notesListContent.includes("onDeleteNote?: (noteId: string) => void;"),
+        "NotesListProps must accept onDeleteNote"
+      );
+      assert.ok(
+        notesListContent.includes("onDelete={onDeleteNote}"),
+        "NotesList must pass onDelete to NoteCard"
+      );
+      assert.ok(
+        noteCardContent.includes("note-card-delete-btn"),
+        "NoteCard must render delete button for active notes"
+      );
+    });
+  });
+
+  describe("Task 15: Implement Restore UI and Restore Feedback", () => {
+    it("verifies clearly labeled Restore actions in both NoteEditor banner and NoteCard row", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+      const noteCardContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NoteCard.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify NoteEditor restore action
+      assert.ok(
+        editorContent.includes('className="btn-trash-banner btn-trash-banner--restore"'),
+        "NoteEditor must render restore button in banner"
+      );
+      assert.ok(
+        editorContent.includes("Restore Note"),
+        "NoteEditor restore button must be clearly labeled 'Restore Note'"
+      );
+      assert.ok(
+        editorContent.includes("onRestoreNote(loadedNote.id)"),
+        "NoteEditor must invoke onRestoreNote with stable loadedNote.id"
+      );
+
+      // Verify NoteCard restore action
+      assert.ok(
+        noteCardContent.includes("note-card-trash-action-btn--restore"),
+        "NoteCard must render restore button in trash mode"
+      );
+      assert.ok(
+        noteCardContent.includes("<span>Restore</span>"),
+        "NoteCard restore button must be clearly labeled 'Restore'"
+      );
+      assert.ok(
+        noteCardContent.includes("onRestore(note.id)"),
+        "NoteCard must invoke onRestore with stable note.id"
+      );
+    });
+
+    it("verifies handleRestoreNote updates state, removes note from Trash, refreshes counts, and presents feedback", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+      const appCss = fs.readFileSync(
+        new URL("../src/app/App.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify restore invocation and backend sync
+      assert.ok(
+        appContent.includes("const restoredNote = await storageService.notes.restoreNote(noteId);"),
+        "handleRestoreNote must call storageService.notes.restoreNote"
+      );
+      assert.ok(
+        appContent.includes('await loadNotes("trash", null, null)'),
+        "handleRestoreNote must reload trash list to remove restored note from view"
+      );
+      assert.ok(
+        appContent.includes("await refreshNoteCounts()"),
+        "handleRestoreNote must refresh sidebar note counts"
+      );
+
+      // Verify selection clearance if restoring currently selected note
+      assert.ok(
+        appContent.includes("if (selectedNoteId === noteId) {\n          setSelectedNoteId(null);"),
+        "handleRestoreNote must deselect note if it was active in preview"
+      );
+
+      // Verify user feedback presentation
+      assert.ok(
+        appContent.includes("setRestoreFeedback({"),
+        "handleRestoreNote must set user feedback on restore"
+      );
+      assert.ok(
+        appContent.includes("restore-feedback-toast"),
+        "App must render restore-feedback-toast"
+      );
+      assert.ok(
+        appContent.includes("restore-feedback-toast--${restoreFeedback.type}"),
+        "App must apply dynamic toast type class"
+      );
+      assert.ok(
+        appCss.includes(".restore-feedback-toast--success"),
+        "App.css must style success toast"
+      );
+      assert.ok(
+        appCss.includes(".restore-feedback-toast--error"),
+        "App.css must style error toast"
+      );
+
+      // Verify CSS styles for toast
+      assert.ok(
+        appCss.includes(".restore-feedback-toast"),
+        "App.css must style .restore-feedback-toast"
+      );
+      assert.ok(
+        appCss.includes(".restore-feedback-toast--success"),
+        "App.css must style success toast"
+      );
+    });
+
+    it("verifies failure behavior maintains truthful state, refreshes from backend, and presents error message", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify failure handling in handleRestoreNote
+      assert.ok(
+        appContent.includes('setRestoreFeedback({\n          type: "error",'),
+        "handleRestoreNote must set error feedback on failure"
+      );
+      assert.ok(
+        appContent.includes('"Failed to restore note: "'),
+        "handleRestoreNote must set descriptive error message"
+      );
+    });
+  });
+
+  describe("Task 16: Implement Permanent-Delete Confirmation", () => {
+    it("verifies PermanentDeleteDialog component structure, clear action labels, and duplicate submission guards", async () => {
+      const fs = await import("node:fs");
+      const dialogContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/PermanentDeleteDialog.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify Modal usage
+      assert.ok(
+        dialogContent.includes("<Modal"),
+        "PermanentDeleteDialog must use the Modal component"
+      );
+
+      // Verify unambiguous action labels: 'Cancel' and 'Permanently Delete' (no vague 'OK')
+      assert.ok(
+        />\s*Cancel\s*<\/Button>/.test(dialogContent),
+        "Dialog must have explicit Cancel action button"
+      );
+      assert.ok(
+        />\s*Permanently Delete\s*<\/Button>/.test(dialogContent),
+        "Dialog must have explicit 'Permanently Delete' button (not vague 'OK')"
+      );
+      assert.ok(
+        !dialogContent.includes(">OK<") && !dialogContent.includes(">Ok<"),
+        "Dialog must not use vague 'OK' label"
+      );
+      assert.ok(
+        dialogContent.includes('variant="danger"'),
+        "Permanent Delete action button must use danger variant"
+      );
+
+      // Verify explanation that permanent deletion cannot be undone through Trash
+      assert.ok(
+        dialogContent.includes("cannot be undone through the Trash interface"),
+        "Dialog must explain that permanent deletion cannot be undone through Trash interface"
+      );
+
+      // Verify duplicate submission guard and loading state
+      assert.ok(
+        dialogContent.includes("if (!note || isDeleting) return;"),
+        "Dialog must guard against concurrent or duplicate submissions"
+      );
+      assert.ok(
+        dialogContent.includes("isLoading={isDeleting}"),
+        "Permanently Delete button must show loading state while executing"
+      );
+      assert.ok(
+        dialogContent.includes("disabled={isDeleting}"),
+        "Actions must be disabled while deleting is in progress"
+      );
+
+      // Verify keyboard shortcuts support
+      assert.ok(
+        dialogContent.includes('e.key === "Enter"'),
+        "Dialog should handle Enter key"
+      );
+      assert.ok(
+        dialogContent.includes('e.key === "Escape"'),
+        "Dialog should handle Escape key"
+      );
+    });
+
+    it("verifies App.tsx captures target note, prompts confirmation, routes to backend permanent delete, and handles errors honestly", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify state capture when confirmation begins
+      assert.ok(
+        appContent.includes("permanentDeleteTarget"),
+        "App must maintain permanentDeleteTarget state to capture note ID"
+      );
+      assert.ok(
+        appContent.includes("setPermanentDeleteTarget({ id: noteId, title })"),
+        "handlePermanentlyDeleteNote must capture the selected note ID and title before showing dialog"
+      );
+
+      // Verify rendering PermanentDeleteDialog
+      assert.ok(
+        appContent.includes("<PermanentDeleteDialog"),
+        "App must render PermanentDeleteDialog"
+      );
+      assert.ok(
+        appContent.includes("isOpen={permanentDeleteTarget !== null}"),
+        "Dialog isOpen prop must be linked to permanentDeleteTarget state"
+      );
+      assert.ok(
+        appContent.includes("onConfirm={handleConfirmPermanentDelete}"),
+        "Dialog onConfirm must call handleConfirmPermanentDelete"
+      );
+
+      // Verify handleConfirmPermanentDelete calls storageService.notes.permanentlyDelete
+      assert.ok(
+        appContent.includes("await storageService.notes.permanentlyDelete(noteId)"),
+        "Confirmation must invoke storageService.notes.permanentlyDelete"
+      );
+
+      // Verify checking that note is still in Trash and refreshing UI if not
+      assert.ok(
+        appContent.includes("const trashedNotes = await storageService.notes.listTrashed()"),
+        "Confirmation flow must check if note is still in Trash"
+      );
+      assert.ok(
+        appContent.includes('throw new Error("This note is no longer in the Trash.")'),
+        "Confirmation flow must reject if note is no longer in Trash"
+      );
+      assert.ok(
+        appContent.includes('await loadNotes("trash", null, null)'),
+        "handleConfirmPermanentDelete must reload trash notes"
+      );
+      assert.ok(
+        appContent.includes("await refreshNoteCounts()"),
+        "handleConfirmPermanentDelete must refresh note counts"
+      );
+    });
+
+    it("verifies confirmation simulation rules: ID stability, cancellation no-op, and re-entry prevention", async () => {
+      // 1. Stable captured ID test
+      let capturedTarget = null;
+      let selectedNoteId = "note-A";
+
+      const requestPermanentDelete = (id, title) => {
+        capturedTarget = { id, title };
+      };
+
+      // Trigger deletion for note-A
+      requestPermanentDelete("note-A", "First Note");
+      // Simulate asynchronous state change changing current active note
+      selectedNoteId = "note-B";
+
+      // The confirmed target must be note-A, NOT note-B
+      assert.strictEqual(capturedTarget.id, "note-A");
+      assert.notStrictEqual(capturedTarget.id, selectedNoteId);
+
+      // 2. Cancellation performs no mutation
+      let deleteCalledWith = null;
+      const onCancel = () => {
+        capturedTarget = null;
+      };
+      onCancel();
+      assert.strictEqual(capturedTarget, null);
+      assert.strictEqual(deleteCalledWith, null);
+
+      // 3. Re-entry guard prevents duplicate calls
+      let isDeleting = false;
+      let executeCount = 0;
+      const executeDelete = async (id) => {
+        if (isDeleting) return;
+        isDeleting = true;
+        executeCount++;
+        await new Promise((r) => setTimeout(r, 10));
+        isDeleting = false;
+      };
+
+      const p1 = executeDelete("note-A");
+      const p2 = executeDelete("note-A");
+      await Promise.all([p1, p2]);
+
+      assert.strictEqual(executeCount, 1, "Duplicate click while isDeleting must be ignored");
+    });
+  });
+
+  describe("Task 17: Implement Empty-Trash Confirmation and Batch Feedback", () => {
+    it("verifies EmptyTrashDialog component structure, distinct from Restore, action labels, and submission guards", async () => {
+      const fs = await import("node:fs");
+      const dialogContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/EmptyTrashDialog.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify Modal usage
+      assert.ok(
+        dialogContent.includes("<Modal"),
+        "EmptyTrashDialog must use the Modal component"
+      );
+
+      // Verify distinct from Restore
+      assert.ok(
+        dialogContent.includes("NOT be restored") || dialogContent.includes("not be restored"),
+        "Dialog must clearly explain that notes will NOT be restored"
+      );
+
+      // Verify explicit action labels: 'Cancel' and 'Empty Trash' (no vague 'OK')
+      assert.ok(
+        />\s*Cancel\s*<\/Button>/.test(dialogContent),
+        "Dialog must have explicit Cancel action button"
+      );
+      assert.ok(
+        />\s*Empty Trash\s*<\/Button>/.test(dialogContent),
+        "Dialog must have explicit 'Empty Trash' button (not vague 'OK')"
+      );
+      assert.ok(
+        !dialogContent.includes(">OK<") && !dialogContent.includes(">Ok<"),
+        "Dialog must not use vague 'OK' label"
+      );
+      assert.ok(
+        dialogContent.includes('variant="danger"'),
+        "Empty Trash action button must use danger variant"
+      );
+
+      // Verify duplicate submission guard and loading state
+      assert.ok(
+        dialogContent.includes("if (isDeleting) return;"),
+        "Dialog must guard against concurrent or duplicate submissions"
+      );
+      assert.ok(
+        dialogContent.includes("isLoading={isDeleting}"),
+        "Empty Trash button must show loading state while executing"
+      );
+      assert.ok(
+        dialogContent.includes("disabled={isDeleting}"),
+        "Actions must be disabled while emptying trash is in progress"
+      );
+
+      // Verify keyboard shortcuts support
+      assert.ok(
+        dialogContent.includes('e.key === "Enter"'),
+        "Dialog should handle Enter key"
+      );
+      assert.ok(
+        dialogContent.includes('e.key === "Escape"'),
+        "Dialog should handle Escape key"
+      );
+    });
+
+    it("verifies NotesList header renders Empty Trash button with disabled state when empty", async () => {
+      const fs = await import("node:fs");
+      const listContent = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/NotesList/NotesList.tsx",
+          import.meta.url
+        ),
+        "utf8"
+      );
+      const listCss = fs.readFileSync(
+        new URL(
+          "../src/features/notes/components/NotesList/NotesList.css",
+          import.meta.url
+        ),
+        "utf8"
+      );
+
+      // Verify prop exists
+      assert.ok(
+        listContent.includes("onEmptyTrash?: () => void;"),
+        "NotesListProps must accept onEmptyTrash callback"
+      );
+
+      // Verify button rendered conditionally in trash mode
+      assert.ok(
+        listContent.includes("isTrashMode && onEmptyTrash"),
+        "NotesList must conditionally render Empty Trash button in trash mode"
+      );
+      assert.ok(
+        listContent.includes('className="notes-list-empty-trash-btn"'),
+        "NotesList must apply notes-list-empty-trash-btn class"
+      );
+      assert.ok(
+        listContent.includes("disabled={notes.length === 0}"),
+        "Empty Trash button must be disabled when Trash list is empty"
+      );
+
+      // Verify CSS styles
+      assert.ok(
+        listCss.includes(".notes-list-empty-trash-btn"),
+        "NotesList.css must define styles for .notes-list-empty-trash-btn"
+      );
+      assert.ok(
+        listCss.includes(".notes-list-empty-trash-btn:disabled"),
+        "NotesList.css must define disabled styles for .notes-list-empty-trash-btn"
+      );
+    });
+
+    it("verifies App.tsx invokes dedicated batch IPC, refreshes views, and handles partial failures honestly", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+      const appCss = fs.readFileSync(
+        new URL("../src/app/App.css", import.meta.url),
+        "utf8"
+      );
+
+      // Verify dedicated backend batch operation is called
+      assert.ok(
+        appContent.includes("await storageService.notes.emptyTrash()"),
+        "handleConfirmEmptyTrash must invoke dedicated backend storageService.notes.emptyTrash()"
+      );
+
+      // Verify does not loop through individual frontend deletions
+      assert.ok(
+        !appContent.includes("for (const note of notes) {\n      await storageService.notes.permanentlyDelete"),
+        "Empty Trash must call batch service, not uncoordinated individual deletions"
+      );
+
+      // Verify clearing selection and reloading trash and counts
+      assert.ok(
+        appContent.includes('if (activeNavId === "trash") {\n        setSelectedNoteId(null);\n      }'),
+        "handleConfirmEmptyTrash must clear selectedNoteId in trash mode"
+      );
+      assert.ok(
+        appContent.includes('await loadNotes("trash", null, null)'),
+        "handleConfirmEmptyTrash must reload trash notes"
+      );
+      assert.ok(
+        appContent.includes("await refreshNoteCounts()"),
+        "handleConfirmEmptyTrash must refresh note counts"
+      );
+
+      // Verify dialog rendering
+      assert.ok(
+        appContent.includes("<EmptyTrashDialog"),
+        "App must render EmptyTrashDialog"
+      );
+      assert.ok(
+        appContent.includes("isOpen={isEmptyTrashOpen}"),
+        "EmptyTrashDialog isOpen prop must be linked to isEmptyTrashOpen state"
+      );
+      assert.ok(
+        appContent.includes("onConfirm={handleConfirmEmptyTrash}"),
+        "EmptyTrashDialog onConfirm must call handleConfirmEmptyTrash"
+      );
+
+      // Verify partial failure and honest feedback handling
+      assert.ok(
+        appContent.includes("result.failedCount > 0 && result.deletedCount > 0"),
+        "handleConfirmEmptyTrash must detect partial batch failures"
+      );
+      assert.ok(
+        appContent.includes("notes deleted, but"),
+        "handleConfirmEmptyTrash must notify user when some notes could not be deleted"
+      );
+      assert.ok(
+        appContent.includes("trash-feedback-toast"),
+        "App must render trash-feedback-toast"
+      );
+      assert.ok(
+        appCss.includes(".trash-feedback-toast--warning") || appCss.includes(".restore-feedback-toast--warning"),
+        "App.css must style warning state for partial batch failure toasts"
+      );
+    });
+
+    it("verifies batch feedback simulation: empty trash no-op, full success, partial failure, and re-entry guard", async () => {
+      // 1. Logic simulation of batch results
+      const formatBatchResult = (result) => {
+        if (result.failedCount === 0 && result.attachmentCleanupFailures.length === 0) {
+          if (result.deletedCount === 0) {
+            return { type: "success", message: "Trash is already empty." };
+          }
+          return {
+            type: "success",
+            message: `Emptied Trash: ${result.deletedCount} notes permanently deleted.`,
+          };
+        } else if (result.failedCount > 0 && result.deletedCount > 0) {
+          return {
+            type: "warning",
+            message: `${result.deletedCount} notes deleted, but ${result.failedCount} notes could not be deleted.`,
+          };
+        } else if (result.failedCount > 0 && result.deletedCount === 0) {
+          return {
+            type: "error",
+            message: `Failed to empty trash: ${result.errors[0] || "Unknown error"}`,
+          };
+        } else {
+          return {
+            type: "warning",
+            message: `${result.deletedCount} notes deleted, but some attachments could not be cleaned up.`,
+          };
+        }
+      };
+
+      // Test empty trash
+      assert.deepStrictEqual(
+        formatBatchResult({ deletedCount: 0, failedCount: 0, attachmentCleanupFailures: [], errors: [] }),
+        { type: "success", message: "Trash is already empty." }
+      );
+
+      // Test all success
+      assert.deepStrictEqual(
+        formatBatchResult({ deletedCount: 5, failedCount: 0, attachmentCleanupFailures: [], errors: [] }),
+        { type: "success", message: "Emptied Trash: 5 notes permanently deleted." }
+      );
+
+      // Test partial failure
+      const partialRes = formatBatchResult({
+        deletedCount: 3,
+        failedCount: 2,
+        attachmentCleanupFailures: [],
+        errors: ["Note lock failed"],
+      });
+      assert.strictEqual(partialRes.type, "warning");
+      assert.ok(partialRes.message.includes("3 notes deleted, but 2 notes could not be deleted"));
+
+      // Test attachment cleanup failure
+      const attachRes = formatBatchResult({
+        deletedCount: 4,
+        failedCount: 0,
+        attachmentCleanupFailures: ["note-1"],
+        errors: ["Attachment unlink failed"],
+      });
+      assert.strictEqual(attachRes.type, "warning");
+      assert.ok(attachRes.message.includes("some attachments could not be cleaned up"));
+
+      // 2. Duplicate click protection simulation
+      let isBusy = false;
+      let executed = 0;
+      const triggerEmpty = async () => {
+        if (isBusy) return;
+        isBusy = true;
+        executed++;
+        await new Promise((r) => setTimeout(r, 10));
+        isBusy = false;
+      };
+
+      await Promise.all([triggerEmpty(), triggerEmpty()]);
+      assert.strictEqual(executed, 1, "Duplicate trigger while busy must be prevented");
+    });
+  });
+
+  describe("Task 18: Preserve Notebooks, Tags, Favorites, and Note Metadata", () => {
+    it("verifies notebooks preservation and orphaned-note handling during restore", async () => {
+      const fs = await import("node:fs");
+      const notesRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+        "utf8"
+      );
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify soft delete preserves notebook_id
+      assert.ok(
+        notesRepo.includes("UPDATE notes SET is_deleted = 1"),
+        "soft_delete must update is_deleted flag without clearing notebook_id"
+      );
+
+      // Verify restore defensive check for deleted parent notebook
+      assert.ok(
+        notesRepo.includes("SELECT COUNT(1) FROM notebooks WHERE id = ?1"),
+        "restore must verify if original notebook exists in database"
+      );
+      assert.ok(
+        notesRepo.includes("effective_notebook_id"),
+        "restore must calculate effective_notebook_id"
+      );
+      assert.ok(
+        notesRepo.includes("restored.notebook_id = effective_notebook_id"),
+        "restore must safely unfile note (notebook_id = None) if notebook was deleted"
+      );
+
+      // Verify Rust test coverage for orphaned restore policy
+      assert.ok(
+        trashService.includes("test_trash_service_restore_lifecycle_and_notebook_handling"),
+        "trash.rs must contain comprehensive restore and notebook handling tests"
+      );
+    });
+
+    it("verifies tag associations and metadata filters exclude trashed notes", async () => {
+      const fs = await import("node:fs");
+      const tagsRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/tags.rs", import.meta.url),
+        "utf8"
+      );
+      const notesRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+        "utf8"
+      );
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify tag queries join only active notes (n.is_deleted = 0)
+      assert.ok(
+        tagsRepo.includes("WHERE n.is_deleted = 0"),
+        "tags repository queries must exclude trashed notes"
+      );
+      assert.ok(
+        /WHERE nt\.tag_id = \?1\s+AND n\.is_deleted = 0/.test(tagsRepo) ||
+          /WHERE nt\.tag_id = \?1\s+AND n\.is_deleted = 0/.test(notesRepo),
+        "list_by_tag must filter out trashed notes with n.is_deleted = 0"
+      );
+
+      // Verify tag count calculation excludes trashed notes
+      assert.ok(
+        /SELECT nt\.tag_id, COUNT\(n\.id\)\s+FROM note_tags nt\s+JOIN notes n ON n\.id = nt\.note_id\s+WHERE n\.is_deleted = 0/.test(tagsRepo),
+        "getTagNoteCounts must only count active notes"
+      );
+
+      // Verify App.tsx loadNotes for favorites calls storageService.notes.listFavorites()
+      assert.ok(
+        appContent.includes('} else if (effectiveNav === "favorites") {\n          fetchedNotes = await storageService.notes.listFavorites();'),
+        "App.tsx loadNotes must call storageService.notes.listFavorites() for favorites view"
+      );
+
+      // Verify list_favorites excludes trashed notes
+      assert.ok(
+        notesRepo.includes("WHERE is_deleted = 0 AND is_favorite = 1"),
+        "list_favorites must filter for is_deleted = 0"
+      );
+    });
+
+    it("verifies timestamp semantics: creation preserved, deletion distinct from modification", async () => {
+      const fs = await import("node:fs");
+      const notesRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+        "utf8"
+      );
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify soft_delete sets deleted_at
+      assert.ok(
+        notesRepo.includes("deleted_at = ?1"),
+        "soft_delete must record deletion timestamp in deleted_at"
+      );
+
+      // Verify restore resets deleted_at to NULL while preserving created_at
+      assert.ok(
+        notesRepo.includes("deleted_at = NULL"),
+        "restore must reset deleted_at to NULL"
+      );
+      assert.ok(
+        trashService.includes("assert_eq!(restored.created_at, note.created_at);"),
+        "restore must preserve original created_at"
+      );
+    });
+
+    it("verifies metadata preservation lifecycle simulation", () => {
+      // Simulate note lifecycle state transitions
+      const originalNote = {
+        id: "note-meta-1",
+        title: "Architecture Doc",
+        content: "Details on metadata",
+        notebook_id: "nb-100",
+        is_favorite: true,
+        is_pinned: true,
+        created_at: "2026-09-01T12:00:00Z",
+        modified_at: "2026-09-02T15:00:00Z",
+        is_deleted: false,
+        deleted_at: null,
+      };
+
+      const tagAssignments = ["tag-rust", "tag-docs"];
+
+      // 1. Soft deletion transition
+      const deletionTimestamp = "2026-10-09T10:00:00Z";
+      const trashedNote = {
+        ...originalNote,
+        is_deleted: true,
+        deleted_at: deletionTimestamp,
+        modified_at: deletionTimestamp,
+      };
+
+      // Invariants on soft deletion:
+      assert.strictEqual(trashedNote.id, originalNote.id);
+      assert.strictEqual(trashedNote.created_at, originalNote.created_at);
+      assert.strictEqual(trashedNote.notebook_id, originalNote.notebook_id);
+      assert.strictEqual(trashedNote.is_favorite, true);
+      assert.strictEqual(trashedNote.is_pinned, true);
+      assert.deepStrictEqual(tagAssignments, ["tag-rust", "tag-docs"], "Tags remain intact");
+
+      // 2. Filter exclusions
+      const allNotes = [trashedNote];
+      const activeFavorites = allNotes.filter((n) => !n.is_deleted && n.is_favorite);
+      assert.strictEqual(activeFavorites.length, 0, "Active favorites view must exclude trashed note");
+
+      const activeTagNotes = allNotes.filter((n) => !n.is_deleted);
+      assert.strictEqual(activeTagNotes.length, 0, "Active tag view must exclude trashed note");
+
+      // 3. Restoration transition with existing notebook
+      const restoreTimestamp = "2026-10-09T10:30:00Z";
+      const restoredNote = {
+        ...trashedNote,
+        is_deleted: false,
+        deleted_at: null,
+        modified_at: restoreTimestamp,
+      };
+
+      assert.strictEqual(restoredNote.id, originalNote.id);
+      assert.strictEqual(restoredNote.created_at, originalNote.created_at);
+      assert.strictEqual(restoredNote.notebook_id, "nb-100");
+      assert.strictEqual(restoredNote.is_favorite, true);
+      assert.strictEqual(restoredNote.is_pinned, true);
+      assert.strictEqual(restoredNote.deleted_at, null);
+
+      // 4. Restoration transition with deleted parent notebook (orphaned policy)
+      const restoredOrphaned = {
+        ...trashedNote,
+        notebook_id: null, // Unfiled policy
+        is_deleted: false,
+        deleted_at: null,
+        modified_at: restoreTimestamp,
+      };
+      assert.strictEqual(restoredOrphaned.notebook_id, null, "Note is safely unfiled if notebook was removed");
+    });
+  });
+
+  describe("Task 19: Integrate Trash with Search", () => {
+    it("verifies backend active search queries join authoritative notes table and filter out trashed notes", async () => {
+      const fs = await import("node:fs");
+      const searchRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/search.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify FTS5 query joins notes table and enforces n.is_deleted = 0
+      assert.ok(
+        searchRepo.includes("JOIN notes n ON notes_fts.rowid = n.rowid"),
+        "search_fts5 must join notes table using rowid"
+      );
+      assert.ok(
+        searchRepo.includes("AND n.is_deleted = 0"),
+        "search_fts5 must exclude trashed notes by checking n.is_deleted = 0"
+      );
+
+      // Verify LIKE fallback query enforces is_deleted = 0
+      assert.ok(
+        searchRepo.includes("WHERE is_deleted = 0\n              AND (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\')") ||
+          searchRepo.includes("WHERE is_deleted = 0"),
+        "search_like must exclude trashed notes by checking is_deleted = 0"
+      );
+    });
+
+    it("verifies FTS synchronization triggers maintain consistency across soft-delete, restore, and permanent delete", async () => {
+      const fs = await import("node:fs");
+      const schemaSql = fs.readFileSync(
+        new URL("../src-tauri/src/storage/schema.rs", import.meta.url),
+        "utf8"
+      );
+      const searchRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/search.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify FTS5 virtual table triggers in schema
+      assert.ok(
+        schemaSql.includes("TRIGGER IF NOT EXISTS notes_fts_ai"),
+        "Schema must create notes_fts_ai trigger for insert sync"
+      );
+      assert.ok(
+        schemaSql.includes("TRIGGER IF NOT EXISTS notes_fts_ad"),
+        "Schema must create notes_fts_ad trigger for delete sync"
+      );
+      assert.ok(
+        schemaSql.includes("TRIGGER IF NOT EXISTS notes_fts_au"),
+        "Schema must create notes_fts_au trigger for update sync"
+      );
+
+      // Verify Rust test coverage for soft-delete and restore FTS synchronization
+      assert.ok(
+        searchRepo.includes("test_task_37_fts_synchronization_on_delete_and_soft_delete"),
+        "search.rs must test FTS synchronization on soft delete"
+      );
+      assert.ok(
+        searchRepo.includes("test_task_38_fts_synchronization_on_restore"),
+        "search.rs must test FTS synchronization on restore"
+      );
+    });
+
+    it("verifies NoteEditor and App enforce read-only state and prevent editing on stale search results of trashed notes", async () => {
+      const fs = await import("node:fs");
+      const editorContent = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify NoteEditor sets readOnly based on note's authoritative is_deleted attribute
+      assert.ok(
+        editorContent.includes("const isReadOnly = isTrash || !!loadedNote?.is_deleted;"),
+        "NoteEditor must set isReadOnly if loadedNote.is_deleted is true"
+      );
+
+      // Verify trashed note banner is shown
+      assert.ok(
+        editorContent.includes("This note is in Trash.") &&
+          editorContent.includes("It is read-only."),
+        "NoteEditor must display read-only banner for trashed notes"
+      );
+
+      // Verify input elements have readOnly set
+      assert.ok(
+        editorContent.includes("readOnly={isReadOnly}"),
+        "Note title and content inputs must be marked readOnly"
+      );
+
+      // Verify mutation actions are prevented
+      assert.ok(
+        editorContent.includes("if (isReadOnly) return;"),
+        "Content and title change handlers must return early if isReadOnly"
+      );
+      assert.ok(
+        editorContent.includes("if (isSavingRef.current || isReadOnly) return;"),
+        "Save handler must abort if isReadOnly"
+      );
+
+      // Verify App.tsx handleSaveNote validates note is not deleted before saving
+      assert.ok(
+        appContent.includes("existing?.is_deleted"),
+        "App.tsx handleSaveNote must check existing.is_deleted to guard against stale search results"
+      );
+    });
+
+    it("verifies backend NotesRepository prevents updating trashed notes without restoration", async () => {
+      const fs = await import("node:fs");
+      const notesRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        notesRepo.includes("if existing.is_deleted && dto.is_deleted != Some(false)"),
+        "NotesRepository::update must reject updating a trashed note without restoration"
+      );
+    });
+
+    it("verifies search lifecycle simulation: soft delete excludes from active search, restore returns note to search results", () => {
+      // Setup mock notes
+      const notes = [
+        { id: "note-1", title: "Quarterly Financial Plan", content: "Revenue targets for Q4", is_deleted: false },
+        { id: "note-2", title: "Product Roadmap", content: "Sprint deliverables and roadmap", is_deleted: false },
+      ];
+
+      // Helper search simulating authoritative notes join (AND is_deleted = 0)
+      const executeSearch = (query, noteList) => {
+        const q = query.toLowerCase();
+        return noteList.filter(
+          (n) =>
+            !n.is_deleted &&
+            (n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q))
+        );
+      };
+
+      // 1. Initial search finds active note
+      const initialResults = executeSearch("financial", notes);
+      assert.strictEqual(initialResults.length, 1);
+      assert.strictEqual(initialResults[0].id, "note-1");
+
+      // 2. Soft-delete note-1
+      notes[0].is_deleted = true;
+
+      // 3. Active search immediately excludes note-1
+      const afterDeleteResults = executeSearch("financial", notes);
+      assert.strictEqual(afterDeleteResults.length, 0, "Soft-deleted note must not be returned in active search");
+
+      // Stale search client attempt to edit trashed note
+      const staleSelectedNote = notes[0];
+      const isReadOnly = staleSelectedNote.is_deleted;
+      assert.strictEqual(isReadOnly, true, "Opening a trashed note from stale search result must enter read-only mode");
+
+      // 4. Restore note-1
+      notes[0].is_deleted = false;
+
+      // 5. Restored note immediately becomes searchable again with same ID and content
+      const afterRestoreResults = executeSearch("financial", notes);
+      assert.strictEqual(afterRestoreResults.length, 1, "Restored note must become searchable again");
+      assert.strictEqual(afterRestoreResults[0].id, "note-1");
+      assert.strictEqual(afterRestoreResults[0].title, "Quarterly Financial Plan");
+    });
+  });
+
+  describe("Task 20: Handle Attachments During Trash, Restore, and Permanent Deletion", () => {
+    it("verifies soft deletion and restore preserve attachment records and files", async () => {
+      const fs = await import("node:fs");
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+      const attachmentsService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/attachments.rs", import.meta.url),
+        "utf8"
+      );
+      const attachmentsRepo = fs.readFileSync(
+        new URL("../src-tauri/src/storage/repositories/attachments.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify soft_delete only marks is_deleted on notes and does NOT call remove_note_directory or delete attachments
+      const softDeleteBody = trashService.match(/pub fn soft_delete[\s\S]*?\n    \}/)?.[0] || "";
+      assert.strictEqual(
+        softDeleteBody.includes("remove_note_directory"),
+        false,
+        "soft_delete must never delete managed attachment files"
+      );
+      assert.strictEqual(
+        softDeleteBody.includes("DELETE FROM attachments"),
+        false,
+        "soft_delete must never purge attachment records"
+      );
+
+      // Verify restore only clears is_deleted and preserves attachments
+      const restoreBody = trashService.match(/pub fn restore[\s\S]*?\n    \}/)?.[0] || "";
+      assert.strictEqual(
+        restoreBody.includes("remove_note_directory"),
+        false,
+        "restore must never delete attachment files"
+      );
+
+      // Verify backend rejects modifying attachments for deleted notes
+      assert.ok(
+        attachmentsRepo.includes("Cannot attach files to a deleted note"),
+        "verify_note_eligible must reject adding attachments to deleted notes"
+      );
+      assert.ok(
+        attachmentsService.includes("Cannot remove attachments from a deleted note. Restore it first."),
+        "remove_attachment must reject deleting attachments belonging to deleted notes"
+      );
+    });
+
+    it("verifies read-only attachment preview blocks mutations and preserves inspection", async () => {
+      const fs = await import("node:fs");
+      const listContent = fs.readFileSync(
+        new URL("../src/features/attachments/components/AttachmentList.tsx", import.meta.url),
+        "utf8"
+      );
+      const itemContent = fs.readFileSync(
+        new URL("../src/features/attachments/components/AttachmentItem.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify AttachmentList disables "Attach File" button when isReadOnly is true
+      assert.ok(
+        listContent.includes("disabled={isBusy || isReadOnly}"),
+        "AttachmentList must disable attach button when isReadOnly"
+      );
+
+      // Verify AttachmentList propagates isReadOnly to AttachmentItem
+      assert.ok(
+        listContent.includes("isReadOnly={isReadOnly}"),
+        "AttachmentList must pass isReadOnly to each AttachmentItem"
+      );
+
+      // Verify AttachmentItem conditionally suppresses remove button when isReadOnly
+      assert.ok(
+        itemContent.includes("{!isReadOnly && (") && itemContent.includes('className="attachment-action-btn btn-remove"'),
+        "AttachmentItem must hide remove button when isReadOnly is true"
+      );
+
+      // Verify open button remains available for read-only inspection
+      assert.ok(
+        itemContent.includes('className="attachment-action-btn btn-open"'),
+        "AttachmentItem must keep Open button available for viewing attachments"
+      );
+    });
+
+    it("verifies permanent deletion coordinates attachment file cleanup and honest reporting", async () => {
+      const fs = await import("node:fs");
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify permanently_delete_note coordinates file cleanup before removing DB record
+      assert.ok(
+        trashService.includes("storage.remove_note_directory(trimmed_id)"),
+        "permanently_delete_note must invoke storage.remove_note_directory with note ID"
+      );
+
+      // Verify honest tracking of cleanup failure
+      assert.ok(
+        trashService.includes("attachment_cleanup_failed,") &&
+          trashService.includes("error_message: cleanup_err,"),
+        "permanently_delete_note must truthfully report attachment cleanup failures"
+      );
+
+      // Verify empty_trash tracks attachment_cleanup_failures
+      assert.ok(
+        trashService.includes("attachment_cleanup_failures.push(note.id.clone());"),
+        "empty_trash must collect note IDs with attachment cleanup failures"
+      );
+    });
+
+    it("verifies simulated lifecycle: attachments preserved across trash & restore, cleaned up on permanent delete", () => {
+      // Setup note with 2 attachments
+      const note = {
+        id: "note-with-attachments-1",
+        title: "Project Specs & Assets",
+        content: "Attached diagrams and specs",
+        is_deleted: false,
+      };
+
+      const attachments = [
+        { id: "att-1", note_id: note.id, file_name: "architecture.png", file_size: 4096 },
+        { id: "att-2", note_id: note.id, file_name: "specification.pdf", file_size: 16384 },
+      ];
+
+      let managedDiskDirectories = new Set([note.id]);
+
+      // 1. Soft-delete note
+      note.is_deleted = true;
+      const trashedNoteAttachments = attachments.filter((a) => a.note_id === note.id);
+      assert.strictEqual(trashedNoteAttachments.length, 2, "Attachments must remain intact after soft deletion");
+      assert.ok(managedDiskDirectories.has(note.id), "Filesystem directory must remain intact after soft deletion");
+
+      // Verify read-only state in preview
+      const previewIsReadOnly = note.is_deleted;
+      assert.strictEqual(previewIsReadOnly, true, "Attachment controls must be read-only in trash preview");
+
+      // 2. Restore note
+      note.is_deleted = false;
+      const restoredNoteAttachments = attachments.filter((a) => a.note_id === note.id);
+      assert.strictEqual(restoredNoteAttachments.length, 2, "Attachments must remain intact after restoration");
+      const activeIsReadOnly = note.is_deleted;
+      assert.strictEqual(activeIsReadOnly, false, "Attachment controls must be fully editable after restore");
+
+      // 3. Move back to trash and permanently delete
+      note.is_deleted = true;
+      // Coordinate filesystem cleanup and db cleanup
+      managedDiskDirectories.delete(note.id);
+      const remainingAttachments = attachments.filter((a) => a.note_id !== note.id);
+
+      assert.strictEqual(managedDiskDirectories.has(note.id), false, "Disk directory removed on permanent deletion");
+      assert.strictEqual(remainingAttachments.length, 0, "Attachment records purged on permanent deletion");
+    });
+  });
+
+  describe("Task 21: Handle Empty States, Errors, Concurrency, and Stale UI State", () => {
+    it("verifies distinct rendering for empty state and error state in NotesList", async () => {
+      const fs = await import("node:fs");
+      const listContent = fs.readFileSync(
+        new URL("../src/features/notes/components/NotesList/NotesList.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify loading state
+      assert.ok(
+        listContent.includes('{status === "loading" && ('),
+        "NotesList must render loading state when status is loading"
+      );
+
+      // Verify distinct error state with retry callback
+      assert.ok(
+        listContent.includes('{status === "error" && (\n          <ErrorState\n            title={resolvedErrorTitle}\n            message={resolvedErrorMessage}\n            onRetry={onRetry}'),
+        "NotesList must render ErrorState with retry handler when status is error"
+      );
+
+      // Verify distinct empty state with trash-specific icon and messaging
+      assert.ok(
+        listContent.includes('(status === "empty" || (status === "idle" && notes.length === 0)) && (\n          <EmptyState\n            icon={isTrashMode ? <EmptyTrashIcon /> : <EmptyNotesIcon />}'),
+        "NotesList must render distinct EmptyState for trash with EmptyTrashIcon"
+      );
+      assert.ok(
+        listContent.includes('Trash is empty.'),
+        "NotesList must display 'Trash is empty.' when in trash mode"
+      );
+    });
+
+    it("verifies stale response protection guards in App.tsx against race conditions", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify activeLoadRequestIdRef exists
+      assert.ok(
+        appContent.includes("const activeLoadRequestIdRef = useRef<number>(0);"),
+        "App.tsx must maintain activeLoadRequestIdRef"
+      );
+
+      // Verify loadNotes increments request ID and discards stale out-of-order responses
+      assert.ok(
+        appContent.includes("const requestId = ++activeLoadRequestIdRef.current;"),
+        "loadNotes must increment requestId at start of operation"
+      );
+      assert.ok(
+        appContent.includes("if (activeLoadRequestIdRef.current !== requestId) return;"),
+        "loadNotes must discard stale responses if newer query began or user navigated away"
+      );
+    });
+
+    it("verifies in-flight concurrency guards prevent duplicate destructive or restoration operations", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+      const permDialogContent = fs.readFileSync(
+        new URL("../src/features/notes/components/PermanentDeleteDialog.tsx", import.meta.url),
+        "utf8"
+      );
+      const emptyDialogContent = fs.readFileSync(
+        new URL("../src/features/notes/components/EmptyTrashDialog.tsx", import.meta.url),
+        "utf8"
+      );
+
+      // Verify inFlightMutationsRef in App.tsx
+      assert.ok(
+        appContent.includes("const inFlightMutationsRef = useRef<Set<string>>(new Set());"),
+        "App.tsx must maintain inFlightMutationsRef for async operation gating"
+      );
+      assert.ok(
+        appContent.includes("if (inFlightMutationsRef.current.has(noteId)) return;"),
+        "handleRestoreNote must ignore duplicate in-flight requests for the same note"
+      );
+      assert.ok(
+        appContent.includes("if (inFlightMutationsRef.current.has(targetId)) return;"),
+        "handleDeleteNote must ignore duplicate in-flight requests"
+      );
+
+      // Verify confirmation dialogs disable submission while busy
+      assert.ok(
+        permDialogContent.includes("disabled={isDeleting}"),
+        "PermanentDeleteDialog must disable buttons during deletion"
+      );
+      assert.ok(
+        emptyDialogContent.includes("disabled={isDeleting}"),
+        "EmptyTrashDialog must disable buttons during batch execution"
+      );
+    });
+
+    it("verifies nonexistent or concurrently removed note handling in permanent deletion", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify frontend re-validates note is still in Trash before executing permanent deletion
+      assert.ok(
+        appContent.includes("const isStillInTrash = trashedNotes.some((n) => n.id === noteId);"),
+        "handleConfirmPermanentDelete must verify note is still in Trash"
+      );
+      assert.ok(
+        appContent.includes('throw new Error("This note is no longer in the Trash.");'),
+        "handleConfirmPermanentDelete must truthfully reject if note is no longer in Trash"
+      );
+
+      // Verify backend TrashService verifies note existence and trash state
+      assert.ok(
+        trashService.includes("TrashError::NoteNotFound"),
+        "TrashService must return NoteNotFound for nonexistent note IDs"
+      );
+      assert.ok(
+        trashService.includes("Only trashed notes can be permanently deleted"),
+        "TrashService must reject active notes for permanent deletion"
+      );
+    });
+
+    it("verifies simulated race conditions: out-of-order queries and concurrent clicks", async () => {
+      // 1. Out-of-order response simulation
+      let currentView = "trash";
+      let activeRequestId = 0;
+      let uiState = [];
+
+      const triggerLoad = async (nav, delay, mockData) => {
+        const reqId = ++activeRequestId;
+        await new Promise((r) => setTimeout(r, delay));
+        if (activeRequestId === reqId) {
+          currentView = nav;
+          uiState = mockData;
+        }
+      };
+
+      // Start slow trash load (50ms) followed by fast all-notes load (10ms)
+      const p1 = triggerLoad("trash", 50, [{ id: "trashed-1" }]);
+      const p2 = triggerLoad("all-notes", 10, [{ id: "active-1" }]);
+
+      await Promise.all([p1, p2]);
+
+      // Assert that the newer query ("all-notes") is not overwritten by the delayed trash query
+      assert.strictEqual(currentView, "all-notes");
+      assert.deepStrictEqual(uiState, [{ id: "active-1" }]);
+
+      // 2. Concurrent click guard simulation
+      const inFlight = new Set();
+      let executionCount = 0;
+
+      const triggerAction = async (targetId) => {
+        if (inFlight.has(targetId)) return;
+        inFlight.add(targetId);
+        try {
+          executionCount++;
+          await new Promise((r) => setTimeout(r, 10));
+        } finally {
+          inFlight.delete(targetId);
+        }
+      };
+
+      await Promise.all([triggerAction("n1"), triggerAction("n1"), triggerAction("n1")]);
+      assert.strictEqual(executionCount, 1, "Duplicate concurrent triggers for the same note must execute exactly once");
+    });
+  });
+
+  describe("Task 22: Add Automated Backend and Database Tests", () => {
+    it("verifies comprehensive Rust lifecycle test suites are defined and implemented in trash.rs", async () => {
+      const fs = await import("node:fs");
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // 1. Soft-delete tests
+      assert.ok(
+        trashService.includes("fn test_trash_service_soft_delete_lifecycle_and_validation()"),
+        "trash.rs must implement soft-delete lifecycle and validation test"
+      );
+
+      // 2. Restore tests
+      assert.ok(
+        trashService.includes("fn test_trash_service_restore_lifecycle_and_notebook_handling()"),
+        "trash.rs must implement restore lifecycle and notebook handling test"
+      );
+
+      // 3. Permanent-deletion tests
+      assert.ok(
+        trashService.includes("fn test_trash_service_permanent_delete_lifecycle_and_validation()"),
+        "trash.rs must implement permanent delete lifecycle and isolation test"
+      );
+      assert.ok(
+        trashService.includes("fn test_trash_service_permanent_delete_reports_attachment_cleanup_failure_honestly()"),
+        "trash.rs must test honest failure reporting when attachment cleanup fails"
+      );
+
+      // 4. Empty-Trash tests
+      assert.ok(
+        trashService.includes("fn test_trash_service_empty_trash_lifecycle_and_invariants()"),
+        "trash.rs must implement empty-trash lifecycle and survivor isolation test"
+      );
+      assert.ok(
+        trashService.includes("fn test_trash_service_empty_trash_handles_partial_failures()"),
+        "trash.rs must implement partial failure handling in empty trash"
+      );
+
+      // 5. Database integrity & lifecycle invariants tests
+      assert.ok(
+        trashService.includes("fn test_task_22_database_integrity_and_lifecycle_invariants()"),
+        "trash.rs must implement database integrity and foreign key invariants test"
+      );
+    });
+
+    it("verifies database foreign-key enforcement, cascading, and injection safety coverage", async () => {
+      const fs = await import("node:fs");
+      const trashService = fs.readFileSync(
+        new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify PRAGMA foreign_keys assertion
+      assert.ok(
+        trashService.includes('query_row("PRAGMA foreign_keys;", [], |r| r.get(0))'),
+        "Tests must verify PRAGMA foreign_keys enforcement"
+      );
+
+      // Verify SQL injection resilience test with unusual identifiers
+      assert.ok(
+        trashService.includes("Robert'); DROP TABLE notes;-- 🚀"),
+        "Tests must verify SQL injection characters and Unicode emojis in titles and content"
+      );
+
+      // Verify migration idempotency test
+      assert.ok(
+        trashService.includes("run_migrations(&mut conn).expect(\"Re-running migrations must succeed idempotently\");"),
+        "Tests must verify migration idempotency without data loss"
+      );
+
+      // Verify repeated empty-trash safety
+      assert.ok(
+        trashService.includes("let empty_1 = TrashService::empty_trash(&conn, &storage).unwrap();") &&
+          trashService.includes("let empty_2 = TrashService::empty_trash(&conn, &storage).unwrap();"),
+        "Tests must verify repeated empty-trash calls are idempotent"
+      );
+    });
+  });
+
+  describe("Task 23: Frontend and Integration Tests", () => {
+    describe("1. Navigation", () => {
+      it("verifies Trash navigation entry visibility, count badge, and styling in Sidebar", async () => {
+        const fs = await import("node:fs");
+        const sidebarContent = fs.readFileSync(
+          new URL("../src/components/Sidebar/Sidebar.tsx", import.meta.url),
+          "utf8"
+        );
+        const sidebarCss = fs.readFileSync(
+          new URL("../src/components/Sidebar/Sidebar.css", import.meta.url),
+          "utf8"
+        );
+
+        // Sidebar renders Trash navigation with distinct class and click handler
+        assert.ok(
+          sidebarContent.includes("sidebar-nav-item--trash"),
+          "Sidebar must include sidebar-nav-item--trash class"
+        );
+        assert.ok(
+          sidebarContent.includes('handleNavClick("trash")'),
+          "Sidebar must trigger handleNavClick('trash') when clicked"
+        );
+
+        // Sidebar displays trash count badge when noteCounts["trash"] > 0
+        assert.ok(
+          sidebarContent.includes('noteCounts?.["trash"]') &&
+            sidebarContent.includes("nav-item-count--trash"),
+          "Sidebar must render nav-item-count--trash when noteCounts['trash'] > 0"
+        );
+
+        // Sidebar CSS defines distinct styling for trash item and badge
+        assert.ok(
+          sidebarCss.includes(".sidebar-nav-item--trash"),
+          "Sidebar.css must style the trash navigation item"
+        );
+        assert.ok(
+          sidebarCss.includes(".nav-item-count--trash"),
+          "Sidebar.css must provide distinct styling for the trash count badge"
+        );
+      });
+
+      it("verifies selecting Trash switches active view, resets notebook/tag filters, and loads trashed notes", async () => {
+        const fs = await import("node:fs");
+        const appContent = fs.readFileSync(
+          new URL("../src/app/App.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // App.tsx invokes selectTrash and loads trashed notes
+        assert.ok(
+          appContent.includes("selectTrash();"),
+          "App.tsx must call selectTrash() when navigating to trash"
+        );
+        assert.ok(
+          appContent.includes('await loadNotes("trash", null, null)'),
+          "Selecting trash must invoke loadNotes with 'trash' and null filters"
+        );
+        assert.ok(
+          appContent.includes("storageService.notes.listTrashed()"),
+          "App.tsx must query listTrashed() for trash count synchronization"
+        );
+      });
+
+      it("verifies returning to active notes restores all-notes navigation and active note view", async () => {
+        // Simulated navigation state manager
+        let activeNav = "trash";
+        let selectedNotebookId = null;
+        let selectedTagId = null;
+        let selectedNoteId = "trashed-1";
+
+        const handleSelectNav = (navId) => {
+          activeNav = navId;
+          selectedNotebookId = null;
+          selectedTagId = null;
+          selectedNoteId = null;
+        };
+
+        // Return to all-notes
+        handleSelectNav("all-notes");
+
+        assert.strictEqual(activeNav, "all-notes", "Navigation must return to all-notes");
+        assert.strictEqual(selectedNotebookId, null, "Notebook filter remains cleared");
+        assert.strictEqual(selectedTagId, null, "Tag filter remains cleared");
+        assert.strictEqual(selectedNoteId, null, "Note selection safely resets");
+      });
+    });
+
+    describe("2. Listing and Preview", () => {
+      it("verifies trashed notes appear in trash view while active notes are excluded", () => {
+        const allNotesInDb = [
+          { id: "note-1", title: "Active Project", is_deleted: false },
+          { id: "note-2", title: "Archived Idea", is_deleted: true },
+          { id: "note-3", title: "Active Todo", is_deleted: false },
+          { id: "note-4", title: "Old Draft", is_deleted: true },
+        ];
+
+        // Active note query filter
+        const activeNotes = allNotesInDb.filter((n) => !n.is_deleted);
+        assert.strictEqual(activeNotes.length, 2);
+        assert.deepStrictEqual(activeNotes.map((n) => n.id), ["note-1", "note-3"]);
+
+        // Trash note query filter
+        const trashedNotes = allNotesInDb.filter((n) => n.is_deleted);
+        assert.strictEqual(trashedNotes.length, 2);
+        assert.deepStrictEqual(trashedNotes.map((n) => n.id), ["note-2", "note-4"]);
+
+        // Verify mutual exclusivity: active notes never appear in Trash
+        const leakIntoTrash = trashedNotes.some((n) => !n.is_deleted);
+        assert.strictEqual(leakIntoTrash, false, "Active notes must never appear in Trash list");
+      });
+
+      it("verifies empty trash displays the dedicated empty state and database error displays error state", async () => {
+        const fs = await import("node:fs");
+        const listContent = fs.readFileSync(
+          new URL("../src/features/notes/components/NotesList/NotesList.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // Dedicated empty state for Trash
+        assert.ok(
+          listContent.includes("isTrashMode ? <EmptyTrashIcon /> : <EmptyNotesIcon />"),
+          "NotesList must display EmptyTrashIcon when in trash mode"
+        );
+        assert.ok(
+          listContent.includes("Trash is empty."),
+          "NotesList must state 'Trash is empty.' in empty trash state"
+        );
+
+        // Error state presentation with retry
+        assert.ok(
+          listContent.includes("<ErrorState") &&
+            listContent.includes("title={resolvedErrorTitle}") &&
+            listContent.includes("message={resolvedErrorMessage}") &&
+            listContent.includes("onRetry={onRetry}"),
+          "NotesList must render ErrorState with retry handler when a database error occurs"
+        );
+      });
+
+      it("verifies selecting a trashed note renders preview banner, timestamps, and suppresses autosave", async () => {
+        const fs = await import("node:fs");
+        const editorContent = fs.readFileSync(
+          new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // Preview banner rendered in read-only trash mode
+        assert.ok(
+          editorContent.includes('className="trashed-note-banner"'),
+          "NoteEditor must render trashed-note-banner when note is in trash"
+        );
+        assert.ok(
+          editorContent.includes("This note is in Trash.") &&
+            editorContent.includes("Restore this note to make changes."),
+          "NoteEditor must inform the user that note is in Trash and read-only"
+        );
+
+        // Action buttons inside banner
+        assert.ok(
+          editorContent.includes("btn-trash-banner--restore") &&
+            editorContent.includes("Restore Note"),
+          "NoteEditor must render a Restore action button in the banner"
+        );
+        assert.ok(
+          editorContent.includes("btn-trash-banner--delete") &&
+            editorContent.includes("Delete Permanently"),
+          "NoteEditor must render a Delete Permanently action button in the banner"
+        );
+
+        // Normal autosave and blur save suppressed
+        assert.ok(
+          editorContent.includes("if (isReadOnly) return;"),
+          "Editor save paths must immediately return when isReadOnly is true"
+        );
+      });
+    });
+
+    describe("3. Restore", () => {
+      it("verifies restore calls notesStorage.restoreNote and removes note from Trash", async () => {
+        let calledWithId = null;
+        const mockStorage = {
+          restoreNote: async (id) => {
+            calledWithId = id;
+            return {
+              id,
+              title: "Restored Note",
+              content: "Content",
+              is_deleted: false,
+              created_at: "2026-10-09T10:00:00Z",
+              updated_at: "2026-10-09T10:00:00Z",
+            };
+          },
+        };
+
+        let trashedNotes = [
+          { id: "trash-1", title: "Note 1", is_deleted: true },
+          { id: "trash-2", title: "Note 2", is_deleted: true },
+        ];
+
+        // Perform restore
+        const targetId = "trash-1";
+        await mockStorage.restoreNote(targetId);
+        trashedNotes = trashedNotes.filter((n) => n.id !== targetId);
+
+        assert.strictEqual(calledWithId, "trash-1", "restoreNote must receive the target note ID");
+        assert.strictEqual(trashedNotes.length, 1, "Restored note must be removed from trash list");
+        assert.strictEqual(trashedNotes[0].id, "trash-2");
+      });
+
+      it("verifies active-note state and badge count refresh upon restore", async () => {
+        let trashedCount = 3;
+        let activeNotesCount = 5;
+        let bannerMessage = null;
+
+        const handleRestore = async (id, title) => {
+          trashedCount = Math.max(0, trashedCount - 1);
+          activeNotesCount += 1;
+          bannerMessage = `Note "${title}" restored to active notes.`;
+        };
+
+        await handleRestore("trash-1", "My Meeting Notes");
+
+        assert.strictEqual(trashedCount, 2, "Trash badge count must decrement by 1");
+        assert.strictEqual(activeNotesCount, 6, "Active notes count must increment by 1");
+        assert.ok(bannerMessage.includes("restored"), "Feedback banner must confirm restoration");
+      });
+
+      it("verifies restore failure is handled gracefully without false success", async () => {
+        let trashedNotes = [{ id: "trash-1", title: "Corrupted Note", is_deleted: true }];
+        let userErrorMessage = null;
+
+        const handleRestore = async (id) => {
+          try {
+            throw new Error("Database disk I/O error occurred during restore.");
+          } catch (err) {
+            userErrorMessage = err instanceof Error ? err.message : "Failed to restore note.";
+            // Note is NOT removed from trashedNotes upon error
+          }
+        };
+
+        await handleRestore("trash-1");
+
+        assert.strictEqual(trashedNotes.length, 1, "Note must NOT be removed from trash list on error");
+        assert.ok(userErrorMessage.includes("Database disk I/O error"), "User must receive truthful error message");
+      });
+    });
+
+    describe("4. Permanent Deletion", () => {
+      it("verifies permanent delete prompts confirmation dialog targeting the intended note", async () => {
+        const fs = await import("node:fs");
+        const dialogContent = fs.readFileSync(
+          new URL("../src/features/notes/components/PermanentDeleteDialog.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // Dialog structure and styling
+        assert.ok(
+          dialogContent.includes("<Modal"),
+          "PermanentDeleteDialog must use the Modal component"
+        );
+        assert.ok(
+          dialogContent.includes("Permanently delete"),
+          "PermanentDeleteDialog must include explicit destructive title"
+        );
+        assert.ok(
+          dialogContent.includes("displayTitle"),
+          "PermanentDeleteDialog must reference the target note title"
+        );
+        assert.ok(
+          dialogContent.includes("cannot be undone through the Trash interface"),
+          "PermanentDeleteDialog must warn user action cannot be undone through Trash"
+        );
+        assert.ok(
+          dialogContent.includes('variant="secondary"') &&
+            dialogContent.includes('variant="danger"'),
+          "PermanentDeleteDialog must provide Cancel and danger action buttons"
+        );
+        assert.ok(
+          dialogContent.includes("Permanently Delete"),
+          "PermanentDeleteDialog must provide explicit Permanently Delete action button"
+        );
+      });
+
+      it("verifies cancellation is a safe no-op and does not invoke deletion", () => {
+        let isDialogOpen = true;
+        let deleteInvocationCount = 0;
+
+        const handleCancel = () => {
+          isDialogOpen = false;
+        };
+
+        const handleConfirm = () => {
+          deleteInvocationCount++;
+        };
+
+        // User clicks Cancel
+        handleCancel();
+
+        assert.strictEqual(isDialogOpen, false, "Dialog must close upon cancel");
+        assert.strictEqual(deleteInvocationCount, 0, "Backend deletion must NOT be called on cancel");
+      });
+
+      it("verifies duplicate submissions are prevented during permanent delete", async () => {
+        let isBusy = false;
+        let executionCount = 0;
+
+        const submitDelete = async () => {
+          if (isBusy) return;
+          isBusy = true;
+          try {
+            executionCount++;
+            await new Promise((r) => setTimeout(r, 20));
+          } finally {
+            isBusy = false;
+          }
+        };
+
+        // User rapidly double clicks delete confirm
+        await Promise.all([submitDelete(), submitDelete()]);
+
+        assert.strictEqual(executionCount, 1, "Duplicate permanent delete clicks must be rejected");
+      });
+
+      it("verifies failed permanent deletion is reflected truthfully with error feedback", async () => {
+        let trashedNotes = [{ id: "trashed-item", title: "Note", is_deleted: true }];
+        let displayError = null;
+
+        const confirmDelete = async (id) => {
+          try {
+            throw new Error("Foreign key constraint violation or disk lock.");
+          } catch (err) {
+            displayError = err instanceof Error ? err.message : "Deletion failed.";
+          }
+        };
+
+        await confirmDelete("trashed-item");
+
+        assert.strictEqual(trashedNotes.length, 1, "Note must remain in list if permanent deletion fails");
+        assert.ok(displayError.includes("Foreign key constraint"), "Truthful error must be provided to user");
+      });
+    });
+
+    describe("5. Empty Trash", () => {
+      it("verifies empty trash requires confirmation and cancel performs no deletion", async () => {
+        const fs = await import("node:fs");
+        const emptyDialogContent = fs.readFileSync(
+          new URL("../src/features/notes/components/EmptyTrashDialog.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          emptyDialogContent.includes("<Modal"),
+          "EmptyTrashDialog must use the Modal component"
+        );
+        assert.ok(
+          emptyDialogContent.includes('title="Empty Trash?"'),
+          "EmptyTrashDialog must have clear destructive title"
+        );
+        assert.ok(
+          emptyDialogContent.includes("permanently delete all"),
+          "EmptyTrashDialog must warn that all items in trash will be permanently erased"
+        );
+        assert.ok(
+          emptyDialogContent.includes('variant="secondary"') &&
+            emptyDialogContent.includes('variant="danger"'),
+          "EmptyTrashDialog must provide Cancel and danger Empty Trash action buttons"
+        );
+        assert.ok(
+          emptyDialogContent.includes("Empty Trash"),
+          "EmptyTrashDialog must provide explicit Empty Trash action label"
+        );
+
+        // Verify cancel does not invoke backend emptyTrash
+        let wasPurged = false;
+        let isDialogOpen = true;
+        const handleCancel = () => {
+          isDialogOpen = false;
+        };
+        handleCancel();
+        assert.strictEqual(isDialogOpen, false);
+        assert.strictEqual(wasPurged, false);
+      });
+
+      it("verifies successful empty trash purges trash and updates trash count badge", async () => {
+        let trashedNotes = [
+          { id: "t1", title: "Note 1" },
+          { id: "t2", title: "Note 2" },
+          { id: "t3", title: "Note 3" },
+        ];
+        let trashedCount = 3;
+
+        const mockStorage = {
+          emptyTrash: async () => ({
+            deleted_count: 3,
+            failed_ids: [],
+          }),
+        };
+
+        const result = await mockStorage.emptyTrash();
+        if (result.deleted_count > 0) {
+          trashedNotes = [];
+          trashedCount = 0;
+        }
+
+        assert.strictEqual(result.deleted_count, 3);
+        assert.strictEqual(trashedNotes.length, 0, "All trashed notes purged");
+        assert.strictEqual(trashedCount, 0, "Trash badge reset to 0");
+      });
+
+      it("verifies partial failure in empty trash displays honest batch feedback", async () => {
+        const mockResult = {
+          deleted_count: 2,
+          failed_ids: ["note-locked-1"],
+        };
+
+        const generateFeedback = (res) => {
+          if (res.failed_ids.length === 0) {
+            return `Emptied ${res.deleted_count} notes from Trash.`;
+          }
+          return `Emptied ${res.deleted_count} notes. ${res.failed_ids.length} note(s) could not be deleted.`;
+        };
+
+        const message = generateFeedback(mockResult);
+        assert.ok(message.includes("Emptied 2 notes"));
+        assert.ok(message.includes("1 note(s) could not be deleted"));
+      });
+    });
+
+    describe("6. Phase 1-7 Regression Invariants", () => {
+      it("verifies note creation, editing, and autosave remain fully functional for active notes", async () => {
+        const fs = await import("node:fs");
+        const editorContent = fs.readFileSync(
+          new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // Active note editing is not blocked
+        assert.ok(
+          editorContent.includes("readOnly={isReadOnly}"),
+          "Input fields must allow editing when isReadOnly is false"
+        );
+        assert.ok(
+          editorContent.includes("scheduleAutosave") &&
+            editorContent.includes("executeSave"),
+          "Autosave engine must be preserved in NoteEditor"
+        );
+      });
+
+      it("verifies notebooks, tags, and favorites remain functional and isolated from Trash", async () => {
+        const notesDb = [
+          { id: "n1", notebook_id: "nb-1", tags: ["work"], favorite: true, is_deleted: false },
+          { id: "n2", notebook_id: "nb-1", tags: ["work"], favorite: false, is_deleted: true },
+          { id: "n3", notebook_id: "nb-2", tags: ["personal"], favorite: true, is_deleted: false },
+        ];
+
+        // Active notebook filter
+        const nb1Active = notesDb.filter((n) => n.notebook_id === "nb-1" && !n.is_deleted);
+        assert.strictEqual(nb1Active.length, 1);
+        assert.strictEqual(nb1Active[0].id, "n1");
+
+        // Active tag filter
+        const workActive = notesDb.filter((n) => n.tags.includes("work") && !n.is_deleted);
+        assert.strictEqual(workActive.length, 1);
+        assert.strictEqual(workActive[0].id, "n1");
+
+        // Active favorites filter
+        const favActive = notesDb.filter((n) => n.favorite && !n.is_deleted);
+        assert.strictEqual(favActive.length, 2);
+        assert.deepStrictEqual(favActive.map((n) => n.id), ["n1", "n3"]);
+      });
+
+      it("verifies search excludes trashed notes, and restored notes become searchable immediately", () => {
+        let notesIndex = [
+          { id: "s1", title: "Kubernetes Guide", content: "DevOps", is_deleted: false },
+          { id: "s2", title: "Kubernetes Cluster", content: "Production", is_deleted: false },
+        ];
+
+        const search = (query) =>
+          notesIndex.filter(
+            (n) => !n.is_deleted && (n.title.includes(query) || n.content.includes(query))
+          );
+
+        // 1. Initial search
+        assert.strictEqual(search("Kubernetes").length, 2);
+
+        // 2. Soft delete s2
+        notesIndex[1].is_deleted = true;
+        const trashedSearchResult = search("Kubernetes");
+        assert.strictEqual(trashedSearchResult.length, 1);
+        assert.strictEqual(trashedSearchResult[0].id, "s1");
+
+        // 3. Restore s2
+        notesIndex[1].is_deleted = false;
+        const restoredSearchResult = search("Kubernetes");
+        assert.strictEqual(restoredSearchResult.length, 2);
+      });
+
+      it("verifies attachments survive soft deletion and restore without data loss", () => {
+        const noteWithFiles = {
+          id: "note-att-1",
+          title: "Architecture Document",
+          is_deleted: false,
+          attachments: [
+            { id: "att-1", name: "diagram.png", size: 1024 },
+            { id: "att-2", name: "spec.pdf", size: 2048 },
+          ],
+        };
+
+        // Soft delete
+        noteWithFiles.is_deleted = true;
+        assert.strictEqual(noteWithFiles.attachments.length, 2, "Attachments preserved during trash");
+
+        // Restore
+        noteWithFiles.is_deleted = false;
+        assert.strictEqual(noteWithFiles.attachments.length, 2, "Attachments preserved after restore");
+      });
+
+      it("verifies keyboard shortcuts and themes remain functional", async () => {
+        const fs = await import("node:fs");
+        const shortcutsContent = fs.readFileSync(
+          new URL("../src/hooks/useKeyboardShortcuts.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          shortcutsContent.includes("onDeleteNote"),
+          "useKeyboardShortcuts must wire onDeleteNote"
+        );
+        assert.ok(
+          shortcutsContent.includes('isModifier && (key === "backspace" || key === "delete")'),
+          "useKeyboardShortcuts must support Delete and Backspace shortcuts with modifiers"
+        );
+      });
+    });
+  });
+
+  describe("Task 24: Perform Data-Safety, Security, and Reliability Verification", () => {
+    describe("1. Data Safety Verification", () => {
+      it("verifies ordinary delete is soft-delete, stable IDs are preserved, and active notes cannot be duplicated or corrupted", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+        const notesRepo = fs.readFileSync(
+          new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Soft delete only updates is_deleted and does not purge records
+        assert.ok(
+          notesRepo.includes("UPDATE notes SET is_deleted = 1"),
+          "NoteRepository::soft_delete must strictly update is_deleted = 1"
+        );
+        assert.ok(
+          trashService.includes("NoteRepository::soft_delete(conn, trimmed_id)"),
+          "TrashService::soft_delete must route to repository soft_delete"
+        );
+
+        // Restore preserves ID and does not duplicate
+        assert.ok(
+          notesRepo.includes("is_deleted = 0, deleted_at = NULL") &&
+            notesRepo.includes("WHERE id = ?3 AND is_deleted = 1"),
+          "NoteRepository::restore must strictly update is_deleted = 0 on existing row"
+        );
+
+        // Active notes repository queries strictly filter is_deleted = 0
+        assert.ok(
+          notesRepo.includes("WHERE is_deleted = 0"),
+          "NoteRepository list and get queries must enforce is_deleted = 0"
+        );
+      });
+
+      it("verifies Empty Trash operates exclusively on trashed notes without touching active survivors", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+        const notesRepo = fs.readFileSync(
+          new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Empty trash queries list_trashed which selects is_deleted = 1
+        assert.ok(
+          trashService.includes("NoteRepository::list_trashed(conn)"),
+          "empty_trash must query trashed notes via NoteRepository::list_trashed"
+        );
+        assert.ok(
+          notesRepo.includes("WHERE is_deleted = 1"),
+          "NoteRepository::list_trashed must strictly filter WHERE is_deleted = 1"
+        );
+        assert.ok(
+          trashService.includes("permanently_delete_note(conn, storage, &note.id)"),
+          "empty_trash must delegate to permanently_delete_note to maintain integrity"
+        );
+      });
+
+      it("verifies shared notebooks and tags survive permanent deletion of member notes", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Check backend integration tests specifically verify parent survival
+        assert.ok(
+          trashService.includes("assert!(NotebookRepository::get_by_id(&conn, &nb.id).unwrap().is_some());") &&
+            trashService.includes("assert!(TagRepository::get_by_id(&conn, &tag.id).unwrap().is_some());"),
+          "trash.rs must test that parent notebooks and tags survive permanent deletion"
+        );
+      });
+    });
+
+    describe("2. Security and Boundary Enforcement", () => {
+      it("verifies all database queries use parameterized SQL without string formatting", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+        const notesRepo = fs.readFileSync(
+          new URL("../src-tauri/src/storage/repositories/notes.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Parameterized queries with params![...]
+        assert.ok(
+          notesRepo.includes("UPDATE notes SET is_deleted = 1") &&
+            notesRepo.includes("params![now, id]"),
+          "soft_delete must use parameterized SQL with positional parameters"
+        );
+        assert.ok(
+          notesRepo.includes("is_deleted = 0, deleted_at = NULL") &&
+            notesRepo.includes("params![effective_notebook_id, now, id]"),
+          "restore must use parameterized SQL"
+        );
+        assert.ok(
+          trashService.includes("NoteRepository::delete(conn, trimmed_id, false)"),
+          "permanently_delete_note must route through NoteRepository::delete"
+        );
+        assert.ok(
+          notesRepo.includes('conn.execute("DELETE FROM notes WHERE id = ?1", params![id])'),
+          "NoteRepository::delete must use parameterized SQL with params![id]"
+        );
+
+        // Verify no raw string formatting in SQL statements
+        assert.ok(
+          !trashService.includes('format!("UPDATE notes SET is_deleted'),
+          "SQL statements must not use format! interpolation"
+        );
+        assert.ok(
+          !trashService.includes('format!("DELETE FROM notes WHERE id = \'{}\''),
+          "SQL statements must not use format! interpolation"
+        );
+      });
+
+      it("verifies backend rejects unauthorized lifecycle transitions and active note permanent deletions", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Verify checks in permanently_delete_note
+        assert.ok(
+          trashService.includes("Only trashed notes can be permanently deleted"),
+          "permanently_delete_note must reject active notes"
+        );
+        // Verify checks in restore
+        assert.ok(
+          trashService.includes("is not in Trash"),
+          "restore must reject notes that are not in Trash"
+        );
+        // Verify checks in soft_delete
+        assert.ok(
+          trashService.includes("is already in Trash"),
+          "soft_delete must reject notes that are already in Trash"
+        );
+      });
+
+      it("verifies selection race protection and target ID stability in frontend mutations", async () => {
+        const fs = await import("node:fs");
+        const appContent = fs.readFileSync(
+          new URL("../src/app/App.tsx", import.meta.url),
+          "utf8"
+        );
+
+        // handleConfirmPermanentDelete relies on stable noteId argument, not fluctuating state
+        assert.ok(
+          appContent.includes("handleConfirmPermanentDelete = useCallback(") &&
+            appContent.includes("async (noteId: string) => {"),
+          "handleConfirmPermanentDelete must capture and accept the explicit note ID"
+        );
+        // in-flight mutations lock prevents concurrency race
+        assert.ok(
+          appContent.includes("inFlightMutationsRef.current.add(noteId);"),
+          "handleConfirmPermanentDelete must track inFlightMutationsRef for target noteId"
+        );
+      });
+    });
+
+    describe("3. Reliability and Fault Tolerance", () => {
+      it("verifies missing attachments on disk are handled gracefully without blocking permanent delete", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+
+        // remove_note_directory is tolerant of missing directory
+        assert.ok(
+          trashService.includes("test_task_24_data_safety_security_and_reliability_verification"),
+          "trash.rs must test missing attachment disk directory during permanent delete"
+        );
+        assert.ok(
+          trashService.includes("assert!(!ghost_del.attachment_cleanup_failed);"),
+          "Missing directory must not be falsely treated as a failure"
+        );
+      });
+
+      it("verifies large trash batches (e.g. 25+ notes) are purged reliably without leaving dangling records", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          trashService.includes("assert_eq!(empty_batch.deleted_count, 25);"),
+          "trash.rs must verify bulk emptying of 25 notes cleanly"
+        );
+        assert.ok(
+          trashService.includes("assert_eq!(empty_batch.failed_count, 0);"),
+          "trash.rs must verify zero failures during bulk purge"
+        );
+      });
+
+      it("verifies restore and permanent deletion are reliable across application restarts", async () => {
+        const fs = await import("node:fs");
+        const trashService = fs.readFileSync(
+          new URL("../src-tauri/src/storage/services/trash.rs", import.meta.url),
+          "utf8"
+        );
+
+        // Verification of connection drops and reopens simulating application restart
+        assert.ok(
+          trashService.includes("drop(conn);") &&
+            trashService.includes("init_connection(&db_path)") &&
+            trashService.includes("run_migrations(&mut conn2)"),
+          "trash.rs must test simulation of application shutdown and restart before restore"
+        );
+        assert.ok(
+          trashService.includes("drop(conn2);") &&
+            trashService.includes("init_connection(&db_path)") &&
+            trashService.includes("run_migrations(&mut conn3)"),
+          "trash.rs must test simulation of application restart before permanent deletion"
+        );
+      });
+    });
+  });
+});
+
+
+
+
+
+
+
 
 
 

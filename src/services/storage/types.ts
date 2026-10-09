@@ -4,6 +4,18 @@
 
 export type NoteFormat = "txt" | "md";
 
+/**
+ * Strongly-typed lifecycle state of a note (Phase 8, Task 2)
+ */
+export type NoteLifecycle = "active" | "trashed";
+
+/**
+ * Derives the authoritative NoteLifecycle state from the is_deleted flag.
+ */
+export function getNoteLifecycle(note: { is_deleted: boolean }): NoteLifecycle {
+  return note.is_deleted ? "trashed" : "active";
+}
+
 export interface Note {
   id: string;
   title: string;
@@ -16,6 +28,42 @@ export interface Note {
   is_pinned: boolean;
   is_deleted: boolean;
   deleted_at: string | null;
+}
+
+/**
+ * Lightweight DTO representation for trashed notes listing (Phase 8, Task 10)
+ */
+export interface TrashedNoteItem {
+  id: string;
+  title: string;
+  preview: string;
+  notebookId: string | null;
+  notebookName?: string | null;
+  createdAt: string;
+  modifiedAt: string;
+  deletedAt: string | null;
+  isFavorite: boolean;
+  attachmentCount: number;
+}
+
+/**
+ * Result report of a single permanent deletion operation (Phase 8, Task 7)
+ */
+export interface PermanentDeleteResult {
+  noteId: string;
+  success: boolean;
+  attachmentCleanupFailed: boolean;
+  errorMessage?: string | null;
+}
+
+/**
+ * Summary report of an empty-trash batch operation (Phase 8, Task 8)
+ */
+export interface EmptyTrashResult {
+  deletedCount: number;
+  failedCount: number;
+  attachmentCleanupFailures: string[];
+  errors: string[];
 }
 
 export interface NoteMetadata {

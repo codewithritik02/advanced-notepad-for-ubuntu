@@ -5,14 +5,15 @@ use crate::storage::{
     attachment_storage::AttachmentStorage,
     errors::{AttachmentError, StorageError},
     models::{
-        AttachmentConsistencyReport, AttachmentMetadataDto, CreateNotebookDto, CreateNoteDto, Note,
-        Notebook, SearchResult, Tag, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
+        AttachmentConsistencyReport, AttachmentMetadataDto, CreateNotebookDto, CreateNoteDto,
+        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, SearchResult, Tag,
+        TrashedNoteItem, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
         AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
         TagRepository,
     },
-    services::{AttachmentService, SearchService},
+    services::{AttachmentService, SearchService, TrashService},
     Database, StoragePaths,
 };
 
@@ -80,17 +81,57 @@ pub fn delete_note(
 ) -> Result<bool, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     let is_soft = soft.unwrap_or(true);
-    if !is_soft {
+    if is_soft {
+        TrashService::soft_delete(&conn, &id)
+            .map(|_| true)
+            .map_err(|e| e.user_friendly_message())
+    } else {
         let storage = AttachmentStorage::new((*paths).clone());
         let _ = storage.remove_note_directory(&id);
+        TrashService::permanently_delete_note(&conn, &storage, &id)
+            .map(|res| res.success)
+            .map_err(|e| e.user_friendly_message())
     }
-    NoteRepository::delete(&conn, &id, is_soft).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn soft_delete_note(db: State<'_, Database>, id: String) -> Result<Note, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    TrashService::soft_delete(&conn, &id).map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
 pub fn restore_note(db: State<'_, Database>, id: String) -> Result<Note, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::restore(&conn, &id).map_err(|e| e.to_string())
+    TrashService::restore(&conn, &id).map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn permanently_delete_note(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+    id: String,
+) -> Result<PermanentDeleteResult, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+    TrashService::permanently_delete_note(&conn, &storage, &id)
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn empty_trash(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+) -> Result<EmptyTrashResult, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+    TrashService::empty_trash(&conn, &storage).map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn list_trashed_notes(db: State<'_, Database>) -> Result<Vec<TrashedNoteItem>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::list_trashed_items(&conn).map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]

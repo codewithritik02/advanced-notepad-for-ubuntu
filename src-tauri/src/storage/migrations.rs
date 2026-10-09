@@ -1,6 +1,9 @@
 use rusqlite::Connection;
 use crate::storage::errors::StorageError;
-use crate::storage::schema::{INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL, MIGRATION_003_ATTACHMENTS_SCHEMA_SQL};
+use crate::storage::schema::{
+    INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL, MIGRATION_003_ATTACHMENTS_SCHEMA_SQL,
+    MIGRATION_004_TRASH_INDEXES_SQL,
+};
 
 /// Represents a single discrete database migration step
 pub struct Migration {
@@ -25,6 +28,11 @@ pub const MIGRATIONS: &[Migration] = &[
         version: 3,
         name: "003_attachments_schema_refinement",
         sql: MIGRATION_003_ATTACHMENTS_SCHEMA_SQL,
+    },
+    Migration {
+        version: 4,
+        name: "004_trash_indexes",
+        sql: MIGRATION_004_TRASH_INDEXES_SQL,
     },
 ];
 
@@ -482,6 +490,101 @@ mod tests {
         // Clean up
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_migration_004_trash_indexes_upgrade_and_preservation() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_mig_004_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init connection");
+
+        // 1. Manually setup DB with v1, v2, v3 applied
+        ensure_migrations_table(&conn).expect("Ensure _migrations");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let v1_to_v3 = &MIGRATIONS[..3];
+        run_migrations_custom(&mut conn, v1_to_v3).expect("Run migrations 1..=3");
+
+        // Insert active notes, notebook, tag, attachment to ensure zero data loss during upgrade
+        let nb_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO notebooks (id, name, parent_id, created_at, modified_at) VALUES (?1, 'Work', NULL, ?2, ?2)",
+            [&nb_id, &now],
+        ).expect("Insert notebook");
+
+        let active_note_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO notes (id, title, content, format, notebook_id, created_at, modified_at, is_favorite, is_pinned, is_deleted, deleted_at)
+             VALUES (?1, 'Active Note', 'Content', 'txt', ?2, ?3, ?3, 1, 1, 0, NULL)",
+            [&active_note_id, &nb_id, &now],
+        ).expect("Insert active note");
+
+        let trashed_note_id = uuid::Uuid::new_v4().to_string();
+        let deleted_time = "2026-10-08T12:00:00Z";
+        conn.execute(
+            "INSERT INTO notes (id, title, content, format, notebook_id, created_at, modified_at, is_favorite, is_pinned, is_deleted, deleted_at)
+             VALUES (?1, 'Trashed Note', 'Old content', 'txt', ?2, ?3, ?3, 0, 0, 1, ?4)",
+            [&trashed_note_id, &nb_id, &now, deleted_time],
+        ).expect("Insert trashed note");
+
+        // 2. Run all migrations (applies Migration 4)
+        run_migrations(&mut conn).expect("Run migrations including v4");
+
+        // 3. Verify Migration 4 recorded
+        let v4_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM _migrations WHERE version = 4",
+            [],
+            |r| r.get(0),
+        ).expect("Query _migrations for v4");
+        assert_eq!(v4_count, 1, "Migration 4 must be recorded in _migrations");
+
+        // 4. Verify indexes exist
+        let idx_deleted_at_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_notes_deleted_at'",
+            [],
+            |r| r.get(0),
+        ).expect("Check idx_notes_deleted_at");
+        assert_eq!(idx_deleted_at_count, 1, "idx_notes_deleted_at must exist");
+
+        let idx_lifecycle_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = 'idx_notes_trash_lifecycle'",
+            [],
+            |r| r.get(0),
+        ).expect("Check idx_notes_trash_lifecycle");
+        assert_eq!(idx_lifecycle_count, 1, "idx_notes_trash_lifecycle must exist");
+
+        // 5. Verify all existing data is 100% intact
+        let active_title: String = conn.query_row(
+            "SELECT title FROM notes WHERE id = ?1 AND is_deleted = 0",
+            [&active_note_id],
+            |r| r.get(0),
+        ).expect("Active note must remain intact");
+        assert_eq!(active_title, "Active Note");
+
+        let trashed_title: String = conn.query_row(
+            "SELECT title FROM notes WHERE id = ?1 AND is_deleted = 1",
+            [&trashed_note_id],
+            |r| r.get(0),
+        ).expect("Trashed note must remain intact");
+        assert_eq!(trashed_title, "Trashed Note");
+
+        // 6. Test fresh database initialization with all migrations
+        let fresh_temp_dir = std::env::temp_dir().join(format!("pn_test_fresh_mig_{}", uuid::Uuid::new_v4()));
+        let fresh_db_path = fresh_temp_dir.join("fresh.sqlite");
+        let mut fresh_conn = init_connection(&fresh_db_path).expect("Fresh DB init");
+        run_migrations(&mut fresh_conn).expect("Run migrations on fresh DB");
+
+        let total_migrations: i64 = fresh_conn.query_row(
+            "SELECT COUNT(1) FROM _migrations",
+            [],
+            |r| r.get(0),
+        ).expect("Count migrations");
+        assert_eq!(total_migrations, 4, "Fresh database must have all 4 migrations applied");
+
+        drop(conn);
+        drop(fresh_conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&fresh_temp_dir);
     }
 }
 

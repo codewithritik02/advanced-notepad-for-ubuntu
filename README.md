@@ -6,14 +6,17 @@ Personal Notepad is a fast, offline-first desktop note-taking application design
 
 ## Current Status
 
-**Phase 4 — Notebook / Folder System (Completed)**
+**Phase 8 — Trash & Recovery System (Completed)**
 
-The hierarchical notebook system is fully operational across the SQLite engine and React desktop UI. Users can create root and arbitrarily nested child notebooks, expand/collapse branches, select notebooks for filtering, view live note counts, rename notebooks, move notes (via dialog or HTML5 drag-and-drop), and safely delete notebooks without losing notes (atomic unfiling to `Unfiled`).
+The Trash & Recovery subsystem is fully operational across the SQLite engine and React desktop UI. Users can safely soft-delete active notes with zero data loss, preview trashed notes in read-only mode, restore notes (with automatic defensive unfiling if notebooks were removed), permanently delete individual notes via confirmation dialogs, and empty the entire Trash with honest batch and partial-failure reporting.
 
 See also:
 - [Storage Architecture Documentation](docs/storage-architecture.md)
 - [Note Editor Architecture (Phase 3)](docs/note-editor.md)
 - [Notebook & Organization Architecture (Phase 4)](docs/notebook-architecture.md)
+- [Full-Text Search Architecture (Phase 6)](docs/search-architecture.md)
+- [Attachments & Files Architecture (Phase 7)](docs/attachments-architecture.md)
+- [Trash & Recovery Architecture (Phase 8)](docs/trash-and-recovery-architecture.md)
 
 ---
 

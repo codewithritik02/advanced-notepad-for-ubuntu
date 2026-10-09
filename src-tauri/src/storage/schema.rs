@@ -129,6 +129,15 @@ ALTER TABLE attachments_new RENAME TO attachments;
 CREATE INDEX IF NOT EXISTS idx_attachments_note_id ON attachments(note_id);
 "#;
 
+/// SQL DDL for Trash indexing and query optimization (Migration 004, Phase 8, Task 3)
+pub const MIGRATION_004_TRASH_INDEXES_SQL: &str = r#"
+-- 1. Create index on deleted_at to support fast ordering of trashed notes
+CREATE INDEX IF NOT EXISTS idx_notes_deleted_at ON notes(deleted_at DESC);
+
+-- 2. Create compound index on (is_deleted, deleted_at DESC) for optimal trash view filtering and sorting
+CREATE INDEX IF NOT EXISTS idx_notes_trash_lifecycle ON notes(is_deleted, deleted_at DESC);
+"#;
+
 /// Applies the initial schema to the provided database connection.
 pub fn apply_initial_schema(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(INITIAL_SCHEMA_SQL)?;

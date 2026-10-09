@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import { CreateNoteInput, ListNotesOptions, Note, NoteMetadata, UpdateNoteInput } from "./types";
+import {
+  CreateNoteInput,
+  EmptyTrashResult,
+  ListNotesOptions,
+  Note,
+  NoteMetadata,
+  PermanentDeleteResult,
+  TrashedNoteItem,
+  UpdateNoteInput,
+} from "./types";
 
 export const notesStorage = {
   /**
@@ -96,6 +105,41 @@ export const notesStorage = {
    */
   async getNotebookPath(noteId: string): Promise<string> {
     return await invoke<string>("get_note_notebook_path", { noteId });
+  },
+
+  /**
+   * Retrieves lightweight trashed note items (Phase 8, Task 10).
+   */
+  async listTrashed(): Promise<TrashedNoteItem[]> {
+    return await invoke<TrashedNoteItem[]>("list_trashed_notes");
+  },
+
+  /**
+   * Soft-deletes a note by ID (Phase 8, Task 5 & 9).
+   */
+  async softDelete(id: string): Promise<Note> {
+    return await invoke<Note>("soft_delete_note", { id });
+  },
+
+  /**
+   * Restores a note by ID from Trash (Phase 8, Task 6 & 9).
+   */
+  async restoreNote(id: string): Promise<Note> {
+    return await invoke<Note>("restore_note", { id });
+  },
+
+  /**
+   * Permanently deletes a note by ID from Trash (Phase 8, Task 7 & 9).
+   */
+  async permanentlyDelete(id: string): Promise<PermanentDeleteResult> {
+    return await invoke<PermanentDeleteResult>("permanently_delete_note", { id });
+  },
+
+  /**
+   * Empties the entire Trash (Phase 8, Task 8 & 9).
+   */
+  async emptyTrash(): Promise<EmptyTrashResult> {
+    return await invoke<EmptyTrashResult>("empty_trash");
   },
 };
 

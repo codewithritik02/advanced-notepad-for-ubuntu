@@ -39,6 +39,11 @@ import {
   scopeSearchResults,
   SearchErrorBoundary,
 } from "../features/search";
+import {
+  PermanentDeleteDialog,
+  PermanentDeleteTarget,
+} from "../features/notes/components/PermanentDeleteDialog";
+import { EmptyTrashDialog } from "../features/notes/components/EmptyTrashDialog";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -75,6 +80,19 @@ export function App() {
   const [tagCounts, setTagCounts] = useState<Record<string, number>>({});
   const [noteTagsMap, setNoteTagsMap] = useState<Record<string, string[]>>({});
   const [isManageTagsOpen, setIsManageTagsOpen] = useState(false);
+  const [restoreFeedback, setRestoreFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (restoreFeedback) {
+      const timer = setTimeout(() => {
+        setRestoreFeedback(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [restoreFeedback]);
 
   // Real SQLite tags managed through dedicated feature hook
   const {
@@ -138,6 +156,7 @@ export function App() {
     selectUnfiled,
     selectFavorites,
     selectTag,
+    selectTrash,
     expandedNotebookIds,
     toggleExpand: toggleExpandNotebook,
     expandNotebook,
@@ -159,12 +178,34 @@ export function App() {
   // Move Note Modal State (Task 16)
   const [movingNote, setMovingNote] = useState<Note | null>(null);
 
+  // Permanent Delete Modal State (Phase 8, Task 16)
+  const [permanentDeleteTarget, setPermanentDeleteTarget] =
+    useState<PermanentDeleteTarget | null>(null);
+
+  // Empty Trash Modal State (Phase 8, Task 17)
+  const [isEmptyTrashOpen, setIsEmptyTrashOpen] = useState(false);
+  const [trashFeedback, setTrashFeedback] = useState<{
+    type: "success" | "error" | "warning";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (trashFeedback) {
+      const timer = setTimeout(() => {
+        setTrashFeedback(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [trashFeedback]);
+
   const deletingNotebookHasChildren = useMemo(() => {
     if (!deletingNotebook) return false;
     return notebooks.some((nb) => nb.parent_id === deletingNotebook.id);
   }, [deletingNotebook, notebooks]);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const activeLoadRequestIdRef = useRef<number>(0);
+  const inFlightMutationsRef = useRef<Set<string>>(new Set());
 
   // Check and verify storage readiness at startup
   const initStorage = useCallback(async () => {
@@ -214,6 +255,14 @@ export function App() {
       counts["favorites"] = favCount;
       counts["unfiled"] = unfiledCount;
       counts["all-notes"] = allCount;
+
+      try {
+        const trashed = await storageService.notes.listTrashed();
+        counts["trash"] = trashed.length;
+      } catch {
+        counts["trash"] = 0;
+      }
+
       setNoteCounts(counts);
 
       const countsByTag = await storageService.tags.getTagNoteCounts();
@@ -260,6 +309,7 @@ export function App() {
       overrideTagId?: string | null
     ) => {
       if (!isStorageReady) return;
+      const requestId = ++activeLoadRequestIdRef.current;
       setStatus("loading");
       try {
         const effectiveNav = overrideNavId !== undefined ? overrideNavId : activeNavId;
@@ -272,26 +322,42 @@ export function App() {
 
         if (effectiveNav === "tags" && effectiveTag) {
           fetchedNotes = await storageService.tags.getNotesForTag(effectiveTag);
+        } else if (effectiveNav === "trash") {
+          const trashed = await storageService.notes.listTrashed();
+          fetchedNotes = trashed.map((t) => ({
+            id: t.id,
+            title: t.title,
+            content: t.preview,
+            format: "txt",
+            notebook_id: t.notebookId,
+            created_at: t.createdAt,
+            modified_at: t.modifiedAt,
+            is_favorite: t.isFavorite,
+            is_pinned: false,
+            is_deleted: true,
+            deleted_at: t.deletedAt,
+            attachment_count: t.attachmentCount,
+          }));
+        } else if (effectiveNav === "favorites") {
+          fetchedNotes = await storageService.notes.listFavorites();
         } else {
           let options: {
             includeDeleted?: boolean;
             notebookId?: string | null;
             unfiledOnly?: boolean;
-            favoritesOnly?: boolean;
           } = {};
 
-          if (effectiveNav === "trash") {
-            options = { includeDeleted: true };
-          } else if (effectiveNav === "unfiled") {
+          if (effectiveNav === "unfiled") {
             options = { unfiledOnly: true };
-          } else if (effectiveNav === "favorites") {
-            options = { favoritesOnly: true };
           } else if (effectiveNav === "notebook" && effectiveNotebook) {
             options = { notebookId: effectiveNotebook };
           }
 
           fetchedNotes = await storageService.notes.list(options);
         }
+
+        // Stale response protection (Task 21: Discard response if newer load started or user navigated away)
+        if (activeLoadRequestIdRef.current !== requestId) return;
 
         setNotes(fetchedNotes);
 
@@ -304,6 +370,7 @@ export function App() {
         }
         setStatus(fetchedNotes.length === 0 ? "empty" : "idle");
       } catch (err) {
+        if (activeLoadRequestIdRef.current !== requestId) return;
         setErrorMessage(
           "Unable to load notes: " +
             (err instanceof Error ? err.message : String(err))
@@ -332,6 +399,7 @@ export function App() {
       // If user was viewing trash or has an active search filter, reset to all-notes to reveal the new note
       if (activeNavId === "trash") {
         setActiveNavId("all-notes");
+        selectAllNotes();
       }
       if (searchQuery) {
         clearSearch();
@@ -384,7 +452,15 @@ export function App() {
   // Persistent note update
   const handleSaveNote = useCallback(
     async (id: string, title: string, content: string, format?: NoteFormat) => {
+      // Do not allow ordinary active-note editing controls to silently mutate trashed notes (Task 12, Task 19)
+      if (activeNavId === "trash") {
+        return;
+      }
       try {
+        const existing = await storageService.notes.get(id);
+        if (existing?.is_deleted) {
+          return;
+        }
         const updated = await storageService.notes.update(id, {
           title,
           content,
@@ -398,7 +474,203 @@ export function App() {
         );
       }
     },
-    []
+    [activeNavId]
+  );
+
+  const handleRestoreNote = useCallback(
+    async (noteId: string) => {
+      if (inFlightMutationsRef.current.has(noteId)) return;
+      inFlightMutationsRef.current.add(noteId);
+      try {
+        const restoredNote = await storageService.notes.restoreNote(noteId);
+        if (selectedNoteId === noteId) {
+          setSelectedNoteId(null);
+        }
+        await loadNotes("trash", null, null);
+        await refreshNoteCounts();
+        setRestoreFeedback({
+          type: "success",
+          message: `Restored "${restoredNote.title?.trim() || "Untitled Note"}"`,
+        });
+      } catch (err) {
+        await loadNotes("trash", null, null);
+        await refreshNoteCounts();
+        const msg =
+          "Failed to restore note: " +
+          (err instanceof Error ? err.message : String(err));
+        setErrorMessage(msg);
+        setRestoreFeedback({
+          type: "error",
+          message: msg,
+        });
+      } finally {
+        inFlightMutationsRef.current.delete(noteId);
+      }
+    },
+    [selectedNoteId, loadNotes, refreshNoteCounts]
+  );
+
+  const handlePermanentlyDeleteNote = useCallback(
+    (noteId: string) => {
+      const note = notes.find((n) => n.id === noteId);
+      const title = note?.title || "Untitled Note";
+      setPermanentDeleteTarget({ id: noteId, title });
+    },
+    [notes]
+  );
+
+  const handleConfirmPermanentDelete = useCallback(
+    async (noteId: string) => {
+      if (inFlightMutationsRef.current.has(noteId)) return;
+      inFlightMutationsRef.current.add(noteId);
+      try {
+        // If the selected note is no longer in Trash, reject the operation and refresh the UI
+        const trashedNotes = await storageService.notes.listTrashed();
+        const isStillInTrash = trashedNotes.some((n) => n.id === noteId);
+        if (!isStillInTrash) {
+          await loadNotes("trash", null, null);
+          await refreshNoteCounts();
+          throw new Error("This note is no longer in the Trash.");
+        }
+
+        const result = await storageService.notes.permanentlyDelete(noteId);
+        if (selectedNoteId === noteId) {
+          setSelectedNoteId(null);
+        }
+        await loadNotes("trash", null, null);
+        await refreshNoteCounts();
+        if (result.attachmentCleanupFailed) {
+          logger.warn(
+            "Note permanently deleted but some attachments could not be cleaned up",
+            { error: result.errorMessage ?? "Unknown cleanup error" }
+          );
+        }
+      } catch (err) {
+        const msg =
+          "Failed to permanently delete note: " +
+          (err instanceof Error ? err.message : String(err));
+        setErrorMessage(msg);
+        throw err;
+      } finally {
+        inFlightMutationsRef.current.delete(noteId);
+      }
+    },
+    [loadNotes, refreshNoteCounts]
+  );
+
+  const handleOpenEmptyTrash = useCallback(() => {
+    setIsEmptyTrashOpen(true);
+  }, []);
+
+  const handleConfirmEmptyTrash = useCallback(async () => {
+    try {
+      const result = await storageService.notes.emptyTrash();
+
+      if (activeNavId === "trash") {
+        setSelectedNoteId(null);
+      }
+
+      await loadNotes("trash", null, null);
+      await refreshNoteCounts();
+
+      if (result.failedCount === 0 && result.attachmentCleanupFailures.length === 0) {
+        if (result.deletedCount === 0) {
+          setTrashFeedback({
+            type: "success",
+            message: "Trash is already empty.",
+          });
+        } else {
+          setTrashFeedback({
+            type: "success",
+            message: `Emptied Trash: ${result.deletedCount} ${
+              result.deletedCount === 1 ? "note" : "notes"
+            } permanently deleted.`,
+          });
+        }
+      } else if (result.failedCount > 0 && result.deletedCount > 0) {
+        setTrashFeedback({
+          type: "warning",
+          message: `${result.deletedCount} notes deleted, but ${result.failedCount} notes could not be deleted.`,
+        });
+      } else if (result.failedCount > 0 && result.deletedCount === 0) {
+        const errorDetail = result.errors.length > 0 ? `: ${result.errors[0]}` : "";
+        setTrashFeedback({
+          type: "error",
+          message: `Failed to empty trash${errorDetail}`,
+        });
+      } else if (result.attachmentCleanupFailures.length > 0) {
+        setTrashFeedback({
+          type: "warning",
+          message: `${result.deletedCount} notes deleted, but some attachments could not be cleaned up.`,
+        });
+        logger.warn("Empty trash completed with attachment cleanup issues", {
+          failures: result.attachmentCleanupFailures,
+          errors: result.errors,
+        });
+      }
+    } catch (err) {
+      const msg =
+        "Failed to empty trash: " +
+        (err instanceof Error ? err.message : String(err));
+      setErrorMessage(msg);
+      setTrashFeedback({
+        type: "error",
+        message: msg,
+      });
+      throw err;
+    }
+  }, [activeNavId, loadNotes, refreshNoteCounts]);
+
+  const handleDeleteNote = useCallback(
+    async (noteId?: string) => {
+      // 1. Capture the intended note ID
+      const targetId = noteId || selectedNoteId;
+      if (!targetId) return;
+
+      // Ensure activeNavId is not trash (Trash uses permanent delete)
+      if (activeNavId === "trash") return;
+
+      if (inFlightMutationsRef.current.has(targetId)) return;
+      inFlightMutationsRef.current.add(targetId);
+
+      // 2. Ensure pending edits are saved or flushed according to existing autosave contract
+      if (editorSaveRef.current && selectedNoteId === targetId) {
+        try {
+          await editorSaveRef.current();
+        } catch {
+          // Continue with deletion even if autosave encounters an issue
+        }
+      }
+
+      if (selectedNoteId === targetId) {
+        editorSaveRef.current = null;
+      }
+
+      try {
+        // 3. Move the note to Trash via the soft-delete service
+        await storageService.notes.softDelete(targetId);
+
+        // 4. Remove it from the active note list
+        setNotes((prev) => prev.filter((n) => n.id !== targetId));
+
+        // 5. Update navigation and any Trash count
+        await refreshNoteCounts();
+
+        // 6. Clear or change the current selection safely
+        if (selectedNoteId === targetId) {
+          setSelectedNoteId(null);
+        }
+      } catch (err) {
+        // If deletion fails, do not remove note from UI as though it were successfully deleted
+        setErrorMessage(
+          "Failed to delete note: " +
+            (err instanceof Error ? err.message : String(err))
+        );
+      } finally {
+        inFlightMutationsRef.current.delete(targetId);
+      }
+    },
+    [selectedNoteId, activeNavId, refreshNoteCounts]
   );
 
   const handleFocusSearch = useCallback(async () => {
@@ -438,6 +710,11 @@ export function App() {
     onEscape: handleEscape,
     onSaveNote: () => {
       editorSaveRef.current?.();
+    },
+    onDeleteNote: () => {
+      if (selectedNoteId && activeNavId !== "trash") {
+        handleDeleteNote(selectedNoteId);
+      }
     },
   });
 
@@ -607,6 +884,23 @@ export function App() {
         }
       }
 
+      let deletedAtDisplay: string | undefined = undefined;
+      if (n.deleted_at) {
+        try {
+          const dDate = new Date(n.deleted_at);
+          if (!isNaN(dDate.getTime())) {
+            deletedAtDisplay = dDate.toLocaleDateString(undefined, {
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+          }
+        } catch {
+          // Graceful fallback
+        }
+      }
+
       const notebookPath = n.notebook_id
         ? computeNotebookPath(n.notebook_id, notebooks)
         : undefined;
@@ -620,6 +914,9 @@ export function App() {
         notebookId: n.notebook_id ?? undefined,
         notebookPath: notebookPath && notebookPath !== "Unfiled" ? notebookPath : undefined,
         tags: noteTagsMap[n.id] ?? [],
+        attachmentCount: (n as any).attachment_count,
+        isDeleted: n.is_deleted,
+        deletedAt: deletedAtDisplay ?? n.deleted_at ?? undefined,
       };
     });
   }, [filteredNotes, noteTagsMap, notebooks]);
@@ -916,6 +1213,7 @@ export function App() {
                   await loadNotes("tags", null, null);
                 }
               } else if (navId === "trash") {
+                selectTrash();
                 await loadNotes("trash", null, null);
               }
             }}
@@ -966,7 +1264,13 @@ export function App() {
               onSelectNote={handleKeyboardSelectNote}
 
               status={displayedStatus}
-              errorTitle={isSearchActive ? "Search failed" : undefined}
+              errorTitle={
+                isSearchActive
+                  ? "Search failed"
+                  : activeNavId === "trash"
+                  ? "Failed to load trash"
+                  : undefined
+              }
               errorMessage={
                 isSearchActive && searchState.status === "error"
                   ? searchState.message
@@ -981,6 +1285,8 @@ export function App() {
                       : activeNavId === "notebook"
                       ? "No notes found in this notebook"
                       : "No notes found")
+                  : activeNavId === "trash"
+                  ? "Trash is empty."
                   : emptyState.title
               }
               emptyDescription={
@@ -992,16 +1298,23 @@ export function App() {
                       : activeNavId === "notebook" && selectedNotebook
                       ? `No notes in "${selectedNotebook.name}" match "${searchQuery}".`
                       : `No notes match "${searchQuery}".`)
+                  : activeNavId === "trash"
+                  ? "Deleted notes will appear here."
                   : emptyState.description
               }
               mode={isSearchActive ? "search" : "normal"}
+              isTrash={activeNavId === "trash"}
               searchQuery={searchQuery}
               resultCountLabel={
                 isSearchActive ? formatResultCount(scopedSearchResults.length) : undefined
               }
               onRetry={isSearchActive ? () => searchNow() : handleRetry}
-              onNewNote={isSearchActive ? undefined : handleNewNoteAction}
+              onNewNote={isSearchActive || activeNavId === "trash" ? undefined : handleNewNoteAction}
               onToggleFavorite={handleToggleNoteFavorite}
+              onDeleteNote={activeNavId === "trash" ? undefined : handleDeleteNote}
+              onRestoreNote={handleRestoreNote}
+              onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
+              onEmptyTrash={handleOpenEmptyTrash}
             />
           </SearchErrorBoundary>
         }
@@ -1010,6 +1323,10 @@ export function App() {
             noteId={selectedNoteId}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
+            isTrash={activeNavId === "trash"}
+            onDeleteNote={activeNavId === "trash" ? undefined : handleDeleteNote}
+            onRestoreNote={handleRestoreNote}
+            onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
             notebookName={selectedNoteNotebookName}
             notebookPath={selectedNoteNotebookPath}
             onMoveNote={setMovingNote}
@@ -1112,6 +1429,66 @@ export function App() {
           setDeletingTag(tag);
         }}
       />
+
+      <PermanentDeleteDialog
+        isOpen={permanentDeleteTarget !== null}
+        note={permanentDeleteTarget}
+        onClose={() => setPermanentDeleteTarget(null)}
+        onConfirm={handleConfirmPermanentDelete}
+      />
+
+      <EmptyTrashDialog
+        isOpen={isEmptyTrashOpen}
+        noteCount={notes.length}
+        onClose={() => setIsEmptyTrashOpen(false)}
+        onConfirm={handleConfirmEmptyTrash}
+      />
+
+      {restoreFeedback && (
+        <div
+          className={`restore-feedback-toast restore-feedback-toast--${restoreFeedback.type}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="restore-feedback-icon" aria-hidden="true">
+            {restoreFeedback.type === "success" ? "✓" : "⚠"}
+          </span>
+          <span className="restore-feedback-message">{restoreFeedback.message}</span>
+          <button
+            type="button"
+            className="restore-feedback-close"
+            onClick={() => setRestoreFeedback(null)}
+            aria-label="Dismiss notification"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {trashFeedback && (
+        <div
+          className={`trash-feedback-toast trash-feedback-toast--${trashFeedback.type}`}
+          role="status"
+          aria-live="polite"
+        >
+          <span className="trash-feedback-icon" aria-hidden="true">
+            {trashFeedback.type === "success"
+              ? "✓"
+              : trashFeedback.type === "warning"
+              ? "⚠"
+              : "✕"}
+          </span>
+          <span className="trash-feedback-message">{trashFeedback.message}</span>
+          <button
+            type="button"
+            className="trash-feedback-close"
+            onClick={() => setTrashFeedback(null)}
+            aria-label="Dismiss notification"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </>
   );
 }

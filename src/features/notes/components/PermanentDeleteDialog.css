@@ -1,0 +1,36 @@
+/* Personal Notepad — Permanent Delete Dialog Styling */
+
+.permanent-delete-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--spacing-sm, 8px);
+}
+
+.permanent-delete-warning {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm, 8px);
+  color: var(--color-text-secondary, #cccccc);
+  font-size: var(--font-size-sm, 13px);
+  line-height: var(--line-height-normal, 1.5);
+}
+
+.permanent-delete-warning strong {
+  color: var(--color-text-primary, #ffffff);
+}
+
+.permanent-delete-consequence {
+  padding: var(--spacing-sm, 8px);
+  border-radius: var(--radius-sm, 4px);
+  background-color: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--color-text-danger, #ef4444);
+  font-size: var(--font-size-xs, 12px);
+}
+
+.permanent-delete-dialog-error {
+  color: var(--color-text-danger, #ef4444);
+  font-size: var(--font-size-xs, 12px);
+  margin-top: -2px;
+}

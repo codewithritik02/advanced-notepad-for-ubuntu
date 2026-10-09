@@ -218,3 +218,33 @@
   background-color: var(--color-surface-selected);
 }
 
+/* Trash Navigation Item Styling (Phase 8, Task 11) */
+.sidebar-nav-item--trash:hover {
+  color: var(--color-danger-hover, #dc2626);
+}
+
+.sidebar-nav-item--trash:hover .nav-item-icon {
+  color: var(--color-danger-hover, #dc2626);
+}
+
+.sidebar-nav-item--trash.is-active {
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.12));
+  color: var(--color-danger-default, #ef4444);
+  font-weight: var(--font-weight-medium);
+}
+
+.sidebar-nav-item--trash.is-active .nav-item-icon {
+  opacity: 1;
+  color: var(--color-danger-default, #ef4444);
+}
+
+.nav-item-count--trash {
+  color: var(--color-danger-default, #ef4444);
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.12));
+}
+
+.sidebar-nav-item--trash.is-active .nav-item-count--trash {
+  color: var(--color-danger-default, #ef4444);
+  background-color: rgba(239, 68, 68, 0.22);
+}
+

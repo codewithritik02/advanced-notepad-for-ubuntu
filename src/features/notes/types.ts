@@ -56,6 +56,8 @@ export interface NoteListItem {
   notebookPath?: string;
   tags?: string[];
   attachmentCount?: number;
+  isDeleted?: boolean;
+  deletedAt?: string | null;
 }
 
 export type NotesListStatus = "idle" | "loading" | "error" | "empty";

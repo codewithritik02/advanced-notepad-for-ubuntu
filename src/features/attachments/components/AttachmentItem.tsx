@@ -8,6 +8,7 @@ export interface AttachmentItemProps {
   onOpen: (id: string) => Promise<unknown> | unknown;
   onRemove: (id: string) => Promise<unknown> | unknown;
   isBusy?: boolean;
+  isReadOnly?: boolean;
 }
 
 export const AttachmentItem: React.FC<AttachmentItemProps> = ({
@@ -15,6 +16,7 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
   onOpen,
   onRemove,
   isBusy = false,
+  isReadOnly = false,
 }) => {
   const category = getFileCategory(attachment.file_name, attachment.mime_type);
   const sizeFormatted = formatFileSize(attachment.file_size);
@@ -55,7 +57,7 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
       </div>
 
       <div className="attachment-item-actions">
-        {isConfirming ? (
+        {isConfirming && !isReadOnly ? (
           <div className="attachment-confirm-actions">
             <button
               type="button"
@@ -92,17 +94,19 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
               <span className="action-text">Open</span>
             </button>
 
-            <button
-              type="button"
-              className="attachment-action-btn btn-remove"
-              title={`Remove ${attachment.file_name}`}
-              aria-label={`Remove ${attachment.file_name}`}
-              disabled={isBusy}
-              onClick={() => setIsConfirming(true)}
-            >
-              <TrashIcon size={13} />
-              <span className="action-text">Remove</span>
-            </button>
+            {!isReadOnly && (
+              <button
+                type="button"
+                className="attachment-action-btn btn-remove"
+                title={`Remove ${attachment.file_name}`}
+                aria-label={`Remove ${attachment.file_name}`}
+                disabled={isBusy}
+                onClick={() => setIsConfirming(true)}
+              >
+                <TrashIcon size={13} />
+                <span className="action-text">Remove</span>
+              </button>
+            )}
           </>
         )}
       </div>

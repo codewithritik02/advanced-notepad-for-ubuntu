@@ -19,6 +19,10 @@ export interface NoteEditorProps {
   onAddTag?: (tagId: string) => Promise<void>;
   onRemoveTag?: (tagId: string) => Promise<void>;
   onCreateTag?: (name: string) => Promise<Tag | null>;
+  isTrash?: boolean;
+  onDeleteNote?: (noteId: string) => Promise<void> | void;
+  onRestoreNote?: (noteId: string) => void;
+  onPermanentlyDeleteNote?: (noteId: string) => void;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -113,6 +117,22 @@ const StarIcon = ({ filled }: { filled: boolean }) => (
   </svg>
 );
 
+const TrashIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  </svg>
+);
+
 interface NoteSessionViewState {
   cursorStart: number;
   cursorEnd: number;
@@ -154,8 +174,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onAddTag,
   onRemoveTag,
   onCreateTag,
+  isTrash = false,
+  onDeleteNote,
+  onRestoreNote,
+  onPermanentlyDeleteNote,
 }) => {
   const [loadedNote, setLoadedNote] = useState<Note | null>(null);
+  const isReadOnly = isTrash || !!loadedNote?.is_deleted;
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
   const [isMetadataOpen, setIsMetadataOpen] = useState(false);
   const [loadErrorState, setLoadErrorState] = useState<{
@@ -424,7 +449,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   // Core persistence worker function
   const executeSave = useCallback(
     async (targetNoteId: string, rev: number) => {
-      if (isSavingRef.current) return;
+      if (isSavingRef.current || isReadOnly) return;
       isSavingRef.current = true;
       setIsSaving(true);
       setEditorStatus("saving");
@@ -535,6 +560,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isReadOnly) return;
     const newTitle = e.target.value;
     latestDataRef.current.title = newTitle;
     isDirtyRef.current = true;
@@ -544,6 +570,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleContentChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    if (isReadOnly) return;
     const newContent = e.target.value;
     latestDataRef.current.content = newContent;
     isDirtyRef.current = true;
@@ -577,9 +604,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     // Explicit Save shortcut (Ctrl/Cmd + S)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      handleSave();
+      if (!isReadOnly) {
+        handleSave();
+      }
       return;
     }
+
+    if (isReadOnly) return;
 
     // Tab key inserts 2 spaces instead of moving focus away from the editor
     if (e.key === "Tab") {
@@ -602,9 +633,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     // Explicit Save shortcut (Ctrl/Cmd + S)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
-      handleSave();
+      if (!isReadOnly) {
+        handleSave();
+      }
       return;
     }
+
+    if (isReadOnly) return;
 
     if (e.key === "Enter") {
       e.preventDefault();
@@ -619,6 +654,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleToggleFormat = () => {
+    if (isReadOnly) return;
     const nextFormat: NoteFormat = format === "txt" ? "md" : "txt";
     setFormat(nextFormat);
     updateDirtyState(title, content, nextFormat);
@@ -626,7 +662,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleToggleFavorite = useCallback(async () => {
-    if (!noteId || !loadedNote) return;
+    if (!noteId || !loadedNote || isReadOnly) return;
     const currentFav = loadedNote.is_favorite;
     const nextFav = !currentFav;
     setLoadedNote((prev) => (prev ? { ...prev, is_favorite: nextFav } : null));
@@ -639,10 +675,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     } catch {
       setLoadedNote((prev) => (prev ? { ...prev, is_favorite: currentFav } : null));
     }
-  }, [noteId, loadedNote, onNoteUpdated]);
+  }, [noteId, loadedNote, onNoteUpdated, isReadOnly]);
 
   const handleSave = useCallback(async () => {
-    if (!noteId) return;
+    if (!noteId || isReadOnly) return;
 
     // Task 54: If an autosave is currently in-flight, await its completion first
     if (inFlightSavePromiseRef.current) {
@@ -671,12 +707,24 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   useEffect(() => {
     if (onRegisterSave) {
-      onRegisterSave(handleSave);
+      if (isReadOnly) {
+        onRegisterSave(null);
+      } else {
+        onRegisterSave(handleSave);
+      }
       return () => {
         onRegisterSave(null);
       };
     }
-  }, [onRegisterSave, handleSave]);
+  }, [onRegisterSave, handleSave, isReadOnly]);
+
+  const handleDelete = useCallback(async () => {
+    if (isReadOnly || !loadedNote || !onDeleteNote) return;
+    if (isDirtyRef.current) {
+      await handleSave();
+    }
+    await onDeleteNote(loadedNote.id);
+  }, [isReadOnly, loadedNote, onDeleteNote, handleSave]);
 
   // 1. Empty State
   if (!noteId) {
@@ -760,7 +808,56 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [loadedNote?.created_at]);
 
   return (
-    <div className="editor-container">
+    <div className={`editor-container ${isReadOnly ? "is-read-only" : ""}`}>
+      {/* Trashed Note Notification Banner (Phase 8, Task 13) */}
+      {isReadOnly && loadedNote && (
+        <div className="trashed-note-banner" role="status" aria-live="polite">
+          <div className="trashed-note-banner-info">
+            <span className="trashed-note-banner-icon" aria-hidden="true">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+              </svg>
+            </span>
+            <div className="trashed-note-banner-text">
+              <strong>This note is in Trash.</strong>
+              <span>It is read-only. Restore this note to make changes.</span>
+            </div>
+          </div>
+          <div className="trashed-note-banner-actions">
+            {onRestoreNote && (
+              <button
+                type="button"
+                className="btn-trash-banner btn-trash-banner--restore"
+                onClick={() => onRestoreNote(loadedNote.id)}
+                aria-label={`Restore "${loadedNote.title || 'Untitled Note'}"`}
+              >
+                Restore Note
+              </button>
+            )}
+            {onPermanentlyDeleteNote && (
+              <button
+                type="button"
+                className="btn-trash-banner btn-trash-banner--delete"
+                onClick={() => onPermanentlyDeleteNote(loadedNote.id)}
+                aria-label={`Permanently delete "${loadedNote.title || 'Untitled Note'}"`}
+              >
+                Delete Permanently
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Editor Toolbar */}
       <div className="editor-toolbar" role="toolbar" aria-label="Formatting toolbar">
         <div className="toolbar-group">
@@ -771,6 +868,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             aria-label="Undo"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => document.execCommand("undo")}
+            disabled={isReadOnly}
           >
             <UndoIcon />
           </button>
@@ -781,6 +879,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             aria-label="Redo"
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => document.execCommand("redo")}
+            disabled={isReadOnly}
           >
             <RedoIcon />
           </button>
@@ -813,7 +912,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
         <div className="toolbar-spacer" />
 
-        {onMoveNote && loadedNote && (
+        {!isReadOnly && onMoveNote && loadedNote && (
           <button
             type="button"
             className="toolbar-notebook-badge"
@@ -825,7 +924,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
-        {loadedNote && (
+        {!isReadOnly && loadedNote && (
           <button
             type="button"
             className={`toolbar-btn-favorite ${loadedNote.is_favorite ? "is-favorite" : ""}`}
@@ -839,24 +938,40 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
-        <button
-          type="button"
-          className="toolbar-btn-save"
-          title="Save Note"
-          disabled={isSaving || (!isDirty && editorStatus !== "error")}
-          onClick={handleSave}
-        >
-          <SaveIcon />
-          <span>
-            {isSaving
-              ? "Saving..."
-              : editorStatus === "error"
-              ? "Retry Save"
-              : isDirty
-              ? "Save"
-              : "Saved"}
-          </span>
-        </button>
+        {!isReadOnly && loadedNote && onDeleteNote && (
+          <button
+            type="button"
+            className="toolbar-btn toolbar-btn-delete"
+            title="Delete note (Move to Trash)"
+            aria-label={`Delete "${loadedNote.title || 'Untitled Note'}"`}
+            onClick={handleDelete}
+          >
+            <TrashIcon />
+          </button>
+        )}
+
+        {isReadOnly ? (
+          <span className="trashed-pill">Trash (Read-Only)</span>
+        ) : (
+          <button
+            type="button"
+            className="toolbar-btn-save"
+            title="Save Note"
+            disabled={isSaving || (!isDirty && editorStatus !== "error")}
+            onClick={handleSave}
+          >
+            <SaveIcon />
+            <span>
+              {isSaving
+                ? "Saving..."
+                : editorStatus === "error"
+                ? "Retry Save"
+                : isDirty
+                ? "Save"
+                : "Saved"}
+            </span>
+          </button>
+        )}
 
         {loadedNote && (
           <button
@@ -909,8 +1024,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               ref={titleInputRef}
               type="text"
               className="editor-title-input selectable-text"
-              placeholder="Note title..."
+              placeholder={isReadOnly ? "Untitled Note" : "Note title..."}
               value={title}
+              readOnly={isReadOnly}
               onChange={handleTitleChange}
               onKeyDown={handleTitleKeyDown}
               aria-label="Note title"
@@ -940,7 +1056,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onAddTag={onAddTag}
             onRemoveTag={onRemoveTag}
             onCreateTag={onCreateTag}
-            disabled={!noteId}
+            disabled={!noteId || isReadOnly}
           />
 
           {/* Note Metadata Details Panel (Task 30) */}
@@ -957,12 +1073,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             characterCount={content.length}
             byteSize={new TextEncoder().encode(content).length}
             attachmentCount={attachmentCount}
-            onMoveNote={onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
-            onToggleFavorite={handleToggleFavorite}
+            onMoveNote={!isReadOnly && onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
+            onToggleFavorite={!isReadOnly ? handleToggleFavorite : undefined}
           />
 
           {/* Note File Attachments (Phase 7, Tasks 11-19) */}
-          <AttachmentList noteId={noteId} />
+          {/* <AttachmentList noteId={noteId} /> */}
+          <AttachmentList noteId={noteId} isReadOnly={isReadOnly} />
 
           <div className="editor-body-divider" />
 
@@ -971,8 +1088,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <textarea
               ref={contentRef}
               className="editor-content-area selectable-text"
-              placeholder="Start writing your note..."
+              placeholder={isReadOnly ? "No content in this note." : "Start writing your note..."}
               value={content}
+              readOnly={isReadOnly}
               onChange={handleContentChange}
               onKeyDown={handleContentKeyDown}
               onSelect={handleRecordSelection}

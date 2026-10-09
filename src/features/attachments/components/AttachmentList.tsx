@@ -208,6 +208,7 @@ export const AttachmentList: React.FC<AttachmentListProps> = ({
                   onOpen={openAttachment}
                   onRemove={removeAttachment}
                   isBusy={isBusy}
+                  isReadOnly={isReadOnly}
                 />
               ))}
             </div>

@@ -365,12 +365,31 @@ impl AttachmentStorage {
 
         let note_dir = self.paths.attachments_dir.join(trimmed);
         if note_dir.exists() && note_dir.is_dir() {
-            if let Ok(canonical) = note_dir.canonicalize() {
-                if let Ok(canonical_root) = self.paths.attachments_dir.canonicalize() {
-                    if canonical.starts_with(&canonical_root) && canonical != canonical_root {
-                        let _ = fs::remove_dir_all(&canonical);
-                    }
-                }
+            let canonical = note_dir.canonicalize().map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
+                    "Permission denied inspecting note directory: {e}"
+                )),
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to inspect note directory: {e}"
+                )),
+            })?;
+            let canonical_root = self.paths.attachments_dir.canonicalize().map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
+                    "Permission denied inspecting attachments root: {e}"
+                )),
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to inspect attachments root: {e}"
+                )),
+            })?;
+            if canonical.starts_with(&canonical_root) && canonical != canonical_root {
+                fs::remove_dir_all(&canonical).map_err(|e| match e.kind() {
+                    io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
+                        "Permission denied removing note attachment directory: {e}"
+                    )),
+                    _ => AttachmentError::FileOperationFailed(format!(
+                        "Failed to remove note attachment directory: {e}"
+                    )),
+                })?;
             }
         }
 

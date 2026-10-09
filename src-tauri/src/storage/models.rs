@@ -1,5 +1,23 @@
 use serde::{Deserialize, Serialize};
 
+/// Strongly typed lifecycle state of a note (Phase 8, Task 2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteLifecycle {
+    Active,
+    Trashed,
+}
+
+impl NoteLifecycle {
+    pub fn is_active(&self) -> bool {
+        matches!(self, NoteLifecycle::Active)
+    }
+
+    pub fn is_trashed(&self) -> bool {
+        matches!(self, NoteLifecycle::Trashed)
+    }
+}
+
 /// Persistent Note model
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
@@ -14,6 +32,17 @@ pub struct Note {
     pub is_pinned: bool,
     pub is_deleted: bool,
     pub deleted_at: Option<String>,
+}
+
+impl Note {
+    /// Returns the authoritative NoteLifecycle state derived from is_deleted
+    pub fn lifecycle(&self) -> NoteLifecycle {
+        if self.is_deleted {
+            NoteLifecycle::Trashed
+        } else {
+            NoteLifecycle::Active
+        }
+    }
 }
 
 /// DTO for creating a new note
@@ -261,6 +290,42 @@ pub struct SearchResult {
     pub favorite: bool,
 }
 
+/// Lightweight item representation for trashed notes listing (Phase 8, Task 10)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedNoteItem {
+    pub id: String,
+    pub title: String,
+    pub preview: String,
+    pub notebook_id: Option<String>,
+    pub notebook_name: Option<String>,
+    pub created_at: String,
+    pub modified_at: String,
+    pub deleted_at: Option<String>,
+    pub is_favorite: bool,
+    pub attachment_count: usize,
+}
+
+/// Typed report of a single permanent deletion operation (Phase 8, Task 7)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermanentDeleteResult {
+    pub note_id: String,
+    pub success: bool,
+    pub attachment_cleanup_failed: bool,
+    pub error_message: Option<String>,
+}
+
+/// Typed summary of an empty-trash batch operation (Phase 8, Task 8)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyTrashResult {
+    pub deleted_count: usize,
+    pub failed_count: usize,
+    pub attachment_cleanup_failures: Vec<String>,
+    pub errors: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +377,94 @@ mod tests {
         assert_eq!(dto.id, "att-123");
         assert_eq!(dto.file_name, "Project Document.pdf");
         assert_eq!(dto.file_size, 1048576);
+    }
+
+    #[test]
+    fn test_note_lifecycle_and_trash_domain_models() {
+        let active_note = Note {
+            id: "n-1".to_string(),
+            title: "Active Note".to_string(),
+            content: "Hello world".to_string(),
+            format: "txt".to_string(),
+            notebook_id: None,
+            created_at: "2026-10-08T12:00:00Z".to_string(),
+            modified_at: "2026-10-08T12:00:00Z".to_string(),
+            is_favorite: false,
+            is_pinned: false,
+            is_deleted: false,
+            deleted_at: None,
+        };
+
+        assert_eq!(active_note.lifecycle(), NoteLifecycle::Active);
+        assert!(active_note.lifecycle().is_active());
+        assert!(!active_note.lifecycle().is_trashed());
+
+        let trashed_note = Note {
+            id: "n-2".to_string(),
+            title: "Deleted Note".to_string(),
+            content: "Old content".to_string(),
+            format: "md".to_string(),
+            notebook_id: Some("nb-1".to_string()),
+            created_at: "2026-10-08T12:00:00Z".to_string(),
+            modified_at: "2026-10-08T12:30:00Z".to_string(),
+            is_favorite: true,
+            is_pinned: false,
+            is_deleted: true,
+            deleted_at: Some("2026-10-08T12:30:00Z".to_string()),
+        };
+
+        assert_eq!(trashed_note.lifecycle(), NoteLifecycle::Trashed);
+        assert!(trashed_note.lifecycle().is_trashed());
+        assert!(!trashed_note.lifecycle().is_active());
+
+        // Test serde serialization of NoteLifecycle
+        let json_active = serde_json::to_string(&NoteLifecycle::Active).unwrap();
+        assert_eq!(json_active, "\"active\"");
+        let json_trashed = serde_json::to_string(&NoteLifecycle::Trashed).unwrap();
+        assert_eq!(json_trashed, "\"trashed\"");
+
+        let de_active: NoteLifecycle = serde_json::from_str("\"active\"").unwrap();
+        assert_eq!(de_active, NoteLifecycle::Active);
+        let de_trashed: NoteLifecycle = serde_json::from_str("\"trashed\"").unwrap();
+        assert_eq!(de_trashed, NoteLifecycle::Trashed);
+
+        // Test TrashedNoteItem serialization
+        let item = TrashedNoteItem {
+            id: "n-2".to_string(),
+            title: "Deleted Note".to_string(),
+            preview: "Old content".to_string(),
+            notebook_id: Some("nb-1".to_string()),
+            notebook_name: Some("Work".to_string()),
+            created_at: "2026-10-08T12:00:00Z".to_string(),
+            modified_at: "2026-10-08T12:30:00Z".to_string(),
+            deleted_at: Some("2026-10-08T12:30:00Z".to_string()),
+            is_favorite: true,
+            attachment_count: 2,
+        };
+        let item_json = serde_json::to_string(&item).unwrap();
+        assert!(item_json.contains("\"attachmentCount\":2"));
+        assert!(item_json.contains("\"deletedAt\":\"2026-10-08T12:30:00Z\""));
+
+        // Test PermanentDeleteResult serialization
+        let perm_res = PermanentDeleteResult {
+            note_id: "n-2".to_string(),
+            success: true,
+            attachment_cleanup_failed: false,
+            error_message: None,
+        };
+        let perm_json = serde_json::to_string(&perm_res).unwrap();
+        assert!(perm_json.contains("\"attachmentCleanupFailed\":false"));
+
+        // Test EmptyTrashResult serialization
+        let empty_res = EmptyTrashResult {
+            deleted_count: 5,
+            failed_count: 1,
+            attachment_cleanup_failures: vec!["file-err-1".to_string()],
+            errors: vec!["IO error".to_string()],
+        };
+        let empty_json = serde_json::to_string(&empty_res).unwrap();
+        assert!(empty_json.contains("\"deletedCount\":5"));
+        assert!(empty_json.contains("\"failedCount\":1"));
     }
 }
 

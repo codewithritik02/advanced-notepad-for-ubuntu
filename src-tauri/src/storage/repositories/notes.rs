@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection, Row};
 use crate::storage::errors::StorageError;
-use crate::storage::models::{CreateNoteDto, Note, UpdateNoteDto};
+use crate::storage::models::{CreateNoteDto, Note, TrashedNoteItem, UpdateNoteDto};
 
 pub struct NoteRepository;
 
@@ -142,6 +142,135 @@ impl NoteRepository {
         }
     }
 
+    /// Retrieves a single active (non-deleted) note by ID (Phase 8, Task 4).
+    pub fn get_active_by_id(conn: &Connection, id: &str) -> Result<Option<Note>, StorageError> {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
+                    is_favorite, is_pinned, is_deleted, deleted_at
+             FROM notes
+             WHERE id = ?1 AND is_deleted = 0",
+        )?;
+
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::map_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Retrieves a single trashed note by ID (Phase 8, Task 4).
+    pub fn get_trashed_by_id(conn: &Connection, id: &str) -> Result<Option<Note>, StorageError> {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
+                    is_favorite, is_pinned, is_deleted, deleted_at
+             FROM notes
+             WHERE id = ?1 AND is_deleted = 1",
+        )?;
+
+        let mut rows = stmt.query(params![id])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(Self::map_row(row)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Lists only active (non-deleted) notes ordered by is_pinned DESC, modified_at DESC (Phase 8, Task 4).
+    pub fn list_active(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered(conn, false, None, false)
+    }
+
+    /// Lists only notes currently in Trash, ordered by deleted_at DESC, id ASC (Phase 8, Task 4 & 10).
+    pub fn list_trashed(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content, format, notebook_id, created_at, modified_at,
+                    is_favorite, is_pinned, is_deleted, deleted_at
+             FROM notes
+             WHERE is_deleted = 1
+             ORDER BY deleted_at DESC, id ASC",
+        )?;
+
+        let note_iter = stmt.query_map([], Self::map_row)?;
+        let mut notes = Vec::new();
+        for note in note_iter {
+            notes.push(note?);
+        }
+        Ok(notes)
+    }
+
+    /// Lists lightweight TrashedNoteItem DTOs for the Trash UI (Phase 8, Task 10).
+    ///
+    /// Performance & Query Guarantees:
+    /// - Strictly queries trashed notes (`is_deleted = 1`), excluding active notes.
+    /// - Avoids loading full note content bodies into memory by selecting `SUBSTR(n.content, 1, 200)`.
+    /// - Resolves notebook name via LEFT JOIN without N+1 queries.
+    /// - Resolves attachment count via aggregated LEFT JOIN without N+1 queries.
+    /// - Stable deterministic ordering: `ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC`.
+    pub fn list_trashed_items(conn: &Connection) -> Result<Vec<TrashedNoteItem>, StorageError> {
+        let sql = r#"
+            SELECT
+                n.id,
+                n.title,
+                SUBSTR(n.content, 1, 200) AS preview,
+                n.notebook_id,
+                nb.name AS notebook_name,
+                n.created_at,
+                n.modified_at,
+                n.deleted_at,
+                n.is_favorite,
+                COALESCE(att.att_count, 0) AS attachment_count
+            FROM notes n
+            LEFT JOIN notebooks nb ON n.notebook_id = nb.id
+            LEFT JOIN (
+                SELECT note_id, COUNT(*) AS att_count
+                FROM attachments
+                GROUP BY note_id
+            ) att ON n.id = att.note_id
+            WHERE n.is_deleted = 1
+            ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC
+        "#;
+
+        let mut stmt = conn.prepare(sql)?;
+        let item_iter = stmt.query_map([], |row| {
+            let is_fav_int: i32 = row.get(8)?;
+            let att_count: i64 = row.get(9)?;
+
+            Ok(TrashedNoteItem {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                preview: row.get(2)?,
+                notebook_id: row.get(3)?,
+                notebook_name: row.get(4)?,
+                created_at: row.get(5)?,
+                modified_at: row.get(6)?,
+                deleted_at: row.get(7)?,
+                is_favorite: is_fav_int != 0,
+                attachment_count: att_count.max(0) as usize,
+            })
+        })?;
+
+        let mut items = Vec::new();
+        for item in item_iter {
+            items.push(item?);
+        }
+        Ok(items)
+    }
+
+    /// Counts notes currently in Trash (Phase 8, Task 4 & 11).
+    pub fn count_trashed(conn: &Connection) -> Result<usize, StorageError> {
+        let mut stmt = conn.prepare("SELECT COUNT(1) FROM notes WHERE is_deleted = 1")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        Ok(count.max(0) as usize)
+    }
+
+    /// Counts active (non-deleted) notes (Phase 8, Task 4).
+    pub fn count_active(conn: &Connection) -> Result<usize, StorageError> {
+        let mut stmt = conn.prepare("SELECT COUNT(1) FROM notes WHERE is_deleted = 0")?;
+        let count: i64 = stmt.query_row([], |r| r.get(0))?;
+        Ok(count.max(0) as usize)
+    }
+
     pub fn list(conn: &Connection, include_deleted: bool) -> Result<Vec<Note>, StorageError> {
         Self::list_filtered(conn, include_deleted, None, false)
     }
@@ -196,6 +325,12 @@ impl NoteRepository {
         let existing = Self::get_by_id(conn, id)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
+        if existing.is_deleted && dto.is_deleted != Some(false) {
+            return Err(StorageError::Validation(
+                "Cannot update a note that is in the trash. Restore it first.".to_string(),
+            ));
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         let title = dto.title.unwrap_or(existing.title);
         let content = dto.content.unwrap_or(existing.content);
@@ -247,6 +382,34 @@ impl NoteRepository {
         })
     }
 
+    /// Soft deletes an active note, transitioning its lifecycle state to Trashed (Phase 8, Task 5).
+    ///
+    /// Invariants:
+    /// - Verifies the note exists.
+    /// - Rejects if the note is already in Trash (returns StorageError::Conflict).
+    /// - Atomically sets is_deleted = 1 and deleted_at = now using parameterized SQL.
+    /// - Preserves content, title, created_at, notebook_id, tags, and attachments.
+    pub fn soft_delete(conn: &Connection, id: &str) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id(conn, id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+
+        if existing.is_deleted {
+            return Err(StorageError::Conflict(format!("Note with id '{id}' is already in Trash")));
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE notes SET is_deleted = 1, deleted_at = ?1, modified_at = ?1 WHERE id = ?2 AND is_deleted = 0",
+            params![now, id],
+        )?;
+
+        let mut updated = existing;
+        updated.is_deleted = true;
+        updated.deleted_at = Some(now.clone());
+        updated.modified_at = now;
+        Ok(updated)
+    }
+
     pub fn delete(conn: &Connection, id: &str, soft: bool) -> Result<bool, StorageError> {
         if soft {
             let now = chrono::Utc::now().to_rfc3339();
@@ -261,15 +424,54 @@ impl NoteRepository {
         }
     }
 
+    /// Restores a trashed note back to active state (Phase 8, Task 6).
+    ///
+    /// Validations and Invariants:
+    /// - Confirms note exists.
+    /// - Rejects if the note is already active (Conflict).
+    /// - Verifies if notebook_id still exists in notebooks table; if removed, unfiles safely to None.
+    /// - Sets is_deleted = 0, deleted_at = NULL, updates modified_at.
+    /// - Retains same note ID, title, content, format, created_at, tags, favorites, and attachments.
     pub fn restore(conn: &Connection, id: &str) -> Result<Note, StorageError> {
-        Self::update(
-            conn,
-            id,
-            UpdateNoteDto {
-                is_deleted: Some(false),
-                ..Default::default()
-            },
-        )
+        let existing = Self::get_by_id(conn, id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+
+        if !existing.is_deleted {
+            // Already active: safe idempotent operation (Task 38 & Task 6)
+            return Ok(existing);
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Defensive check: if original notebook was removed while note was trashed, unfile safely
+        let effective_notebook_id = if let Some(ref nb_id) = existing.notebook_id {
+            let exists: bool = conn.query_row(
+                "SELECT COUNT(1) FROM notebooks WHERE id = ?1",
+                params![nb_id],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if exists {
+                Some(nb_id.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        conn.execute(
+            "UPDATE notes
+             SET is_deleted = 0, deleted_at = NULL, notebook_id = ?1, modified_at = ?2
+             WHERE id = ?3 AND is_deleted = 1",
+            params![effective_notebook_id, now, id],
+        )?;
+
+        let mut restored = existing;
+        restored.is_deleted = false;
+        restored.deleted_at = None;
+        restored.notebook_id = effective_notebook_id;
+        restored.modified_at = now;
+        Ok(restored)
     }
 
     pub fn move_to_notebook(
@@ -401,6 +603,9 @@ mod tests {
     use super::*;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
+    use crate::storage::models::{CreateAttachmentDto, CreateNotebookDto};
+    use crate::storage::repositories::attachments::AttachmentRepository;
+    use crate::storage::repositories::notebooks::NotebookRepository;
     use crate::storage::repositories::tags::TagRepository;
 
     #[test]
@@ -602,6 +807,183 @@ mod tests {
         assert_eq!(ordered_notes.len(), 2);
         assert_eq!(ordered_notes[0].id, note3.id, "Pinned note must be ordered first");
         assert_eq!(ordered_notes[1].id, note1.id);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_centralized_active_and_trashed_query_rules() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_query_rules_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("init failed");
+        run_migrations(&mut conn).expect("migrations failed");
+
+        // 1. Initial empty states: empty list is NOT an error
+        assert_eq!(NoteRepository::list_active(&conn).unwrap().len(), 0);
+        assert_eq!(NoteRepository::list_trashed(&conn).unwrap().len(), 0);
+        assert_eq!(NoteRepository::count_active(&conn).unwrap(), 0);
+        assert_eq!(NoteRepository::count_trashed(&conn).unwrap(), 0);
+
+        // 2. Create active notes
+        let active1 = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Active 1".to_string()),
+            content: Some("First active note".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let active2 = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Active 2".to_string()),
+            content: Some("Second active note".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        // 3. Move active2 to Trash via soft delete
+        NoteRepository::delete(&conn, &active2.id, true).unwrap();
+
+        // 4. Verify count separation
+        assert_eq!(NoteRepository::count_active(&conn).unwrap(), 1);
+        assert_eq!(NoteRepository::count_trashed(&conn).unwrap(), 1);
+
+        // 5. Verify single-note queries respect lifecycle state
+        assert!(NoteRepository::get_active_by_id(&conn, &active1.id).unwrap().is_some());
+        assert!(NoteRepository::get_trashed_by_id(&conn, &active1.id).unwrap().is_none());
+
+        assert!(NoteRepository::get_active_by_id(&conn, &active2.id).unwrap().is_none());
+        assert!(NoteRepository::get_trashed_by_id(&conn, &active2.id).unwrap().is_some());
+
+        // get_by_id returns both for administrative/lifecycle inspection
+        assert!(NoteRepository::get_by_id(&conn, &active1.id).unwrap().is_some());
+        assert!(NoteRepository::get_by_id(&conn, &active2.id).unwrap().is_some());
+
+        // Non-existent note returns None cleanly
+        assert!(NoteRepository::get_active_by_id(&conn, "non-existent").unwrap().is_none());
+        assert!(NoteRepository::get_trashed_by_id(&conn, "non-existent").unwrap().is_none());
+
+        // 6. Verify list_active and list_trashed separation
+        let active_list = NoteRepository::list_active(&conn).unwrap();
+        assert_eq!(active_list.len(), 1);
+        assert_eq!(active_list[0].id, active1.id);
+
+        let trashed_list = NoteRepository::list_trashed(&conn).unwrap();
+        assert_eq!(trashed_list.len(), 1);
+        assert_eq!(trashed_list[0].id, active2.id);
+        assert!(trashed_list[0].is_deleted);
+        assert!(trashed_list[0].deleted_at.is_some());
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_list_trashed_items_dto_mapping_and_ordering() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_trashed_items_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        // 1. When empty, list_trashed_items returns an empty vector
+        let empty_list = NoteRepository::list_trashed_items(&conn).unwrap();
+        assert!(empty_list.is_empty());
+
+        // 2. Setup: 2 notebooks
+        let nb_alpha = NotebookRepository::create(&conn, CreateNotebookDto {
+            name: "Alpha Notebook".to_string(),
+            parent_id: None,
+        }).unwrap();
+        let nb_beta = NotebookRepository::create(&conn, CreateNotebookDto {
+            name: "Beta Notebook".to_string(),
+            parent_id: None,
+        }).unwrap();
+
+        // 3. Active Note (must be excluded from trashed items)
+        let _active_note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Active Note".to_string()),
+            content: Some("Active content that must not appear in trash".to_string()),
+            notebook_id: Some(nb_alpha.id.clone()),
+            ..Default::default()
+        }).unwrap();
+
+        // 4. Trashed Note 1 (in Alpha, with long content > 200 chars, favorite, attachment)
+        let long_content = "A".repeat(350);
+        let note1 = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Long Trashed Note 1".to_string()),
+            content: Some(long_content.clone()),
+            notebook_id: Some(nb_alpha.id.clone()),
+            is_favorite: Some(true),
+            ..Default::default()
+        }).unwrap();
+
+        // Soft delete note1 with an earlier deleted timestamp
+        let time_early = "2026-10-01T10:00:00Z";
+        conn.execute(
+            "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
+            params![time_early, note1.id],
+        ).unwrap();
+
+        // Add 2 attachments to note1
+        AttachmentRepository::create(&conn, CreateAttachmentDto {
+            note_id: note1.id.clone(),
+            file_name: "file1.pdf".to_string(),
+            relative_path: "note1/file1.pdf".to_string(),
+            mime_type: Some("application/pdf".to_string()),
+            file_size: 1024,
+        }).unwrap();
+        AttachmentRepository::create(&conn, CreateAttachmentDto {
+            note_id: note1.id.clone(),
+            file_name: "file2.png".to_string(),
+            relative_path: "note1/file2.png".to_string(),
+            mime_type: Some("image/png".to_string()),
+            file_size: 2048,
+        }).unwrap();
+
+        // 5. Trashed Note 2 (in Beta, deleted more recently, no attachments)
+        let note2 = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Recent Trashed Note 2".to_string()),
+            content: Some("Short preview content".to_string()),
+            notebook_id: Some(nb_beta.id.clone()),
+            is_favorite: Some(false),
+            ..Default::default()
+        }).unwrap();
+
+        let time_recent = "2026-10-08T12:00:00Z";
+        conn.execute(
+            "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
+            params![time_recent, note2.id],
+        ).unwrap();
+
+        // 6. Query list_trashed_items
+        let items = NoteRepository::list_trashed_items(&conn).unwrap();
+        assert_eq!(items.len(), 2, "Must only return the 2 trashed notes, active note excluded");
+
+        // Verify ordering: most recently deleted first (note2, then note1)
+        assert_eq!(items[0].id, note2.id);
+        assert_eq!(items[0].title, "Recent Trashed Note 2");
+        assert_eq!(items[0].preview, "Short preview content");
+        assert_eq!(items[0].notebook_id, Some(nb_beta.id.clone()));
+        assert_eq!(items[0].notebook_name, Some("Beta Notebook".to_string()));
+        assert_eq!(items[0].attachment_count, 0);
+        assert!(!items[0].is_favorite);
+        assert_eq!(items[0].deleted_at, Some(time_recent.to_string()));
+
+        assert_eq!(items[1].id, note1.id);
+        assert_eq!(items[1].title, "Long Trashed Note 1");
+        // Verify preview truncation to max 200 characters without loading full 350-char body
+        assert_eq!(items[1].preview.len(), 200);
+        assert_eq!(items[1].preview, "A".repeat(200));
+        assert_eq!(items[1].notebook_id, Some(nb_alpha.id.clone()));
+        assert_eq!(items[1].notebook_name, Some("Alpha Notebook".to_string()));
+        assert_eq!(items[1].attachment_count, 2);
+        assert!(items[1].is_favorite);
+        assert_eq!(items[1].deleted_at, Some(time_early.to_string()));
+
+        // 7. Verify notebook deletion resilience:
+        // Delete Beta notebook: note2's notebook_name should safely resolve to None
+        NotebookRepository::delete(&mut conn, &nb_beta.id).unwrap();
+        let items_after_nb_del = NoteRepository::list_trashed_items(&conn).unwrap();
+        assert_eq!(items_after_nb_del.len(), 2);
+        assert_eq!(items_after_nb_del[0].id, note2.id);
+        assert_eq!(items_after_nb_del[0].notebook_name, None);
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

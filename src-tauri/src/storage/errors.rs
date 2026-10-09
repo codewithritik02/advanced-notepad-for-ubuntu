@@ -163,6 +163,47 @@ impl From<StorageError> for AttachmentError {
     }
 }
 
+/// Strongly-typed trash operation errors (Phase 8, Task 5)
+#[derive(Debug, Error)]
+pub enum TrashError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+
+    #[error("Note not found: {0}")]
+    NoteNotFound(String),
+
+    #[error("Invalid lifecycle state: {0}")]
+    InvalidState(String),
+
+    #[error("Attachment cleanup failure: {0}")]
+    AttachmentCleanupFailure(String),
+
+    #[error("Attachment error: {0}")]
+    Attachment(#[from] AttachmentError),
+
+    #[error("Storage error: {0}")]
+    Storage(#[from] StorageError),
+}
+
+impl TrashError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            TrashError::InvalidRequest(msg) => msg.clone(),
+            TrashError::NoteNotFound(msg) => msg.clone(),
+            TrashError::InvalidState(msg) => msg.clone(),
+            TrashError::AttachmentCleanupFailure(msg) => {
+                format!("Note was removed, but attachment cleanup encountered an issue: {msg}")
+            }
+            TrashError::Attachment(err) => err.user_friendly_message(),
+            TrashError::Storage(err) => err.user_friendly_message(),
+            TrashError::Database(_) => "A database error occurred during the trash operation.".to_string(),
+        }
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.

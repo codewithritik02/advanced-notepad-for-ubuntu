@@ -318,13 +318,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <li>
               <button
                 type="button"
-                className={`sidebar-nav-item ${activeNavId === "trash" ? "is-active" : ""}`}
+                className={`sidebar-nav-item sidebar-nav-item--trash ${activeNavId === "trash" ? "is-active" : ""}`}
                 onClick={() => handleNavClick("trash")}
                 role="menuitem"
                 aria-current={activeNavId === "trash" ? "page" : undefined}
               >
                 <span className="nav-item-icon"><TrashIcon /></span>
                 <span className="nav-item-label">Trash</span>
+                {noteCounts?.["trash"] !== undefined && noteCounts["trash"] > 0 && (
+                  <span className="nav-item-count nav-item-count--trash">{noteCounts["trash"]}</span>
+                )}
               </button>
             </li>
           </ul>

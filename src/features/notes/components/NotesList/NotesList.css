@@ -46,6 +46,35 @@
   color: var(--color-text-secondary);
 }
 
+.notes-list-empty-trash-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-medium, 500);
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background-color: rgba(239, 68, 68, 0.08);
+  color: var(--color-text-danger, #ef4444);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.notes-list-empty-trash-btn:hover:not(:disabled) {
+  background-color: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: var(--color-text-danger, #ef4444);
+}
+
+.notes-list-empty-trash-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  border-color: var(--color-border-subtle, #333333);
+  background-color: transparent;
+  color: var(--color-text-muted, #888888);
+}
+
 /* ==========================================================================
    Content Area
    ========================================================================== */
@@ -154,6 +183,39 @@
 .note-card-favorite-btn:focus-visible {
   opacity: 1;
   outline: 2px solid var(--color-warning-default, #eab308);
+  outline-offset: 1px;
+}
+
+.note-card-delete-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  opacity: 0;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.note-card:hover .note-card-delete-btn,
+.note-card:focus-within .note-card-delete-btn {
+  opacity: 1;
+}
+
+.note-card-delete-btn:hover {
+  color: var(--color-danger-default, #ef4444);
+  background-color: rgba(239, 68, 68, 0.12);
+}
+
+.note-card-delete-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--color-danger-default, #ef4444);
   outline-offset: 1px;
 }
 
@@ -410,4 +472,72 @@
   border-radius: var(--radius-xs, 2px);
   padding: 0 1px;
 }
+
+/* ==========================================================================
+   Trash Mode & Trash Card Styling (Phase 8, Task 12)
+   ========================================================================== */
+.notes-list-container.is-trash-mode .note-card.is-trash-card {
+  border-left: 3px solid var(--color-danger-subtle, #fee2e2);
+}
+
+.notes-list-container.is-trash-mode .note-card.is-trash-card.is-selected {
+  border-left-color: var(--color-danger-default, #ef4444);
+  border-color: var(--color-danger-default, #ef4444);
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.08));
+}
+
+.notes-list-container.is-trash-mode .note-card.is-trash-card.is-selected .note-card-title {
+  color: var(--color-danger-default, #ef4444);
+}
+
+.note-card-favorite-indicator {
+  color: var(--color-warning-default, #eab308);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.85;
+}
+
+.note-card-trash-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs, 6px);
+  margin-top: var(--spacing-sm, 8px);
+  padding-top: var(--spacing-xs, 6px);
+  border-top: 1px dashed var(--color-border-subtle);
+}
+
+.note-card-trash-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-size-2xs, 11px);
+  font-weight: var(--font-weight-medium, 500);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.note-card-trash-action-btn:hover {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-default);
+}
+
+.note-card-trash-action-btn--restore:hover {
+  color: var(--color-accent-default, #3b82f6);
+  border-color: var(--color-accent-default, #3b82f6);
+  background-color: var(--color-surface-selected);
+}
+
+.note-card-trash-action-btn--delete:hover {
+  color: var(--color-danger-default, #ef4444);
+  border-color: var(--color-danger-default, #ef4444);
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.1));
+}
+
 

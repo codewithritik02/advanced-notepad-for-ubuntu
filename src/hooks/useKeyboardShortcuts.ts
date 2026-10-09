@@ -6,6 +6,7 @@ export interface KeyboardShortcutHandlers {
   onOpenSettings?: () => void;
   onEscape?: () => void;
   onSaveNote?: () => void;
+  onDeleteNote?: () => void;
 }
 
 /**
@@ -20,6 +21,7 @@ export function useKeyboardShortcuts({
   onOpenSettings,
   onEscape,
   onSaveNote,
+  onDeleteNote,
 }: KeyboardShortcutHandlers): void {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -59,11 +61,26 @@ export function useKeyboardShortcuts({
         onOpenSettings?.();
         return;
       }
+
+      // Ctrl/Cmd + Backspace or Delete — Delete active note (Phase 8, Task 14)
+      if (isModifier && (key === "backspace" || key === "delete")) {
+        const activeEl = document.activeElement;
+        const isEditing =
+          activeEl &&
+          (activeEl.tagName === "INPUT" ||
+            activeEl.tagName === "TEXTAREA" ||
+            (activeEl as HTMLElement).isContentEditable);
+        if (!isEditing) {
+          event.preventDefault();
+          onDeleteNote?.();
+          return;
+        }
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onNewNote, onFocusSearch, onOpenSettings, onEscape, onSaveNote]);
+  }, [onNewNote, onFocusSearch, onOpenSettings, onEscape, onSaveNote, onDeleteNote]);
 }
 
 export default useKeyboardShortcuts;
