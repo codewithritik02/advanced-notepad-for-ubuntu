@@ -7,6 +7,8 @@ export interface KeyboardShortcutHandlers {
   onEscape?: () => void;
   onSaveNote?: () => void;
   onDeleteNote?: () => void;
+  onNavigateBack?: () => void;
+  onNavigateForward?: () => void;
 }
 
 /**
@@ -22,11 +24,57 @@ export function useKeyboardShortcuts({
   onEscape,
   onSaveNote,
   onDeleteNote,
+  onNavigateBack,
+  onNavigateForward,
 }: KeyboardShortcutHandlers): void {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const isModifier = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
+
+      // Alt + Left Arrow — History Back (Phase 9, Tasks 13 & 20)
+      // On macOS, Option+Left is a text-editing command (word jump). Do not intercept when editing text.
+      if (event.altKey && event.key === "ArrowLeft") {
+        const isMac =
+          typeof navigator !== "undefined" &&
+          /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent);
+        const activeEl = document.activeElement;
+        const isEditing =
+          activeEl &&
+          (activeEl.tagName === "INPUT" ||
+            activeEl.tagName === "TEXTAREA" ||
+            (activeEl as HTMLElement).isContentEditable);
+
+        if (isMac && isEditing) {
+          return;
+        }
+
+        event.preventDefault();
+        onNavigateBack?.();
+        return;
+      }
+
+      // Alt + Right Arrow — History Forward (Phase 9, Tasks 13 & 20)
+      // On macOS, Option+Right is a text-editing command (word jump). Do not intercept when editing text.
+      if (event.altKey && event.key === "ArrowRight") {
+        const isMac =
+          typeof navigator !== "undefined" &&
+          /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent);
+        const activeEl = document.activeElement;
+        const isEditing =
+          activeEl &&
+          (activeEl.tagName === "INPUT" ||
+            activeEl.tagName === "TEXTAREA" ||
+            (activeEl as HTMLElement).isContentEditable);
+
+        if (isMac && isEditing) {
+          return;
+        }
+
+        event.preventDefault();
+        onNavigateForward?.();
+        return;
+      }
 
       // Escape — Global dismiss / blur
       if (event.key === "Escape") {

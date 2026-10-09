@@ -8,7 +8,7 @@ import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { storageService, Note, NoteFormat } from "../services/storage";
+import { storageService, Note, NoteFormat, ResolvedLinkTarget } from "../services/storage";
 import { logger } from "../utils/logger";
 import {
   useNotebooks,
@@ -44,6 +44,10 @@ import {
   PermanentDeleteTarget,
 } from "../features/notes/components/PermanentDeleteDialog";
 import { EmptyTrashDialog } from "../features/notes/components/EmptyTrashDialog";
+import { BrokenLinkDialog } from "../features/notes/components/Links";
+import { NotePickerModal } from "../features/notes/components/NotePicker";
+import { replaceInternalLinkTarget, removeInternalLink } from "../utils/linkParser";
+import { useNoteNavigationHistory } from "../hooks/useNoteNavigationHistory";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -73,6 +77,7 @@ export function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const navigationHistory = useNoteNavigationHistory(selectedNoteId);
   const [isStorageReady, setIsStorageReady] = useState(false);
   const [status, setStatus] = useState<NotesListStatus>("loading");
   const [errorMessage, setErrorMessage] = useState("Unable to load notes.");
@@ -84,6 +89,10 @@ export function App() {
     type: "success" | "error";
     message: string;
   } | null>(null);
+  const [linkNavigationTarget, setLinkNavigationTarget] = useState<ResolvedLinkTarget | null>(null);
+  const [isResolvingLinkTarget, setIsResolvingLinkTarget] = useState<boolean>(false);
+  const [repairingBrokenTargetId, setRepairingBrokenTargetId] = useState<string | null>(null);
+  const [noteRefreshKey, setNoteRefreshKey] = useState<number>(0);
 
   useEffect(() => {
     if (restoreFeedback) {
@@ -205,6 +214,7 @@ export function App() {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const activeLoadRequestIdRef = useRef<number>(0);
+  const activeLinkNavRequestIdRef = useRef<number>(0);
   const inFlightMutationsRef = useRef<Set<string>>(new Set());
 
   // Check and verify storage readiness at startup
@@ -472,6 +482,7 @@ export function App() {
           "Failed to save note: " +
             (err instanceof Error ? err.message : String(err))
         );
+        throw err;
       }
     },
     [activeNavId]
@@ -537,6 +548,7 @@ export function App() {
         if (selectedNoteId === noteId) {
           setSelectedNoteId(null);
         }
+        navigationHistory.removeNoteFromHistory(noteId);
         await loadNotes("trash", null, null);
         await refreshNoteCounts();
         if (result.attachmentCleanupFailed) {
@@ -555,7 +567,7 @@ export function App() {
         inFlightMutationsRef.current.delete(noteId);
       }
     },
-    [loadNotes, refreshNoteCounts]
+    [loadNotes, refreshNoteCounts, navigationHistory, selectedNoteId]
   );
 
   const handleOpenEmptyTrash = useCallback(() => {
@@ -569,6 +581,7 @@ export function App() {
       if (activeNavId === "trash") {
         setSelectedNoteId(null);
       }
+      navigationHistory.clearHistory();
 
       await loadNotes("trash", null, null);
       await refreshNoteCounts();
@@ -716,6 +729,12 @@ export function App() {
         handleDeleteNote(selectedNoteId);
       }
     },
+    onNavigateBack: () => {
+      handleNavigateBack();
+    },
+    onNavigateForward: () => {
+      handleNavigateForward();
+    },
   });
 
   /**
@@ -741,6 +760,312 @@ export function App() {
     },
     [cancelPendingDebounce, selectedNoteId, isSearchActive]
   );
+
+  /**
+   * Phase 9, Tasks 10 & 11 — Safe Internal-Link Activation & Unsaved Edits Protection
+   *
+   * Flushes pending debounced saves before navigating away, blocks navigation if save fails
+   * to preserve in-memory user changes, guards against rapid click race conditions with
+   * sequence IDs, and resolves target notes by stable UUID.
+   */
+  const handleActivateInternalLink = useCallback(
+    async (targetNoteId: string) => {
+      cancelPendingDebounce();
+      const navRequestId = ++activeLinkNavRequestIdRef.current;
+      const sourceNoteId = selectedNoteId;
+      setIsResolvingLinkTarget(true);
+
+      try {
+        // 1. Flush pending debounced edits of source note BEFORE navigating away
+        if (editorSaveRef.current) {
+          try {
+            await editorSaveRef.current();
+          } catch (saveErr) {
+            const msg =
+              "Unable to save current note before navigating. Your edits have been kept safe in the editor: " +
+              (saveErr instanceof Error ? saveErr.message : String(saveErr));
+            setErrorMessage(msg);
+            logger.error("Internal link navigation aborted due to save failure", saveErr);
+            // Abort navigation to protect in-memory user changes
+            return;
+          }
+        }
+
+        // Stale navigation protection: check if a newer link activation started while saving
+        if (activeLinkNavRequestIdRef.current !== navRequestId) return;
+
+        // Check if note changed during asynchronous save
+        if (selectedNoteId !== sourceNoteId) return;
+
+        // If already on target note and active, avoid redundant navigation
+        if (targetNoteId === selectedNoteId && activeNavId !== "trash") return;
+
+        // 2. Resolve target note by stable ID
+        let resolved: ResolvedLinkTarget;
+        try {
+          resolved = await storageService.links.resolveTarget(targetNoteId);
+        } catch (resolveErr) {
+          logger.error("Failed to resolve internal link target", resolveErr);
+          if (activeLinkNavRequestIdRef.current !== navRequestId) return;
+          setLinkNavigationTarget({
+            targetId: targetNoteId,
+            title: null,
+            lifecycle: "missing",
+            notebookId: null,
+            notebookName: null,
+          });
+          return;
+        }
+
+        if (activeLinkNavRequestIdRef.current !== navRequestId) return;
+
+        if (resolved.lifecycle === "active") {
+          // If viewing trash, switch to all-notes so the active target is visible
+          if (activeNavId === "trash") {
+            selectAllNotes();
+            setActiveNavId("all-notes");
+            await loadNotes("all-notes", null, null);
+          }
+
+          if (activeLinkNavRequestIdRef.current !== navRequestId) return;
+
+          // 3. Navigate safely to target note
+          setSelectedNoteId(targetNoteId);
+          navigationHistory.recordNavigation(targetNoteId, sourceNoteId);
+
+          if (isSearchActive) {
+            searchInputRef.current?.blur();
+          }
+        } else {
+          // Trashed or Missing target
+          setLinkNavigationTarget(resolved);
+        }
+      } catch (err) {
+        logger.error("Unexpected error during internal link activation", err);
+        setErrorMessage("Unable to open linked note. An unexpected error occurred.");
+      } finally {
+        if (activeLinkNavRequestIdRef.current === navRequestId) {
+          setIsResolvingLinkTarget(false);
+        }
+      }
+    },
+    [
+      cancelPendingDebounce,
+      selectedNoteId,
+      navigationHistory,
+      activeNavId,
+      isSearchActive,
+      selectAllNotes,
+      loadNotes,
+    ]
+  );
+
+  const handleConfirmViewInTrash = useCallback(async () => {
+    if (!linkNavigationTarget) return;
+    const targetId = linkNavigationTarget.targetId;
+    setLinkNavigationTarget(null);
+
+    // Flush pending edits of source note
+    if (editorSaveRef.current) {
+      try {
+        await editorSaveRef.current();
+      } catch (saveErr) {
+        const msg =
+          "Unable to save current note before navigating to Trash. Your edits have been kept safe in the editor: " +
+          (saveErr instanceof Error ? saveErr.message : String(saveErr));
+        setErrorMessage(msg);
+        logger.error("Navigation to trash aborted due to save failure", saveErr);
+        return;
+      }
+    }
+
+    // Navigate to Trash view and select the trashed note
+    selectTrash();
+    setActiveNavId("trash");
+    await loadNotes("trash", null, null);
+    setSelectedNoteId(targetId);
+  }, [linkNavigationTarget, selectTrash, loadNotes]);
+
+  const handleCloseLinkNavigationDialog = useCallback(() => {
+    setLinkNavigationTarget(null);
+  }, []);
+
+  /**
+   * Phase 9, Task 17 — Restore Trashed Link Target and Open
+   */
+  const handleRestoreAndOpenTargetNote = useCallback(
+    async (targetId: string) => {
+      setLinkNavigationTarget(null);
+      try {
+        const restoredNote = await storageService.notes.restoreNote(targetId);
+        selectAllNotes();
+        setActiveNavId("all-notes");
+        await loadNotes("all-notes", null, null);
+        await refreshNoteCounts();
+        setSelectedNoteId(targetId);
+        setRestoreFeedback({
+          type: "success",
+          message: `Restored and opened "${restoredNote.title?.trim() || "Untitled Note"}"`,
+        });
+      } catch (err) {
+        const msg =
+          "Failed to restore note: " +
+          (err instanceof Error ? err.message : String(err));
+        setErrorMessage(msg);
+        setRestoreFeedback({
+          type: "error",
+          message: msg,
+        });
+      }
+    },
+    [selectAllNotes, loadNotes, refreshNoteCounts]
+  );
+
+  /**
+   * Phase 9, Task 16 — Broken Link Repair and Removal Handlers
+   */
+  const handleInitiateRepairBrokenLink = useCallback((targetId: string) => {
+    setLinkNavigationTarget(null);
+    setRepairingBrokenTargetId(targetId);
+  }, []);
+
+  const handleRemoveBrokenLink = useCallback(
+    async (targetId: string) => {
+      setLinkNavigationTarget(null);
+      if (!selectedNoteId) return;
+
+      try {
+        const currentNote = await storageService.notes.get(selectedNoteId);
+        if (currentNote) {
+          const updatedContent = removeInternalLink(currentNote.content, targetId);
+          await storageService.notes.update(selectedNoteId, { content: updatedContent });
+          setNoteRefreshKey((k) => k + 1);
+          await loadNotes(activeNavId, selectedNotebookId, selectedTagId);
+        }
+      } catch (err) {
+        console.error("[BrokenLink] Failed to remove broken link:", err);
+      }
+    },
+    [selectedNoteId, activeNavId, selectedNotebookId, selectedTagId, loadNotes]
+  );
+
+  const handleConfirmRepairReplacement = useCallback(
+    async (replacement: { id: string; title: string; customLabel?: string }) => {
+      const oldId = repairingBrokenTargetId;
+      setRepairingBrokenTargetId(null);
+      if (!selectedNoteId || !oldId) return;
+
+      try {
+        const currentNote = await storageService.notes.get(selectedNoteId);
+        if (currentNote) {
+          const updatedContent = replaceInternalLinkTarget(
+            currentNote.content,
+            oldId,
+            replacement.id,
+            replacement.customLabel || replacement.title
+          );
+          await storageService.notes.update(selectedNoteId, { content: updatedContent });
+          setNoteRefreshKey((k) => k + 1);
+          await loadNotes(activeNavId, selectedNotebookId, selectedTagId);
+        }
+      } catch (err) {
+        console.error("[BrokenLink] Failed to replace broken link:", err);
+      }
+    },
+    [selectedNoteId, repairingBrokenTargetId, activeNavId, selectedNotebookId, selectedTagId, loadNotes]
+  );
+
+  /**
+   * Phase 9, Task 12 — Back Navigation History
+   */
+  const handleNavigateBack = useCallback(async () => {
+    if (!navigationHistory.canGoBack) return;
+
+    // 1. Flush pending debounced edits of current note
+    if (editorSaveRef.current) {
+      try {
+        await editorSaveRef.current();
+      } catch (saveErr) {
+        setErrorMessage(
+          "Unable to save current note before navigating: " +
+            (saveErr instanceof Error ? saveErr.message : String(saveErr))
+        );
+        return;
+      }
+    }
+
+    const previousId = navigationHistory.goBack();
+    if (!previousId) return;
+
+    try {
+      const resolved = await storageService.links.resolveTarget(previousId);
+      if (resolved.lifecycle === "active") {
+        if (activeNavId === "trash") {
+          selectAllNotes();
+          setActiveNavId("all-notes");
+          await loadNotes("all-notes", null, null);
+        }
+        setSelectedNoteId(previousId);
+      } else {
+        // Trashed or missing note
+        setLinkNavigationTarget(resolved);
+      }
+    } catch {
+      setLinkNavigationTarget({
+        targetId: previousId,
+        title: null,
+        lifecycle: "missing",
+        notebookId: null,
+        notebookName: null,
+      });
+    }
+  }, [navigationHistory, activeNavId, selectAllNotes, loadNotes]);
+
+  /**
+   * Phase 9, Task 12 — Forward Navigation History
+   */
+  const handleNavigateForward = useCallback(async () => {
+    if (!navigationHistory.canGoForward) return;
+
+    // 1. Flush pending debounced edits of current note
+    if (editorSaveRef.current) {
+      try {
+        await editorSaveRef.current();
+      } catch (saveErr) {
+        setErrorMessage(
+          "Unable to save current note before navigating: " +
+            (saveErr instanceof Error ? saveErr.message : String(saveErr))
+        );
+        return;
+      }
+    }
+
+    const nextId = navigationHistory.goForward();
+    if (!nextId) return;
+
+    try {
+      const resolved = await storageService.links.resolveTarget(nextId);
+      if (resolved.lifecycle === "active") {
+        if (activeNavId === "trash") {
+          selectAllNotes();
+          setActiveNavId("all-notes");
+          await loadNotes("all-notes", null, null);
+        }
+        setSelectedNoteId(nextId);
+      } else {
+        // Trashed or missing note
+        setLinkNavigationTarget(resolved);
+      }
+    } catch {
+      setLinkNavigationTarget({
+        targetId: nextId,
+        title: null,
+        lifecycle: "missing",
+        notebookId: null,
+        notebookName: null,
+      });
+    }
+  }, [navigationHistory, activeNavId, selectAllNotes, loadNotes]);
 
   // Wire arrow-key navigation over scoped search results (Task 45)
   // resultNoteIds is derived below after scopedSearchResults is computed;
@@ -1181,6 +1506,10 @@ export function App() {
             onThemeToggle={toggleTheme}
             onNewNoteClick={handleNewNoteAction}
             onSettingsClick={() => setIsSettingsOpen(true)}
+            canGoBack={navigationHistory.canGoBack}
+            canGoForward={navigationHistory.canGoForward}
+            onNavigateBack={handleNavigateBack}
+            onNavigateForward={handleNavigateForward}
           />
         }
         sidebar={
@@ -1320,9 +1649,11 @@ export function App() {
         }
         editor={
           <NoteEditor
+            key={`${selectedNoteId || "empty"}-${noteRefreshKey}`}
             noteId={selectedNoteId}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
+            onActivateLink={handleActivateInternalLink}
             isTrash={activeNavId === "trash"}
             onDeleteNote={activeNavId === "trash" ? undefined : handleDeleteNote}
             onRestoreNote={handleRestoreNote}
@@ -1443,6 +1774,53 @@ export function App() {
         onClose={() => setIsEmptyTrashOpen(false)}
         onConfirm={handleConfirmEmptyTrash}
       />
+
+      <BrokenLinkDialog
+        target={linkNavigationTarget}
+        onClose={handleCloseLinkNavigationDialog}
+        onViewInTrash={handleConfirmViewInTrash}
+        onRestore={handleRestoreAndOpenTargetNote}
+        onRepairLink={handleInitiateRepairBrokenLink}
+        onRemoveLink={handleRemoveBrokenLink}
+      />
+
+      {repairingBrokenTargetId && (
+        <NotePickerModal
+          isOpen={true}
+          onClose={() => setRepairingBrokenTargetId(null)}
+          onSelectNote={handleConfirmRepairReplacement}
+          currentNoteId={selectedNoteId}
+        />
+      )}
+
+      {isResolvingLinkTarget && (
+        <div
+          className="link-resolving-indicator"
+          role="status"
+          aria-live="polite"
+          data-testid="link-resolving-indicator"
+          style={{
+            position: "fixed",
+            bottom: "20px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            backgroundColor: "var(--color-bg-surface)",
+            color: "var(--color-text-primary)",
+            padding: "8px 16px",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid var(--color-border-subtle)",
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+            fontSize: "13px",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span className="backlinks-spinner" style={{ width: 12, height: 12 }} />
+          <span>Opening linked note...</span>
+        </div>
+      )}
 
       {restoreFeedback && (
         <div

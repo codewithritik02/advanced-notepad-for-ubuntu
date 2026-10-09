@@ -326,6 +326,76 @@ pub struct EmptyTrashResult {
     pub errors: Vec<String>,
 }
 
+/// Strongly typed lifecycle status of an internal link target (Phase 9, Task 3)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkTargetLifecycle {
+    Active,
+    Trashed,
+    Missing,
+}
+
+impl LinkTargetLifecycle {
+    pub fn is_active(&self) -> bool {
+        matches!(self, LinkTargetLifecycle::Active)
+    }
+
+    pub fn is_trashed(&self) -> bool {
+        matches!(self, LinkTargetLifecycle::Trashed)
+    }
+
+    pub fn is_missing(&self) -> bool {
+        matches!(self, LinkTargetLifecycle::Missing)
+    }
+}
+
+/// Representation of a parsed internal link token in note content
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedInternalLink {
+    pub target_id: String,
+    pub label: String,
+    pub raw: String,
+    pub start_index: usize,
+    pub end_index: usize,
+}
+
+/// Resolved target metadata for following or inspecting an internal link
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedLinkTarget {
+    pub target_id: String,
+    pub title: Option<String>,
+    pub lifecycle: LinkTargetLifecycle,
+    pub notebook_id: Option<String>,
+    pub notebook_name: Option<String>,
+}
+
+/// Lightweight item for searching/picking notes to link to
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkableNoteItem {
+    pub id: String,
+    pub title: String,
+    pub preview: String,
+    pub notebook_id: Option<String>,
+    pub notebook_name: Option<String>,
+    pub modified_at: String,
+}
+
+/// Backlink item indicating a source note that contains a link to the target note
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BacklinkItem {
+    pub source_note_id: String,
+    pub source_note_title: String,
+    pub source_notebook_id: Option<String>,
+    pub source_notebook_name: Option<String>,
+    pub label_snippet: Option<String>,
+    pub modified_at: String,
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +536,77 @@ mod tests {
         assert!(empty_json.contains("\"deletedCount\":5"));
         assert!(empty_json.contains("\"failedCount\":1"));
     }
+
+    #[test]
+    fn test_internal_link_models_and_serde() {
+        // Test LinkTargetLifecycle
+        assert!(LinkTargetLifecycle::Active.is_active());
+        assert!(!LinkTargetLifecycle::Active.is_trashed());
+        assert!(!LinkTargetLifecycle::Active.is_missing());
+
+        assert!(LinkTargetLifecycle::Trashed.is_trashed());
+        assert!(!LinkTargetLifecycle::Trashed.is_active());
+
+        assert!(LinkTargetLifecycle::Missing.is_missing());
+        assert!(!LinkTargetLifecycle::Missing.is_active());
+
+        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Active).unwrap(), "\"active\"");
+        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Trashed).unwrap(), "\"trashed\"");
+        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Missing).unwrap(), "\"missing\"");
+
+        // Test ParsedInternalLink camelCase serialization
+        let parsed = ParsedInternalLink {
+            target_id: "target-uuid-1".to_string(),
+            label: "Meeting Plan".to_string(),
+            raw: "[Meeting Plan](notepad://note/target-uuid-1)".to_string(),
+            start_index: 0,
+            end_index: 44,
+        };
+        let parsed_json = serde_json::to_string(&parsed).unwrap();
+        assert!(parsed_json.contains("\"targetId\":\"target-uuid-1\""));
+        assert!(parsed_json.contains("\"startIndex\":0"));
+        assert!(parsed_json.contains("\"endIndex\":44"));
+
+        // Test ResolvedLinkTarget camelCase serialization
+        let resolved = ResolvedLinkTarget {
+            target_id: "target-uuid-1".to_string(),
+            title: Some("Meeting Plan".to_string()),
+            lifecycle: LinkTargetLifecycle::Active,
+            notebook_id: Some("nb-1".to_string()),
+            notebook_name: Some("Work".to_string()),
+        };
+        let resolved_json = serde_json::to_string(&resolved).unwrap();
+        assert!(resolved_json.contains("\"targetId\":\"target-uuid-1\""));
+        assert!(resolved_json.contains("\"notebookName\":\"Work\""));
+        assert!(resolved_json.contains("\"lifecycle\":\"active\""));
+
+        // Test LinkableNoteItem camelCase serialization
+        let item = LinkableNoteItem {
+            id: "target-uuid-1".to_string(),
+            title: "Meeting Plan".to_string(),
+            preview: "Details about...".to_string(),
+            notebook_id: Some("nb-1".to_string()),
+            notebook_name: Some("Work".to_string()),
+            modified_at: "2026-10-09T10:00:00Z".to_string(),
+        };
+        let item_json = serde_json::to_string(&item).unwrap();
+        assert!(item_json.contains("\"modifiedAt\":\"2026-10-09T10:00:00Z\""));
+
+        // Test BacklinkItem camelCase serialization
+        let backlink = BacklinkItem {
+            source_note_id: "src-uuid-1".to_string(),
+            source_note_title: "Project Overview".to_string(),
+            source_notebook_id: None,
+            source_notebook_name: None,
+            label_snippet: Some("See [Meeting Plan]".to_string()),
+            modified_at: "2026-10-09T10:05:00Z".to_string(),
+        };
+        let backlink_json = serde_json::to_string(&backlink).unwrap();
+        assert!(backlink_json.contains("\"sourceNoteId\":\"src-uuid-1\""));
+        assert!(backlink_json.contains("\"sourceNoteTitle\":\"Project Overview\""));
+        assert!(backlink_json.contains("\"labelSnippet\":\"See [Meeting Plan]\""));
+    }
 }
+
 
 

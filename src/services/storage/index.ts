@@ -6,6 +6,7 @@ import { tagsStorage } from "./tags";
 import { settingsStorage } from "./settings";
 import { searchStorage } from "./search";
 import { attachmentsStorage } from "./attachments";
+import { linksStorage } from "./links";
 
 export const storageService = {
   /**
@@ -21,6 +22,7 @@ export const storageService = {
   settings: settingsStorage,
   search: searchStorage,
   attachments: attachmentsStorage,
+  links: linksStorage,
 };
 
 export * from "./types";
@@ -30,4 +32,6 @@ export { tagsStorage } from "./tags";
 export { settingsStorage } from "./settings";
 export { searchStorage } from "./search";
 export { attachmentsStorage } from "./attachments";
+export { linksStorage } from "./links";
 export default storageService;
+

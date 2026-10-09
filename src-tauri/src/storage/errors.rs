@@ -37,6 +37,9 @@ pub enum StorageError {
 
     #[error("Attachment error: {0}")]
     AttachmentError(String),
+
+    #[error("Internal link error: {0}")]
+    InternalLink(String),
 }
 
 #[derive(Debug, Error)]
@@ -204,6 +207,47 @@ impl TrashError {
     }
 }
 
+/// Strongly-typed internal note link operation errors (Phase 9, Task 3)
+#[derive(Debug, Error)]
+pub enum InternalLinkError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Invalid note ID: {0}")]
+    InvalidNoteId(String),
+
+    #[error("Target note not found: {0}")]
+    TargetNotFound(String),
+
+    #[error("Target note is in trash: {0}")]
+    TargetInTrash(String),
+
+    #[error("Source note not found: {0}")]
+    SourceNotFound(String),
+
+    #[error("Malformed internal link syntax: {0}")]
+    MalformedLink(String),
+}
+
+impl InternalLinkError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            InternalLinkError::InvalidNoteId(_) => "Invalid note link identifier.".to_string(),
+            InternalLinkError::TargetNotFound(_) => "The linked note could not be found.".to_string(),
+            InternalLinkError::TargetInTrash(_) => "The linked note is in Trash.".to_string(),
+            InternalLinkError::SourceNotFound(_) => "The source note could not be found.".to_string(),
+            InternalLinkError::MalformedLink(_) => "Malformed internal note link.".to_string(),
+            InternalLinkError::Database(_) => "A database error occurred while resolving the link.".to_string(),
+        }
+    }
+}
+
+impl From<InternalLinkError> for StorageError {
+    fn from(err: InternalLinkError) -> Self {
+        StorageError::InternalLink(err.user_friendly_message())
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
@@ -211,6 +255,7 @@ impl StorageError {
         match self {
             StorageError::SearchError(_) => "Unable to search notes.".to_string(),
             StorageError::AttachmentError(msg) => msg.clone(),
+            StorageError::InternalLink(msg) => msg.clone(),
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => {
                 match err.code {
                     rusqlite::ErrorCode::ConstraintViolation => {
@@ -301,5 +346,27 @@ mod tests {
         let converted: StorageError = too_large.into();
         assert!(converted.user_friendly_message().contains("100 MB"));
     }
+
+    #[test]
+    fn test_internal_link_error_user_friendly_messages() {
+        let invalid_id = InternalLinkError::InvalidNoteId("bad-id".to_string());
+        assert_eq!(invalid_id.user_friendly_message(), "Invalid note link identifier.");
+
+        let target_not_found = InternalLinkError::TargetNotFound("n-123".to_string());
+        assert_eq!(target_not_found.user_friendly_message(), "The linked note could not be found.");
+
+        let target_in_trash = InternalLinkError::TargetInTrash("n-123".to_string());
+        assert_eq!(target_in_trash.user_friendly_message(), "The linked note is in Trash.");
+
+        let source_not_found = InternalLinkError::SourceNotFound("src-1".to_string());
+        assert_eq!(source_not_found.user_friendly_message(), "The source note could not be found.");
+
+        let malformed = InternalLinkError::MalformedLink("[[invalid]]".to_string());
+        assert_eq!(malformed.user_friendly_message(), "Malformed internal note link.");
+
+        let converted: StorageError = target_not_found.into();
+        assert_eq!(converted.user_friendly_message(), "The linked note could not be found.");
+    }
 }
+
 

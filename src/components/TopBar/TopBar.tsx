@@ -14,9 +14,25 @@ export interface TopBarProps {
   onSettingsClick?: () => void;
   theme?: ThemeMode;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onNavigateBack?: () => void;
+  onNavigateForward?: () => void;
 }
 
 // Lightweight inline SVG icons
+const ChevronLeftIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="15 18 9 12 15 6" />
+  </svg>
+);
+
+const ChevronRightIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6" />
+  </svg>
+);
+
 const SearchIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="11" cy="11" r="8" />
@@ -92,6 +108,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSettingsClick,
   theme = "system",
   searchInputRef: externalSearchRef,
+  canGoBack = false,
+  canGoForward = false,
+  onNavigateBack,
+  onNavigateForward,
 }) => {
   const internalSearchRef = useRef<HTMLInputElement>(null);
   const searchInputRef = externalSearchRef ?? internalSearchRef;
@@ -120,9 +140,35 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   return (
     <div className="topbar-content">
-      {/* Left: App Identity Branding */}
-      <div className="topbar-brand">
-        <span className="topbar-brand-title">Personal Notepad</span>
+      {/* Left: App Identity Branding & History Navigation Controls */}
+      <div className="topbar-left">
+        <div className="topbar-brand">
+          <span className="topbar-brand-title">Personal Notepad</span>
+        </div>
+        <div className="topbar-nav-history" role="group" aria-label="Note navigation history">
+          <button
+            type="button"
+            className="topbar-icon-btn topbar-nav-btn"
+            onClick={onNavigateBack}
+            disabled={!canGoBack}
+            aria-disabled={!canGoBack}
+            title={canGoBack ? "Go back (Alt+Left)" : "Go back"}
+            aria-label="Go back to previous note"
+          >
+            <ChevronLeftIcon />
+          </button>
+          <button
+            type="button"
+            className="topbar-icon-btn topbar-nav-btn"
+            onClick={onNavigateForward}
+            disabled={!canGoForward}
+            aria-disabled={!canGoForward}
+            title={canGoForward ? "Go forward (Alt+Right)" : "Go forward"}
+            aria-label="Go forward to next note"
+          >
+            <ChevronRightIcon />
+          </button>
+        </div>
       </div>
 
       {/* Middle: Search Landmark & Accessible Input */}

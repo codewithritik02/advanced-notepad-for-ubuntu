@@ -1,7 +1,33 @@
-import type { Note, CreateNoteInput, UpdateNoteInput, NoteFormat, NoteMetadata, Tag } from "../../services/storage";
+import type {
+  Note,
+  CreateNoteInput,
+  UpdateNoteInput,
+  NoteFormat,
+  NoteMetadata,
+  Tag,
+  LinkTargetLifecycle,
+  ParsedInternalLink,
+  ResolvedLinkTarget,
+  LinkableNoteItem,
+  BacklinkItem,
+  InsertInternalLinkInput,
+} from "../../services/storage";
 
 // Re-export core storage domain models for convenient feature consumption
-export type { Note, CreateNoteInput, UpdateNoteInput, NoteFormat, NoteMetadata, Tag };
+export type {
+  Note,
+  CreateNoteInput,
+  UpdateNoteInput,
+  NoteFormat,
+  NoteMetadata,
+  Tag,
+  LinkTargetLifecycle,
+  ParsedInternalLink,
+  ResolvedLinkTarget,
+  LinkableNoteItem,
+  BacklinkItem,
+  InsertInternalLinkInput,
+};
 
 /**
  * Computes canonical NoteMetadata from note entity, associated tags, and optional notebook hierarchy context.

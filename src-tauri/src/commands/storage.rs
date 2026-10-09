@@ -5,15 +5,15 @@ use crate::storage::{
     attachment_storage::AttachmentStorage,
     errors::{AttachmentError, StorageError},
     models::{
-        AttachmentConsistencyReport, AttachmentMetadataDto, CreateNotebookDto, CreateNoteDto,
-        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, SearchResult, Tag,
+        AttachmentConsistencyReport, AttachmentMetadataDto, BacklinkItem, CreateNotebookDto, CreateNoteDto,
+        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, ResolvedLinkTarget, SearchResult, Tag,
         TrashedNoteItem, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
         AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
         TagRepository,
     },
-    services::{AttachmentService, SearchService, TrashService},
+    services::{AttachmentService, InternalLinkService, SearchService, TrashService},
     Database, StoragePaths,
 };
 
@@ -515,3 +515,34 @@ pub fn cleanup_abandoned_temp_files(
     AttachmentService::cleanup_abandoned_temp_files(&storage, age)
         .map_err(|e| e.user_friendly_message())
 }
+
+/// Resolves an internal link target by its stable note ID (Phase 9, Task 9).
+#[tauri::command]
+pub fn resolve_link_target(
+    db: State<'_, Database>,
+    target_id: String,
+) -> Result<ResolvedLinkTarget, String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+
+    InternalLinkService::resolve_link_target(&conn, &target_id)
+        .map_err(|e| e.user_friendly_message())
+}
+
+/// Discovers incoming links / backlinks pointing to the target note ID (Phase 9, Task 14).
+#[tauri::command]
+pub fn get_backlinks(
+    db: State<'_, Database>,
+    target_note_id: String,
+) -> Result<Vec<BacklinkItem>, String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+
+    InternalLinkService::get_backlinks(&conn, &target_note_id)
+        .map_err(|e| e.user_friendly_message())
+}
+

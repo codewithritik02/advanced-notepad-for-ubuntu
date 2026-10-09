@@ -8099,6 +8099,199 @@ fn test_task_15_backend_note_tag_commands_lifecycle() {
         assert_eq!(batch_counts.get(&rel_note.id), Some(&1));
     }
 
+    #[test]
+    fn test_phase9_task_22_internal_links_integration_and_database_suite() {
+        use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+        use personal_notepad_lib::storage::models::LinkTargetLifecycle;
+        use personal_notepad_lib::storage::services::links::InternalLinkService;
+        use personal_notepad_lib::storage::services::TrashService;
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_integration_links_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let nb_dev = NotebookRepository::create(&conn, CreateNotebookDto {
+            name: "Development".to_string(),
+            parent_id: None,
+        }).unwrap();
+
+        let nb_ops = NotebookRepository::create(&conn, CreateNotebookDto {
+            name: "Operations".to_string(),
+            parent_id: None,
+        }).unwrap();
+
+        // 1. Create Target Note in Development
+        let target_note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Authentication Service".to_string()),
+            content: Some("# Authentication Service\nOAuth2 and JWT specification.".to_string()),
+            format: Some("md".to_string()),
+            notebook_id: Some(nb_dev.id.clone()),
+            ..Default::default()
+        }).unwrap();
+
+        // 2. Create Duplicate-title Note in Operations
+        let duplicate_title_note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Authentication Service".to_string()), // Identical title!
+            content: Some("Ops runbook for Auth service.".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: Some(nb_ops.id.clone()),
+            ..Default::default()
+        }).unwrap();
+
+        assert_ne!(target_note.id, duplicate_title_note.id);
+
+        // 3. Create Source Note linking to target_note
+        let source_note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("API Gateway Config".to_string()),
+            content: Some(format!(
+                "Routing directs /auth/* to [Authentication Service](notepad://note/{}) instance.",
+                target_note.id
+            )),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            ..Default::default()
+        }).unwrap();
+
+        // 4. Verify unambiguous resolution
+        let res_target = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        let res_dup = InternalLinkService::resolve_link_target(&conn, &duplicate_title_note.id).unwrap();
+
+        assert_eq!(res_target.target_id, target_note.id);
+        assert_eq!(res_target.notebook_name.as_deref(), Some("Development"));
+        assert_eq!(res_dup.target_id, duplicate_title_note.id);
+        assert_eq!(res_dup.notebook_name.as_deref(), Some("Operations"));
+
+        // 5. Verify backlinks discovery
+        let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].source_note_id, source_note.id);
+        assert_eq!(backlinks[0].source_note_title, "API Gateway Config");
+
+        // 6. Target Rename preserves link validity
+        NoteRepository::update(&conn, &target_note.id, UpdateNoteDto {
+            title: Some("Auth & Identity v3".to_string()),
+            ..Default::default()
+        }).unwrap();
+
+        let res_renamed = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        assert_eq!(res_renamed.title.as_deref(), Some("Auth & Identity v3"));
+        assert_eq!(res_renamed.lifecycle, LinkTargetLifecycle::Active);
+
+        // Source note content is intact
+        let loaded_source = NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
+        assert_eq!(loaded_source.content, source_note.content);
+
+        // 7. Soft delete target: lifecycle becomes Trashed
+        TrashService::soft_delete(&conn, &target_note.id).unwrap();
+        let res_trashed = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        assert_eq!(res_trashed.lifecycle, LinkTargetLifecycle::Trashed);
+
+        // 8. Restore target: lifecycle returns to Active
+        TrashService::restore(&conn, &target_note.id).unwrap();
+        let res_restored = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        assert_eq!(res_restored.lifecycle, LinkTargetLifecycle::Active);
+
+        // 9. Permanent deletion: lifecycle becomes Missing, source note unaffected
+        let storage_paths = StoragePaths::from_root(temp_dir.clone());
+        let storage = AttachmentStorage::new(storage_paths);
+        TrashService::soft_delete(&conn, &target_note.id).unwrap();
+        TrashService::permanently_delete_note(&conn, &storage, &target_note.id).unwrap();
+
+        let res_missing = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        assert_eq!(res_missing.lifecycle, LinkTargetLifecycle::Missing);
+
+        let final_source = NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
+        assert_eq!(final_source.content, source_note.content);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+#[test]
+fn test_phase9_task_24_security_reliability_and_performance_verification() {
+    use personal_notepad_lib::storage::models::LinkTargetLifecycle;
+    use personal_notepad_lib::storage::services::links::InternalLinkService;
+    use personal_notepad_lib::storage::services::TrashService;
+
+    let temp_dir = std::env::temp_dir().join(format!("notepad_int_links_t24_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let db_path = temp_dir.join("test.db");
+
+    let mut conn = init_connection(&db_path).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    // 1. Parameterized query safety against SQL injection payloads
+    let injections = vec![
+        "' OR '1'='1",
+        "admin'--",
+        "'; DROP TABLE notes; --",
+        "1 UNION SELECT 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20--",
+    ];
+    for payload in injections {
+        let res = InternalLinkService::resolve_link_target(&conn, payload).unwrap();
+        assert_eq!(res.lifecycle, LinkTargetLifecycle::Missing);
+    }
+
+    // 2. Stable ID resolution across identical note titles
+    let target_dev = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("System Architecture".to_string()),
+            content: Some("Architecture for Dev".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let target_prod = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("System Architecture".to_string()),
+            content: Some("Architecture for Prod".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let res_dev = InternalLinkService::resolve_link_target(&conn, &target_dev.id).unwrap();
+    let res_prod = InternalLinkService::resolve_link_target(&conn, &target_prod.id).unwrap();
+    assert_eq!(res_dev.target_id, target_dev.id);
+    assert_eq!(res_prod.target_id, target_prod.id);
+    assert_ne!(res_dev.target_id, res_prod.target_id);
+
+    // 3. Backlinks retrieval performance and parameterized accuracy
+    let source_a = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Source Alpha".to_string()),
+            content: Some(format!("Check [Dev Arch](notepad://note/{}) here.", target_dev.id)),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let source_b = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Source Beta".to_string()),
+            content: Some(format!("Also see [Dev Arch](notepad://note/{}) for details.", target_dev.id)),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let backlinks = InternalLinkService::get_backlinks(&conn, &target_dev.id).unwrap();
+    assert_eq!(backlinks.len(), 2);
+    assert!(backlinks.iter().any(|b| b.source_note_id == source_a.id));
+    assert!(backlinks.iter().any(|b| b.source_note_id == source_b.id));
+
+    // Trashing source_a excludes it from active backlinks
+    TrashService::soft_delete(&conn, &source_a.id).unwrap();
+    let updated_backlinks = InternalLinkService::get_backlinks(&conn, &target_dev.id).unwrap();
+    assert_eq!(updated_backlinks.len(), 1);
+    assert_eq!(updated_backlinks[0].source_note_id, source_b.id);
+
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
 
 
 

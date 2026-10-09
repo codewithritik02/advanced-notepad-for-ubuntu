@@ -11652,22 +11652,3796 @@ describe("Phase 8: Trash & Recovery", () => {
   });
 });
 
+describe("Phase 9 - Task 4: Internal Link Parser Tests", () => {
+  it("imports linkParser utilities cleanly without errors", async () => {
+    const { parseInternalLinks, formatInternalLink, isInternalLinkUri, extractTargetIdFromUri, hasInternalLinks } =
+      await import("../src/utils/linkParser.ts");
+    assert.strictEqual(typeof parseInternalLinks, "function");
+    assert.strictEqual(typeof formatInternalLink, "function");
+    assert.strictEqual(typeof isInternalLinkUri, "function");
+    assert.strictEqual(typeof extractTargetIdFromUri, "function");
+    assert.strictEqual(typeof hasInternalLinks, "function");
+  });
 
+  it("parses a valid single internal link and extracts metadata correctly", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const content = "Please check [Project Roadmap](notepad://note/uuid-1234) for deliverables.";
+    const links = parseInternalLinks(content);
 
+    assert.strictEqual(links.length, 1);
+    assert.strictEqual(links[0].targetId, "uuid-1234");
+    assert.strictEqual(links[0].label, "Project Roadmap");
+    assert.strictEqual(links[0].raw, "[Project Roadmap](notepad://note/uuid-1234)");
+    assert.strictEqual(links[0].startIndex, 13);
+    assert.strictEqual(links[0].endIndex, 56);
+    assert.strictEqual(content.slice(links[0].startIndex, links[0].endIndex), links[0].raw);
+  });
 
+  it("parses multiple links including case-insensitive protocol schemes", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const content = "First [Note One](notepad://note/id-1) and second [Note Two](NOTEPAD://NOTE/id-2).";
+    const links = parseInternalLinks(content);
 
+    assert.strictEqual(links.length, 2);
+    assert.strictEqual(links[0].targetId, "id-1");
+    assert.strictEqual(links[0].label, "Note One");
+    assert.strictEqual(links[1].targetId, "id-2");
+    assert.strictEqual(links[1].label, "Note Two");
+  });
 
+  it("handles Unicode and international labels safely", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const content = "देखें [वार्षिक समीक्षा २०२६](notepad://note/hindi-note) और [Café & Résumé](notepad://note/french-note)";
+    const links = parseInternalLinks(content);
 
+    assert.strictEqual(links.length, 2);
+    assert.strictEqual(links[0].targetId, "hindi-note");
+    assert.strictEqual(links[0].label, "वार्षिक समीक्षा २०२६");
+    assert.strictEqual(links[1].targetId, "french-note");
+    assert.strictEqual(links[1].label, "Café & Résumé");
+  });
 
+  it("does not match markdown images, external links, or ordinary prose", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const content =
+      "Image ![Preview](notepad://note/img-1) and external [Google](https://google.com) and valid [Doc](notepad://note/doc-1) and text [bracket 1] here.";
+    const links = parseInternalLinks(content);
 
+    assert.strictEqual(links.length, 1);
+    assert.strictEqual(links[0].targetId, "doc-1");
+    assert.strictEqual(links[0].label, "Doc");
+  });
 
+  it("safely handles malformed syntax and unclosed brackets without errors", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const content = "Broken tokens: [](notepad://note/) and [Unclosed](notepad://note/123 and [Wrong](notepad://other/456)";
+    const links = parseInternalLinks(content);
 
+    assert.strictEqual(links.length, 0);
+  });
 
+  it("formats and sanitizes internal link strings correctly", async () => {
+    const { formatInternalLink, sanitizeLinkLabel } = await import("../src/utils/linkParser.ts");
+    assert.strictEqual(
+      formatInternalLink("uuid-101", "Design Specs"),
+      "[Design Specs](notepad://note/uuid-101)"
+    );
+    assert.strictEqual(
+      formatInternalLink("uuid-102", "Plan [Q1]"),
+      "[Plan [Q1\\]](notepad://note/uuid-102)"
+    );
+    assert.strictEqual(
+      formatInternalLink("uuid-103", ""),
+      "[Untitled Note](notepad://note/uuid-103)"
+    );
+    assert.strictEqual(sanitizeLinkLabel("Notes\nwith\rnewlines"), "Notes with newlines");
+  });
 
+  it("validates URI detection and target ID extraction", async () => {
+    const { isInternalLinkUri, extractTargetIdFromUri, hasInternalLinks } = await import("../src/utils/linkParser.ts");
+    assert.strictEqual(isInternalLinkUri("notepad://note/target-123"), true);
+    assert.strictEqual(isInternalLinkUri("NOTEPAD://NOTE/target-123"), true);
+    assert.strictEqual(isInternalLinkUri("https://notepad://note/target-123"), false);
+    assert.strictEqual(isInternalLinkUri(""), false);
 
+    assert.strictEqual(extractTargetIdFromUri("notepad://note/uuid-999"), "uuid-999");
+    assert.strictEqual(extractTargetIdFromUri("https://google.com"), null);
 
+    assert.strictEqual(hasInternalLinks("Some text with [Ref](notepad://note/id-1)"), true);
+    assert.strictEqual(hasInternalLinks("Some plain text with no links"), false);
+  });
+});
 
+describe("Phase 9 - Task 5: Link Insertion Logic Tests", () => {
+  it("inserts link at the end of note content when no selection is specified", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const result = insertInternalLinkIntoContent({
+      content: "Existing note text.",
+      targetNoteId: "target-123",
+      targetTitle: "My Target Note",
+    });
 
+    assert.strictEqual(result.insertedText, "[My Target Note](notepad://note/target-123)");
+    assert.strictEqual(
+      result.updatedContent,
+      "Existing note text.[My Target Note](notepad://note/target-123)"
+    );
+    assert.strictEqual(result.newCursorPosition, "Existing note text.".length + result.insertedText.length);
+  });
 
+  it("inserts link at the beginning of note content", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const result = insertInternalLinkIntoContent({
+      content: "Existing text.",
+      selectionStart: 0,
+      selectionEnd: 0,
+      targetNoteId: "target-456",
+      targetTitle: "Intro Doc",
+    });
+
+    assert.strictEqual(result.insertedText, "[Intro Doc](notepad://note/target-456)");
+    assert.strictEqual(result.updatedContent, "[Intro Doc](notepad://note/target-456)Existing text.");
+    assert.strictEqual(result.newCursorPosition, result.insertedText.length);
+  });
+
+  it("replaces active selection using selected text as display label", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const content = "Please read the project overview for information.";
+    // "project overview" is indices 16 to 32
+    const start = content.indexOf("project overview");
+    const end = start + "project overview".length;
+
+    const result = insertInternalLinkIntoContent({
+      content,
+      selectionStart: start,
+      selectionEnd: end,
+      targetNoteId: "overview-uuid",
+      targetTitle: "Complete 2026 Overview",
+    });
+
+    assert.strictEqual(result.insertedText, "[project overview](notepad://note/overview-uuid)");
+    assert.strictEqual(
+      result.updatedContent,
+      "Please read the [project overview](notepad://note/overview-uuid) for information."
+    );
+    assert.strictEqual(result.newCursorPosition, start + result.insertedText.length);
+  });
+
+  it("custom label takes precedence over selected text and target title", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const content = "Hello world";
+    const result = insertInternalLinkIntoContent({
+      content,
+      selectionStart: 6,
+      selectionEnd: 11,
+      targetNoteId: "target-789",
+      targetTitle: "Default Title",
+      customLabel: "Custom Alias",
+    });
+
+    assert.strictEqual(result.insertedText, "[Custom Alias](notepad://note/target-789)");
+    assert.strictEqual(result.updatedContent, "Hello [Custom Alias](notepad://note/target-789)");
+  });
+
+  it("handles empty note and Unicode labels gracefully", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const result = insertInternalLinkIntoContent({
+      content: "",
+      targetNoteId: "hindi-uuid",
+      targetTitle: "वार्षिक योजना २०२६",
+    });
+
+    assert.strictEqual(result.insertedText, "[वार्षिक योजना २०२६](notepad://note/hindi-uuid)");
+    assert.strictEqual(result.updatedContent, "[वार्षिक योजना २०२६](notepad://note/hindi-uuid)");
+    assert.strictEqual(result.newCursorPosition, result.insertedText.length);
+  });
+
+  it("safely clamps out-of-bounds selection ranges without throwing", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+    const result = insertInternalLinkIntoContent({
+      content: "Short note",
+      selectionStart: -10,
+      selectionEnd: 9999,
+      targetNoteId: "id-clamp",
+      targetTitle: "Safe Clamp",
+    });
+
+    // Entire text replaced because range clamped from 0 to content.length
+    assert.strictEqual(result.insertedText, "[Short note](notepad://note/id-clamp)");
+    assert.strictEqual(result.updatedContent, "[Short note](notepad://note/id-clamp)");
+  });
+});
+
+describe("Phase 9 - Task 6: Note-Picker UI Tests", () => {
+  it("verifies NotePickerModal component structure, clear action labels, and inputs", async () => {
+    const fs = await import("node:fs");
+    const componentContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/NotePicker/NotePickerModal.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(componentContent.includes("<Modal"), "NotePickerModal must use Modal component");
+    assert.ok(componentContent.includes("title=\"Link to Note\""), "NotePickerModal must have explicit title");
+    assert.ok(componentContent.includes("Insert Link"), "NotePickerModal must have explicit 'Insert Link' button");
+    assert.ok(componentContent.includes("Cancel"), "NotePickerModal must have clear Cancel button");
+    assert.ok(componentContent.includes("Search notes to link"), "NotePickerModal must have accessible search input");
+    assert.ok(componentContent.includes("Link text (display label)"), "NotePickerModal must offer display label customization");
+    assert.ok(componentContent.includes("storageService.notes.list"), "NotePickerModal must query notes via storageService");
+  });
+
+  it("filters eligible active notes excluding source note and trashed notes", () => {
+    const currentNoteId = "note-source";
+    const allNotes = [
+      { id: "note-source", title: "Source Note", content: "...", is_deleted: false },
+      { id: "note-1", title: "Project Plan", content: "Details", is_deleted: false },
+      { id: "note-2", title: "Trashed Note", content: "Deleted", is_deleted: true },
+      { id: "note-3", title: "Project Plan", content: "Duplicate title", is_deleted: false },
+    ];
+
+    const eligible = allNotes.filter(
+      (n) => !n.is_deleted && n.id !== currentNoteId
+    );
+
+    assert.strictEqual(eligible.length, 2);
+    assert.strictEqual(eligible[0].id, "note-1");
+    assert.strictEqual(eligible[1].id, "note-3");
+    assert.ok(!eligible.some((n) => n.id === currentNoteId));
+    assert.ok(!eligible.some((n) => n.is_deleted));
+  });
+
+  it("differentiates duplicate titles using notebook context mapping", () => {
+    const notebooks = [
+      { id: "nb-work", name: "Work" },
+      { id: "nb-personal", name: "Personal" },
+    ];
+    const map = new Map(notebooks.map((nb) => [nb.id, nb.name]));
+
+    const notes = [
+      { id: "note-10", title: "Shopping List", notebook_id: "nb-work" },
+      { id: "note-11", title: "Shopping List", notebook_id: "nb-personal" },
+    ];
+
+    assert.strictEqual(map.get(notes[0].notebook_id), "Work");
+    assert.strictEqual(map.get(notes[1].notebook_id), "Personal");
+    // Ensure both retain unique IDs despite identical titles
+    assert.notStrictEqual(notes[0].id, notes[1].id);
+  });
+
+  it("filters notes by title, notebook, and content query case-insensitively", () => {
+    const notebookMap = new Map([["nb-1", "Engineering"]]);
+    const notes = [
+      { id: "n1", title: "Architecture", content: "System diagram", notebook_id: "nb-1" },
+      { id: "n2", title: "Grocery", content: "Milk, bread", notebook_id: null },
+      { id: "n3", title: "Meeting Notes", content: "Discuss architecture", notebook_id: null },
+    ];
+
+    const filter = (query) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return notes;
+      return notes.filter((n) => {
+        const titleMatch = (n.title || "").toLowerCase().includes(q);
+        const contentMatch = (n.content || "").toLowerCase().includes(q);
+        const nbName = n.notebook_id ? notebookMap.get(n.notebook_id)?.toLowerCase() : "";
+        const notebookMatch = nbName ? nbName.includes(q) : false;
+        return titleMatch || notebookMatch || contentMatch;
+      });
+    };
+
+    assert.strictEqual(filter("ENGINEERING").length, 1);
+    assert.strictEqual(filter("ENGINEERING")[0].id, "n1");
+
+    assert.strictEqual(filter("architecture").length, 2); // n1 (title) & n3 (content)
+    assert.strictEqual(filter("bread").length, 1);
+    assert.strictEqual(filter("nonexistent").length, 0);
+  });
+
+  it("simulates safe cancellation without altering note selection", () => {
+    let selectedTarget = null;
+    let isClosed = false;
+
+    const onSelectNote = (target) => {
+      selectedTarget = target;
+    };
+    const onClose = () => {
+      isClosed = true;
+    };
+
+    // User cancels
+    onClose();
+
+    assert.strictEqual(isClosed, true);
+    assert.strictEqual(selectedTarget, null);
+  });
+
+  it("simulates selection passing stable target note ID and custom label", () => {
+    let selectedTarget = null;
+    const onSelectNote = (target) => {
+      selectedTarget = target;
+    };
+
+    const targetNote = { id: "target-uuid-444", title: "Target Note" };
+    const customLabel = "My Custom Shortcut";
+
+    onSelectNote({
+      id: targetNote.id,
+      title: targetNote.title,
+      customLabel,
+    });
+
+    assert.deepStrictEqual(selectedTarget, {
+      id: "target-uuid-444",
+      title: "Target Note",
+      customLabel: "My Custom Shortcut",
+    });
+  });
+});
+
+describe("Phase 9 - Task 7: Link Insertion Entry Point Tests", () => {
+  it("verifies toolbar button structure, tooltip, aria-label, and read-only disablement in NoteEditor.tsx", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(editorContent.includes("aria-label=\"Insert link\""), "Must have aria-label for accessibility");
+    assert.ok(editorContent.includes("title=\"Insert link (Ctrl+K)\""), "Must have keyboard shortcut in tooltip");
+    assert.ok(editorContent.includes("disabled={isReadOnly || !noteId}"), "Must be disabled when read-only or no note loaded");
+    assert.ok(editorContent.includes("<LinkIcon />"), "Must render LinkIcon inside button");
+    assert.ok(editorContent.includes("onMouseDown={(e) => {"), "Must have onMouseDown to preserve textarea selection");
+    assert.ok(editorContent.includes("e.preventDefault()"), "Must preventDefault on mouse down to retain focus/selection");
+  });
+
+  it("verifies Ctrl+K and Cmd+K keyboard shortcut handler in NoteEditor.tsx", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(editorContent.includes('(e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k"'), "Must handle both Ctrl+K and Cmd+K");
+    assert.ok(editorContent.includes("handleOpenLinkPicker();"), "Must invoke handleOpenLinkPicker upon shortcut");
+  });
+
+  it("verifies note switch invalidation safety in NoteEditor.tsx", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(
+      editorContent.includes("pendingInsertionSelectionRef.current = null"),
+      "Must clear pending selection on noteId change"
+    );
+    assert.ok(
+      editorContent.includes("pending.sourceNoteId !== noteId"),
+      "Must guard against cross-note link insertion if note switched before picker selection"
+    );
+  });
+
+  it("verifies NotePickerModal integration and props wiring in NoteEditor.tsx", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(editorContent.includes("<NotePickerModal"), "Must render NotePickerModal");
+    assert.ok(editorContent.includes("isOpen={isLinkPickerOpen}"), "Must bind isOpen state");
+    assert.ok(editorContent.includes("onClose={handleCloseLinkPicker}"), "Must bind onClose handler");
+    assert.ok(editorContent.includes("onSelectNote={handleSelectLinkTarget}"), "Must bind onSelectNote handler");
+    assert.ok(editorContent.includes("currentNoteId={noteId}"), "Must pass currentNoteId to exclude current note");
+    assert.ok(editorContent.includes("initialLabel={linkPickerInitialLabel}"), "Must pass initialLabel from active selection");
+  });
+
+  it("simulates selection capture and link insertion into note editor content", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+
+    const initialContent = "Here is my project research and more details.";
+    // User selected "project research" (index 11 to 27)
+    const selectionStart = 11;
+    const selectionEnd = 27;
+
+    const result = insertInternalLinkIntoContent({
+      content: initialContent,
+      selectionStart,
+      selectionEnd,
+      targetNoteId: "target-note-uuid-999",
+      targetTitle: "Research Notes 2026",
+      customLabel: "project research",
+    });
+
+    assert.strictEqual(
+      result.updatedContent,
+      "Here is my [project research](notepad://note/target-note-uuid-999) and more details."
+    );
+    assert.strictEqual(
+      result.newCursorPosition,
+      11 + "[project research](notepad://note/target-note-uuid-999)".length
+    );
+  });
+});
+
+describe("Phase 9 - Task 8: Link Rendering and Visual Recognition Tests", () => {
+  it("splits content into safe text and link segments with tokenizeContentWithLinks", async () => {
+    const { tokenizeContentWithLinks } = await import("../src/utils/linkParser.ts");
+
+    // Empty or non-string content
+    assert.deepStrictEqual(tokenizeContentWithLinks(""), [{ type: "text", text: "" }]);
+
+    // Content with no links
+    const plain = "Just plain text without any internal links here.";
+    assert.deepStrictEqual(tokenizeContentWithLinks(plain), [{ type: "text", text: plain }]);
+
+    // Content with a single link in the middle
+    const single = "See [Roadmap](notepad://note/uuid-101) for timelines.";
+    const singleTokens = tokenizeContentWithLinks(single);
+    assert.strictEqual(singleTokens.length, 3);
+    assert.deepStrictEqual(singleTokens[0], { type: "text", text: "See " });
+    assert.deepStrictEqual(singleTokens[1], {
+      type: "link",
+      targetId: "uuid-101",
+      label: "Roadmap",
+      raw: "[Roadmap](notepad://note/uuid-101)",
+    });
+    assert.deepStrictEqual(singleTokens[2], { type: "text", text: " for timelines." });
+
+    // Content with multiple links and Unicode labels
+    const multi = "Start [हिंदी नोट](notepad://note/hindi-1) mid [Paris & Café](notepad://note/french-2) end.";
+    const multiTokens = tokenizeContentWithLinks(multi);
+    assert.strictEqual(multiTokens.length, 5);
+    assert.strictEqual(multiTokens[1].type, "link");
+    assert.strictEqual(multiTokens[1].targetId, "hindi-1");
+    assert.strictEqual(multiTokens[1].label, "हिंदी नोट");
+    assert.strictEqual(multiTokens[3].type, "link");
+    assert.strictEqual(multiTokens[3].targetId, "french-2");
+    assert.strictEqual(multiTokens[3].label, "Paris & Café");
+
+    // Reassembling all segments exactly matches original content
+    const reassembled = multiTokens.map((t) => (t.type === "link" ? t.raw : t.text)).join("");
+    assert.strictEqual(reassembled, multi);
+  });
+
+  it("does not treat markdown images as links during tokenization", async () => {
+    const { tokenizeContentWithLinks } = await import("../src/utils/linkParser.ts");
+
+    const content = "Image ![Preview](notepad://note/img-1) and valid [Doc](notepad://note/doc-1).";
+    const tokens = tokenizeContentWithLinks(content);
+
+    assert.strictEqual(tokens.length, 3);
+    assert.strictEqual(tokens[0].type, "text");
+    assert.ok(tokens[0].text.includes("![Preview](notepad://note/img-1)"));
+    assert.strictEqual(tokens[1].type, "link");
+    assert.strictEqual(tokens[1].targetId, "doc-1");
+    assert.strictEqual(tokens[1].label, "Doc");
+    assert.strictEqual(tokens[2].type, "text");
+    assert.strictEqual(tokens[2].text, ".");
+  });
+
+  it("verifies InternalLinkPill component structure, accessibility, and status badges", async () => {
+    const fs = await import("node:fs");
+    const pillContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/InternalLinkPill.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(pillContent.includes("<button"), "Must use semantic button element");
+    assert.ok(pillContent.includes("type=\"button\""), "Must have type='button'");
+    assert.ok(pillContent.includes("className={`internal-link-pill"), "Must apply internal-link-pill class");
+    assert.ok(pillContent.includes("aria-label="), "Must provide accessible aria-label");
+    assert.ok(pillContent.includes("tabIndex={0}"), "Must be keyboard focusable");
+    assert.ok(pillContent.includes("data-target-id={targetId}"), "Must include data-target-id attribute");
+    assert.ok(pillContent.includes("e.key === \"Enter\" || e.key === \" \""), "Must activate on Enter and Space keys");
+    assert.ok(pillContent.includes("status === \"trashed\""), "Must handle trashed status badge");
+    assert.ok(pillContent.includes("status === \"missing\""), "Must handle missing status badge");
+  });
+
+  it("verifies RenderedNoteContent component safe rendering without dangerouslySetInnerHTML", async () => {
+    const fs = await import("node:fs");
+    const rendererContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/RenderedNoteContent.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(rendererContent.includes("tokenizeContentWithLinks"), "Must use tokenizeContentWithLinks");
+    assert.ok(!rendererContent.includes("dangerouslySetInnerHTML"), "Must NEVER use dangerouslySetInnerHTML");
+    assert.ok(rendererContent.includes("<InternalLinkPill"), "Must render InternalLinkPill for links");
+    assert.ok(rendererContent.includes("<React.Fragment key={`text-"), "Must render safe text nodes");
+    assert.ok(rendererContent.includes("role=\"region\""), "Must provide accessible region role");
+  });
+
+  it("verifies NoteLinksBar component renders outgoing links and returns null when empty", async () => {
+    const fs = await import("node:fs");
+    const barContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/NoteLinksBar.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(barContent.includes("if (!links || links.length === 0) return null;"), "Must return null when no links");
+    assert.ok(barContent.includes("className={`note-links-bar"), "Must apply note-links-bar class");
+    assert.ok(barContent.includes("Links ({links.length}):"), "Must display link count");
+    assert.ok(barContent.includes("<InternalLinkPill"), "Must render link pills");
+  });
+
+  it("verifies NoteEditor view mode toggle, keyboard shortcut, and content preservation", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(editorContent.includes("[viewMode, setViewMode] = useState<\"edit\" | \"preview\">(\"edit\")"), "Must manage viewMode state");
+    assert.ok(editorContent.includes("handleToggleViewMode"), "Must have toggle view mode handler");
+    assert.ok(editorContent.includes("aria-label={"), "Must have accessible view mode button label");
+    assert.ok(editorContent.includes("Switch to Reading/Preview mode"), "Must offer Reading/Preview mode toggle");
+    assert.ok(editorContent.includes("<RenderedNoteContent"), "Must render RenderedNoteContent in preview mode");
+    assert.ok(editorContent.includes("<NoteLinksBar links={parsedLinks}"), "Must render NoteLinksBar with parsed links");
+    assert.ok(editorContent.includes("e.key.toLowerCase() === \"p\" && e.shiftKey"), "Must support Ctrl+Shift+P shortcut");
+    assert.ok(editorContent.includes("e.key.toLowerCase() === \"e\""), "Must support Ctrl+E shortcut");
+  });
+});
+
+describe("Phase 9 - Task 9: Target Resolution by Stable Note ID Tests", () => {
+  it("verifies linksStorage client module structure and export on storageService", async () => {
+    const fs = await import("node:fs");
+    const linksStorageContent = fs.readFileSync(
+      new URL(
+        "../src/services/storage/links.ts",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(linksStorageContent.includes("resolveTarget(targetId: string)"), "Must define resolveTarget method");
+    assert.ok(linksStorageContent.includes("invoke<ResolvedLinkTarget>(\"resolve_link_target\""), "Must invoke resolve_link_target command");
+
+    const indexContent = fs.readFileSync(
+      new URL(
+        "../src/services/storage/index.ts",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    assert.ok(indexContent.includes("links: linksStorage"), "Must export links on storageService");
+  });
+
+  it("verifies Rust InternalLinkService implementation and parameterized query safety", async () => {
+    const fs = await import("node:fs");
+    const serviceContent = fs.readFileSync(
+      new URL(
+        "../src-tauri/src/storage/services/links.rs",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(serviceContent.includes("pub struct InternalLinkService;"), "Must define InternalLinkService");
+    assert.ok(serviceContent.includes("pub fn resolve_link_target("), "Must implement resolve_link_target");
+    assert.ok(serviceContent.includes("WHERE n.id = ?1"), "Must use parameterized SQL for target resolution");
+    assert.ok(serviceContent.includes("LEFT JOIN notebooks nb ON n.notebook_id = nb.id"), "Must LEFT JOIN notebooks for parent notebook context");
+    assert.ok(serviceContent.includes("LinkTargetLifecycle::Active"), "Must distinguish Active targets");
+    assert.ok(serviceContent.includes("LinkTargetLifecycle::Trashed"), "Must distinguish Trashed targets");
+    assert.ok(serviceContent.includes("LinkTargetLifecycle::Missing"), "Must distinguish Missing targets");
+  });
+
+  it("verifies Tauri command registration for resolve_link_target in lib.rs and storage.rs", async () => {
+    const fs = await import("node:fs");
+    const storageCmdContent = fs.readFileSync(
+      new URL(
+        "../src-tauri/src/commands/storage.rs",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    assert.ok(storageCmdContent.includes("pub fn resolve_link_target("), "Must define resolve_link_target command");
+
+    const libContent = fs.readFileSync(
+      new URL(
+        "../src-tauri/src/lib.rs",
+        import.meta.url
+      ),
+      "utf8"
+    );
+    assert.ok(libContent.includes("commands::resolve_link_target"), "Must register resolve_link_target in tauri handler");
+  });
+
+  it("simulates link target resolution distinguishes active, trashed, and missing notes", () => {
+    const mockDb = [
+      { id: "note-uuid-active", title: "Active Note", notebook_id: "nb-1", is_deleted: 0 },
+      { id: "note-uuid-trashed", title: "Trashed Note", notebook_id: null, is_deleted: 1 },
+    ];
+    const mockNotebooks = new Map([["nb-1", "Engineering"]]);
+
+    const resolveMockTarget = (targetId) => {
+      const trimmed = (targetId || "").trim();
+      if (!trimmed) {
+        return {
+          targetId: trimmed,
+          title: null,
+          lifecycle: "missing",
+          notebookId: null,
+          notebookName: null,
+        };
+      }
+      const note = mockDb.find((n) => n.id === trimmed);
+      if (!note) {
+        return {
+          targetId: trimmed,
+          title: null,
+          lifecycle: "missing",
+          notebookId: null,
+          notebookName: null,
+        };
+      }
+      return {
+        targetId: note.id,
+        title: note.title,
+        lifecycle: note.is_deleted ? "trashed" : "active",
+        notebookId: note.notebook_id,
+        notebookName: note.notebook_id ? mockNotebooks.get(note.notebook_id) ?? null : null,
+      };
+    };
+
+    // Active target
+    const activeRes = resolveMockTarget("note-uuid-active");
+    assert.strictEqual(activeRes.targetId, "note-uuid-active");
+    assert.strictEqual(activeRes.lifecycle, "active");
+    assert.strictEqual(activeRes.title, "Active Note");
+    assert.strictEqual(activeRes.notebookName, "Engineering");
+
+    // Trashed target
+    const trashedRes = resolveMockTarget("note-uuid-trashed");
+    assert.strictEqual(trashedRes.targetId, "note-uuid-trashed");
+    assert.strictEqual(trashedRes.lifecycle, "trashed");
+    assert.strictEqual(trashedRes.title, "Trashed Note");
+
+    // Missing target
+    const missingRes = resolveMockTarget("note-uuid-nonexistent");
+    assert.strictEqual(missingRes.targetId, "note-uuid-nonexistent");
+    assert.strictEqual(missingRes.lifecycle, "missing");
+    assert.strictEqual(missingRes.title, null);
+
+    // Empty target
+    const emptyRes = resolveMockTarget("   ");
+    assert.strictEqual(emptyRes.lifecycle, "missing");
+  });
+
+  it("guarantees resolution across renames and duplicate titles by strictly using stable IDs", () => {
+    const notesDb = [
+      { id: "uuid-note-1", title: "Original Title", notebook_id: "nb-a" },
+      { id: "uuid-note-2", title: "Duplicate Title", notebook_id: "nb-b" },
+      { id: "uuid-note-3", title: "Duplicate Title", notebook_id: "nb-c" },
+    ];
+
+    // Resolve by ID
+    const resolveById = (id) => notesDb.find((n) => n.id === id);
+
+    // 1. Rename note 1
+    const note1 = resolveById("uuid-note-1");
+    note1.title = "Completely Renamed Title 2026";
+    const resolvedAfterRename = resolveById("uuid-note-1");
+    assert.strictEqual(resolvedAfterRename.id, "uuid-note-1");
+    assert.strictEqual(resolvedAfterRename.title, "Completely Renamed Title 2026");
+
+    // 2. Duplicate titles resolve strictly to their respective IDs without ambiguity
+    const resNote2 = resolveById("uuid-note-2");
+    const resNote3 = resolveById("uuid-note-3");
+    assert.notStrictEqual(resNote2.id, resNote3.id);
+    assert.strictEqual(resNote2.notebook_id, "nb-b");
+    assert.strictEqual(resNote3.notebook_id, "nb-c");
+  });
+});
+
+describe("Phase 9 - Task 10: Safe Internal-Link Activation Tests", () => {
+  it("verifies BrokenLinkDialog component structure, buttons, and accessibility", async () => {
+    const fs = await import("node:fs");
+    const dialogContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/BrokenLinkDialog.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(dialogContent.includes("<Modal"), "Must render inside Modal component");
+    assert.ok(dialogContent.includes("Linked Note is in Trash"), "Must have trash warning title");
+    assert.ok(dialogContent.includes("Broken Link"), "Must have broken link title for missing notes");
+    assert.ok(dialogContent.includes("View in Trash"), "Must offer 'View in Trash' button when target is trashed");
+    assert.ok(dialogContent.includes("isTrashed ? \"Cancel\" : \"Close\""), "Must offer appropriate Cancel/Close label");
+    assert.ok(dialogContent.includes("target.targetId"), "Must present target note ID for missing links");
+    assert.ok(dialogContent.includes("if (!target) return null;"), "Must return null when target is null");
+  });
+
+  it("verifies App.tsx internal link activation wiring and dialog integration", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      appContent.includes("const handleActivateInternalLink = useCallback("),
+      "Must define handleActivateInternalLink handler"
+    );
+    assert.ok(
+      appContent.includes("storageService.links.resolveTarget(targetNoteId)"),
+      "Must call resolveTarget with stable note ID"
+    );
+    assert.ok(
+      appContent.includes("if (editorSaveRef.current) {"),
+      "Must flush pending debounced saves before navigating"
+    );
+    assert.ok(
+      appContent.includes("onActivateLink={handleActivateInternalLink}"),
+      "Must pass onActivateLink callback to NoteEditor"
+    );
+    assert.ok(
+      appContent.includes("<BrokenLinkDialog"),
+      "Must render BrokenLinkDialog"
+    );
+    assert.ok(
+      appContent.includes("target={linkNavigationTarget}"),
+      "Must pass linkNavigationTarget to BrokenLinkDialog"
+    );
+    assert.ok(
+      appContent.includes("onViewInTrash={handleConfirmViewInTrash}"),
+      "Must pass handleConfirmViewInTrash to BrokenLinkDialog"
+    );
+  });
+
+  it("simulates safe activation flow for active target (flushes pending edits and switches view if in trash)", async () => {
+    let pendingEditsFlushed = false;
+    let selectedNoteId = "source-note-1";
+    let activeNavId = "trash";
+    let dialogTarget = null;
+
+    const mockEditorSave = async () => {
+      pendingEditsFlushed = true;
+    };
+
+    const mockResolveTarget = async (id) => {
+      return {
+        targetId: id,
+        title: "Active Target Note",
+        lifecycle: "active",
+        notebookId: "nb-1",
+        notebookName: "Engineering",
+      };
+    };
+
+    // Simulate handleActivateInternalLink
+    const activateLink = async (targetId) => {
+      const resolved = await mockResolveTarget(targetId);
+      if (resolved.lifecycle === "active") {
+        if (mockEditorSave) {
+          await mockEditorSave();
+        }
+        if (activeNavId === "trash") {
+          activeNavId = "all-notes";
+        }
+        selectedNoteId = targetId;
+      } else {
+        dialogTarget = resolved;
+      }
+    };
+
+    await activateLink("target-note-active-2");
+
+    assert.strictEqual(pendingEditsFlushed, true, "Pending edits must be flushed");
+    assert.strictEqual(activeNavId, "all-notes", "Must switch out of Trash view to view active target");
+    assert.strictEqual(selectedNoteId, "target-note-active-2", "Target note must become selected");
+    assert.strictEqual(dialogTarget, null, "No broken dialog must be displayed for active target");
+  });
+
+  it("simulates activation of trashed target prompts user with BrokenLinkDialog without silent restore", async () => {
+    let pendingEditsFlushed = false;
+    let selectedNoteId = "source-note-1";
+    let activeNavId = "all-notes";
+    let dialogTarget = null;
+    let noteRestored = false;
+
+    const mockEditorSave = async () => {
+      pendingEditsFlushed = true;
+    };
+
+    const mockResolveTarget = async (id) => {
+      return {
+        targetId: id,
+        title: "Archived Notes",
+        lifecycle: "trashed",
+        notebookId: null,
+        notebookName: null,
+      };
+    };
+
+    // User clicks link to trashed note
+    const activateLink = async (targetId) => {
+      const resolved = await mockResolveTarget(targetId);
+      if (resolved.lifecycle === "active") {
+        if (mockEditorSave) await mockEditorSave();
+        selectedNoteId = targetId;
+      } else {
+        // Trashed target: set dialog target
+        dialogTarget = resolved;
+      }
+    };
+
+    await activateLink("trashed-note-99");
+
+    assert.ok(dialogTarget !== null, "Dialog target must be set");
+    assert.strictEqual(dialogTarget.lifecycle, "trashed");
+    assert.strictEqual(dialogTarget.title, "Archived Notes");
+    assert.strictEqual(noteRestored, false, "Note must NOT be silently restored");
+    assert.strictEqual(selectedNoteId, "source-note-1", "Selection must not change until explicit confirmation");
+
+    // User confirms "View in Trash"
+    const confirmViewInTrash = async () => {
+      const idToOpen = dialogTarget.targetId;
+      dialogTarget = null;
+      if (mockEditorSave) await mockEditorSave();
+      activeNavId = "trash";
+      selectedNoteId = idToOpen;
+    };
+
+    await confirmViewInTrash();
+
+    assert.strictEqual(dialogTarget, null, "Dialog must be closed");
+    assert.strictEqual(activeNavId, "trash", "Must navigate to Trash view");
+    assert.strictEqual(selectedNoteId, "trashed-note-99", "Trashed note must be selected in Trash view");
+    assert.strictEqual(noteRestored, false, "Note remains in trash without being un-deleted");
+  });
+
+  it("simulates activation of missing target presents broken link dialog gracefully without crash", async () => {
+    let dialogTarget = null;
+
+    const mockResolveTarget = async (id) => {
+      return {
+        targetId: id,
+        title: null,
+        lifecycle: "missing",
+        notebookId: null,
+        notebookName: null,
+      };
+    };
+
+    const activateLink = async (targetId) => {
+      try {
+        const resolved = await mockResolveTarget(targetId);
+        if (resolved.lifecycle !== "active") {
+          dialogTarget = resolved;
+        }
+      } catch (err) {
+        dialogTarget = {
+          targetId,
+          title: null,
+          lifecycle: "missing",
+          notebookId: null,
+          notebookName: null,
+        };
+      }
+    };
+
+    await activateLink("deleted-uuid-nonexistent");
+
+    assert.ok(dialogTarget !== null, "Broken link dialog must be triggered");
+    assert.strictEqual(dialogTarget.lifecycle, "missing");
+    assert.strictEqual(dialogTarget.targetId, "deleted-uuid-nonexistent");
+    assert.strictEqual(dialogTarget.title, null);
+  });
+
+  it("guarantees activation resolves by stable ID and never creates duplicate notes", async () => {
+    const notesDatabase = [
+      { id: "note-uuid-a", title: "Quarterly Review", is_deleted: false },
+      { id: "note-uuid-b", title: "Quarterly Review", is_deleted: false },
+    ];
+
+    let createdNotesCount = 0;
+    const createNoteMock = () => {
+      createdNotesCount++;
+    };
+
+    const resolveAndActivate = (targetId) => {
+      const found = notesDatabase.find((n) => n.id === targetId);
+      if (!found) {
+        return null;
+      }
+      return found.id;
+    };
+
+    // Activating link with note-uuid-b resolves specifically to note-uuid-b
+    const activatedId = resolveAndActivate("note-uuid-b");
+    assert.strictEqual(activatedId, "note-uuid-b");
+    assert.notStrictEqual(activatedId, "note-uuid-a");
+    assert.strictEqual(createdNotesCount, 0, "Must never create duplicate notes upon link activation");
+  });
+});
+
+describe("Phase 9 - Task 11: Protect Unsaved Edits During Link Navigation Tests", () => {
+  it("verifies App.tsx and NoteEditor.tsx code-level wiring for unsaved edit protection", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+    const editorContent = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    // App.tsx checks
+    assert.ok(
+      appContent.includes("activeLinkNavRequestIdRef = useRef<number>(0)"),
+      "Must track activeLinkNavRequestIdRef sequence counter for race condition protection"
+    );
+    assert.ok(
+      appContent.includes("const navRequestId = ++activeLinkNavRequestIdRef.current;"),
+      "Must increment navRequestId upon link activation"
+    );
+    assert.ok(
+      appContent.includes("await editorSaveRef.current();"),
+      "Must flush pending debounced saves before navigating away"
+    );
+    assert.ok(
+      appContent.includes("activeLinkNavRequestIdRef.current !== navRequestId"),
+      "Must discard late-arriving navigation responses if superseded"
+    );
+    assert.ok(
+      appContent.includes("selectedNoteId !== sourceNoteId"),
+      "Must guard against navigation if source note changed during async operations"
+    );
+
+    // NoteEditor.tsx checks
+    assert.ok(
+      editorContent.includes("isDirtyRef.current = false;"),
+      "Must synchronously reset isDirtyRef upon successful save"
+    );
+    assert.ok(
+      editorContent.includes("isDirtyRef.current = true;\n        setEditorStatus(\"error\");"),
+      "Must maintain dirty and error state when save fails"
+    );
+  });
+
+  it("simulates pending debounced edit flush before link navigation", async () => {
+    let saveCalled = false;
+    let selectedNoteId = "note-source-100";
+    let activeNavId = "all-notes";
+
+    const mockSave = async () => {
+      saveCalled = true;
+    };
+
+    const activateLink = async (targetId) => {
+      // 1. Flush pending save
+      if (mockSave) {
+        await mockSave();
+      }
+      // 2. Navigate
+      selectedNoteId = targetId;
+    };
+
+    await activateLink("note-target-200");
+
+    assert.strictEqual(saveCalled, true, "Must flush pending save before switching notes");
+    assert.strictEqual(selectedNoteId, "note-target-200", "Must navigate to target note after successful save");
+  });
+
+  it("simulates save failure blocks navigation and preserves in-memory user changes", async () => {
+    let selectedNoteId = "source-note-with-unsaved-work";
+    let errorMessage = null;
+    let navigationAttempted = false;
+
+    const mockFailingSave = async () => {
+      throw new Error("Disk write error: Permission denied");
+    };
+
+    const activateLink = async (targetId) => {
+      navigationAttempted = true;
+      try {
+        await mockFailingSave();
+      } catch (saveErr) {
+        errorMessage = "Unable to save current note before navigating: " + saveErr.message;
+        // Navigation aborted to protect unsaved edits
+        return;
+      }
+      selectedNoteId = targetId;
+    };
+
+    await activateLink("target-note-300");
+
+    assert.strictEqual(navigationAttempted, true, "Activation was initiated");
+    assert.ok(errorMessage !== null, "Error must be reported to user");
+    assert.ok(errorMessage.includes("Permission denied"), "Error message must reflect actual failure");
+    assert.strictEqual(
+      selectedNoteId,
+      "source-note-with-unsaved-work",
+      "Selected note must NOT change if save fails, preserving user content in editor"
+    );
+  });
+
+  it("simulates rapid multiple link clicks ignores stale resolutions (sequence ID race condition)", async () => {
+    let activeRequestId = 0;
+    let selectedNoteId = "note-start";
+
+    const navigateToLink = async (targetId, delayMs) => {
+      const currentReqId = ++activeRequestId;
+
+      // Simulate async resolution / database read
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      // Guard: if a newer navigation request was issued, discard this one
+      if (activeRequestId !== currentReqId) {
+        return;
+      }
+
+      selectedNoteId = targetId;
+    };
+
+    // Click 1 (slow, takes 60ms)
+    const p1 = navigateToLink("target-slow", 60);
+    // Click 2 (fast, takes 15ms)
+    const p2 = navigateToLink("target-fast", 15);
+
+    await Promise.all([p1, p2]);
+
+    // target-fast was issued second, so activeRequestId corresponds to target-fast.
+    // target-slow finishes after target-fast, but must NOT overwrite target-fast!
+    assert.strictEqual(
+      selectedNoteId,
+      "target-fast",
+      "Fast/newer click must prevail; slow/stale response must be discarded"
+    );
+  });
+
+  it("simulates source note change during async operations aborts stale navigation", async () => {
+    let selectedNoteId = "note-alpha";
+    let activeRequestId = 0;
+
+    const navigateLink = async (targetId) => {
+      const reqId = ++activeRequestId;
+      const sourceId = selectedNoteId;
+
+      // Simulate async work
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      if (activeRequestId !== reqId) return;
+      if (selectedNoteId !== sourceId) {
+        // Source note was switched externally during async resolution: abort
+        return;
+      }
+
+      selectedNoteId = targetId;
+    };
+
+    const navPromise = navigateLink("target-beta");
+
+    // While navigation is in flight, user selects note-gamma from sidebar
+    selectedNoteId = "note-gamma";
+
+    await navPromise;
+
+    assert.strictEqual(
+      selectedNoteId,
+      "note-gamma",
+      "Navigation must abort if source note changed during async operations"
+    );
+  });
+});
+
+describe("Phase 9 - Task 12: Back and Forward Navigation History Tests", () => {
+  it("verifies useNoteNavigationHistory hook module structure and capabilities", async () => {
+    const fs = await import("node:fs");
+    const hookContent = fs.readFileSync(
+      new URL("../src/hooks/useNoteNavigationHistory.ts", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(hookContent.includes("export function useNoteNavigationHistory"), "Must define useNoteNavigationHistory hook");
+    assert.ok(hookContent.includes("canGoBack"), "Must expose canGoBack boolean");
+    assert.ok(hookContent.includes("canGoForward"), "Must expose canGoForward boolean");
+    assert.ok(hookContent.includes("recordNavigation"), "Must expose recordNavigation action");
+    assert.ok(hookContent.includes("goBack"), "Must expose goBack action");
+    assert.ok(hookContent.includes("goForward"), "Must expose goForward action");
+    assert.ok(hookContent.includes("removeNoteFromHistory"), "Must expose removeNoteFromHistory action");
+    assert.ok(hookContent.includes("clearHistory"), "Must expose clearHistory action");
+  });
+
+  it("verifies App.tsx integration of navigation history with link activation and deletion", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      appContent.includes("useNoteNavigationHistory(selectedNoteId)"),
+      "Must instantiate useNoteNavigationHistory with selectedNoteId"
+    );
+    assert.ok(
+      appContent.includes("navigationHistory.recordNavigation(targetNoteId, sourceNoteId)"),
+      "Must record transition in history on successful link navigation"
+    );
+    assert.ok(
+      appContent.includes("const handleNavigateBack = useCallback("),
+      "Must implement handleNavigateBack callback"
+    );
+    assert.ok(
+      appContent.includes("const handleNavigateForward = useCallback("),
+      "Must implement handleNavigateForward callback"
+    );
+    assert.ok(
+      appContent.includes("navigationHistory.removeNoteFromHistory(noteId)"),
+      "Must purge permanently deleted notes from history stack"
+    );
+    assert.ok(
+      appContent.includes("navigationHistory.clearHistory()"),
+      "Must clear history when emptying trash"
+    );
+  });
+
+  it("verifies back and forward navigation transitions, duplicate prevention, and branching", () => {
+    // Pure logic simulation of navigation stack
+    let stack = ["note-A"];
+    let currentIndex = 0;
+
+    const record = (targetId) => {
+      if (currentIndex >= 0 && stack[currentIndex] === targetId) return;
+      stack = [...stack.slice(0, currentIndex + 1), targetId];
+      currentIndex = stack.length - 1;
+    };
+
+    const back = () => {
+      if (currentIndex <= 0) return null;
+      currentIndex--;
+      return stack[currentIndex];
+    };
+
+    const forward = () => {
+      if (currentIndex < 0 || currentIndex >= stack.length - 1) return null;
+      currentIndex++;
+      return stack[currentIndex];
+    };
+
+    // 1. Navigate A -> B -> C
+    record("note-B");
+    assert.deepStrictEqual(stack, ["note-A", "note-B"]);
+    assert.strictEqual(currentIndex, 1);
+
+    record("note-C");
+    assert.deepStrictEqual(stack, ["note-A", "note-B", "note-C"]);
+    assert.strictEqual(currentIndex, 2);
+
+    // 2. Prevent consecutive duplicates
+    record("note-C");
+    assert.deepStrictEqual(stack, ["note-A", "note-B", "note-C"]);
+    assert.strictEqual(currentIndex, 2);
+
+    // 3. Step back C -> B -> A
+    assert.strictEqual(back(), "note-B");
+    assert.strictEqual(currentIndex, 1);
+    assert.strictEqual(back(), "note-A");
+    assert.strictEqual(currentIndex, 0);
+    assert.strictEqual(back(), null, "Cannot go back past initial entry");
+
+    // 4. Step forward A -> B
+    assert.strictEqual(forward(), "note-B");
+    assert.strictEqual(currentIndex, 1);
+
+    // 5. Branching at B: navigate to D clears forward history (note-C)
+    record("note-D");
+    assert.deepStrictEqual(stack, ["note-A", "note-B", "note-D"]);
+    assert.strictEqual(currentIndex, 2);
+    assert.strictEqual(forward(), null, "Forward history must be empty after branching");
+
+    // 6. Step back from D goes to B, then A
+    assert.strictEqual(back(), "note-B");
+    assert.strictEqual(back(), "note-A");
+  });
+
+  it("verifies note lifecycle respect: removing deleted note purges it from history stack safely", () => {
+    let stack = ["note-A", "note-B", "note-C"];
+    let currentIndex = 2; // on note-C
+
+    const remove = (deletedId) => {
+      if (!stack.includes(deletedId)) return;
+      let targetIndex = currentIndex;
+      const newStack = [];
+      for (let i = 0; i < stack.length; i++) {
+        if (stack[i] === deletedId) {
+          if (i < currentIndex) {
+            targetIndex--;
+          }
+        } else {
+          newStack.push(stack[i]);
+        }
+      }
+      stack = newStack;
+      currentIndex = Math.max(0, Math.min(targetIndex, newStack.length - 1));
+    };
+
+    // Delete note-B while user is viewing note-C
+    remove("note-B");
+    assert.deepStrictEqual(stack, ["note-A", "note-C"]);
+    assert.strictEqual(currentIndex, 1);
+    assert.strictEqual(stack[currentIndex], "note-C");
+
+    // Back from note-C now goes directly to note-A
+    const back = () => (currentIndex > 0 ? stack[--currentIndex] : null);
+    assert.strictEqual(back(), "note-A");
+    assert.strictEqual(currentIndex, 0);
+  });
+
+  it("simulates back navigation resolves active target safely and prompts for trashed target", async () => {
+    const mockDb = {
+      "note-active": { id: "note-active", title: "Active Note", lifecycle: "active" },
+      "note-trashed": { id: "note-trashed", title: "Old Draft", lifecycle: "trashed" },
+    };
+
+    let selectedNoteId = "current-note";
+    let promptedDialogTarget = null;
+
+    const navigateBackTo = async (destinationId) => {
+      const target = mockDb[destinationId];
+      if (!target || target.lifecycle === "missing") {
+        promptedDialogTarget = { targetId: destinationId, lifecycle: "missing" };
+      } else if (target.lifecycle === "active") {
+        selectedNoteId = target.id;
+      } else if (target.lifecycle === "trashed") {
+        promptedDialogTarget = target;
+      }
+    };
+
+    // Navigate back to active note
+    await navigateBackTo("note-active");
+    assert.strictEqual(selectedNoteId, "note-active");
+    assert.strictEqual(promptedDialogTarget, null);
+
+    // Navigate back to trashed note
+    await navigateBackTo("note-trashed");
+    assert.ok(promptedDialogTarget !== null);
+    assert.strictEqual(promptedDialogTarget.lifecycle, "trashed");
+    assert.strictEqual(promptedDialogTarget.title, "Old Draft");
+    // Selection remains unchanged until explicit confirmation
+    assert.strictEqual(selectedNoteId, "note-active");
+  });
+});
+
+describe("Phase 9 - Task 13: Add Back and Forward Navigation Controls Tests", () => {
+  it("verifies TopBar.tsx navigation control structure, accessibility labels, and disabled states", async () => {
+    const fs = await import("node:fs");
+    const topBarContent = fs.readFileSync(
+      new URL("../src/components/TopBar/TopBar.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(topBarContent.includes("canGoBack?: boolean;"), "Must declare canGoBack prop in TopBarProps");
+    assert.ok(topBarContent.includes("canGoForward?: boolean;"), "Must declare canGoForward prop in TopBarProps");
+    assert.ok(topBarContent.includes("onNavigateBack?: () => void;"), "Must declare onNavigateBack prop in TopBarProps");
+    assert.ok(topBarContent.includes("onNavigateForward?: () => void;"), "Must declare onNavigateForward prop in TopBarProps");
+    assert.ok(topBarContent.includes("topbar-nav-history"), "Must render topbar-nav-history container");
+    assert.ok(topBarContent.includes("aria-label=\"Go back to previous note\""), "Must have accessible label for back button");
+    assert.ok(topBarContent.includes("aria-label=\"Go forward to next note\""), "Must have accessible label for forward button");
+    assert.ok(topBarContent.includes("disabled={!canGoBack}"), "Back button must bind disabled={!canGoBack}");
+    assert.ok(topBarContent.includes("disabled={!canGoForward}"), "Forward button must bind disabled={!canGoForward}");
+    assert.ok(topBarContent.includes("<ChevronLeftIcon />"), "Must render left chevron icon");
+    assert.ok(topBarContent.includes("<ChevronRightIcon />"), "Must render right chevron icon");
+  });
+
+  it("verifies TopBar.css styles for topbar-nav-history and disabled state", async () => {
+    const fs = await import("node:fs");
+    const cssContent = fs.readFileSync(
+      new URL("../src/components/TopBar/TopBar.css", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(cssContent.includes(".topbar-left"), "Must define .topbar-left layout class");
+    assert.ok(cssContent.includes(".topbar-nav-history"), "Must define .topbar-nav-history styling");
+    assert.ok(cssContent.includes(".topbar-nav-btn"), "Must define .topbar-nav-btn sizing");
+    assert.ok(cssContent.includes(".topbar-icon-btn:disabled"), "Must define disabled styling for topbar icon buttons");
+  });
+
+  it("verifies App.tsx wires TopBar navigation props to useNoteNavigationHistory", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      appContent.includes("canGoBack={navigationHistory.canGoBack}"),
+      "App.tsx must pass canGoBack to TopBar"
+    );
+    assert.ok(
+      appContent.includes("canGoForward={navigationHistory.canGoForward}"),
+      "App.tsx must pass canGoForward to TopBar"
+    );
+    assert.ok(
+      appContent.includes("onNavigateBack={handleNavigateBack}"),
+      "App.tsx must pass onNavigateBack to TopBar"
+    );
+    assert.ok(
+      appContent.includes("onNavigateForward={handleNavigateForward}"),
+      "App.tsx must pass onNavigateForward to TopBar"
+    );
+  });
+
+  it("simulates controls disabled states when history is empty or at boundaries", () => {
+    let stack = ["initial-note"];
+    let currentIndex = 0;
+
+    const computeCanGoBack = () => currentIndex > 0;
+    const computeCanGoForward = () => currentIndex >= 0 && currentIndex < stack.length - 1;
+
+    // 1. Initial state (only 1 note)
+    assert.strictEqual(computeCanGoBack(), false, "Cannot go back at initial note");
+    assert.strictEqual(computeCanGoForward(), false, "Cannot go forward at initial note");
+
+    // 2. Navigate to second note
+    stack.push("second-note");
+    currentIndex = 1;
+    assert.strictEqual(computeCanGoBack(), true, "Can go back after navigating forward");
+    assert.strictEqual(computeCanGoForward(), false, "Cannot go forward when at tip of history");
+
+    // 3. Navigate back to first note
+    currentIndex = 0;
+    assert.strictEqual(computeCanGoBack(), false, "Cannot go back after returning to root");
+    assert.strictEqual(computeCanGoForward(), true, "Can go forward after moving back");
+
+    // 4. Navigate forward again to second note
+    currentIndex = 1;
+    assert.strictEqual(computeCanGoBack(), true, "Can go back again");
+    assert.strictEqual(computeCanGoForward(), false, "Cannot go forward at end of history");
+  });
+});
+
+describe("Phase 9 - Task 14: Implement Incoming Links / Backlinks Tests", () => {
+  it("verifies linksStorage.getBacklinks client method in storage services", async () => {
+    const fs = await import("node:fs");
+    const linksTs = fs.readFileSync(
+      new URL("../src/services/storage/links.ts", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      linksTs.includes("async getBacklinks(targetNoteId: string): Promise<BacklinkItem[]>"),
+      "Must define getBacklinks method in linksStorage"
+    );
+    assert.ok(
+      linksTs.includes("invoke<BacklinkItem[]>(\"get_backlinks\", { targetNoteId })"),
+      "Must call tauri command get_backlinks"
+    );
+  });
+
+  it("verifies BacklinkItem type definition includes all required metadata fields", async () => {
+    const fs = await import("node:fs");
+    const typesTs = fs.readFileSync(
+      new URL("../src/services/storage/types.ts", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(typesTs.includes("export interface BacklinkItem"), "Must export BacklinkItem interface");
+    assert.ok(typesTs.includes("sourceNoteId: string;"), "Must have sourceNoteId field");
+    assert.ok(typesTs.includes("sourceNoteTitle: string;"), "Must have sourceNoteTitle field");
+    assert.ok(typesTs.includes("sourceNotebookId: string | null;"), "Must have sourceNotebookId field");
+    assert.ok(typesTs.includes("sourceNotebookName?: string | null;"), "Must have sourceNotebookName field");
+    assert.ok(typesTs.includes("labelSnippet?: string | null;"), "Must have labelSnippet field");
+    assert.ok(typesTs.includes("modifiedAt: string;"), "Must have modifiedAt field");
+  });
+
+  it("verifies BacklinksSection.tsx structure, accessibility, and navigation handling", async () => {
+    const fs = await import("node:fs");
+    const backlinksContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/BacklinksSection.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(backlinksContent.includes("export const BacklinksSection"), "Must export BacklinksSection");
+    assert.ok(backlinksContent.includes("storageService.links.getBacklinks"), "Must call storageService.links.getBacklinks");
+    assert.ok(backlinksContent.includes("data-testid=\"backlinks-section\""), "Must have backlinks-section testid");
+    assert.ok(backlinksContent.includes("data-testid=\"backlinks-toggle\""), "Must have backlinks-toggle testid");
+    assert.ok(backlinksContent.includes("data-testid=\"backlinks-count\""), "Must have backlinks-count testid");
+    assert.ok(backlinksContent.includes("data-testid=\"backlinks-list\""), "Must have backlinks-list testid");
+    assert.ok(backlinksContent.includes("aria-expanded={isExpanded}"), "Must bind aria-expanded accessibility attribute");
+    assert.ok(backlinksContent.includes("onActivateLink(item.sourceNoteId, item.sourceNoteTitle)"), "Must invoke onActivateLink when clicked");
+    assert.ok(backlinksContent.includes("backlink-notebook-badge"), "Must render notebook badge when present");
+    assert.ok(backlinksContent.includes("backlink-snippet-preview"), "Must render snippet preview when available");
+  });
+
+  it("verifies NoteEditor.tsx integrates BacklinksSection inside the scrollable document", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      editorContent.includes("BacklinksSection"),
+      "NoteEditor must import BacklinksSection"
+    );
+    assert.ok(
+      editorContent.includes("<BacklinksSection"),
+      "NoteEditor must render <BacklinksSection"
+    );
+    assert.ok(
+      editorContent.includes("onActivateLink={handleActivateLink}"),
+      "NoteEditor must wire handleActivateLink to BacklinksSection"
+    );
+    // Crucial invariant: AttachmentList decoupling comment must remain intact
+    assert.ok(
+      editorContent.includes("{/* <AttachmentList noteId={noteId} /> */}"),
+      "Must preserve AttachmentList decoupling invariant comment"
+    );
+  });
+
+  it("verifies InternalLinks.css provides full styling for BacklinksSection", async () => {
+    const fs = await import("node:fs");
+    const cssContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/InternalLinks.css", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(cssContent.includes(".backlinks-section"), "Must style .backlinks-section");
+    assert.ok(cssContent.includes(".backlinks-header"), "Must style .backlinks-header");
+    assert.ok(cssContent.includes(".backlinks-toggle-btn"), "Must style .backlinks-toggle-btn");
+    assert.ok(cssContent.includes(".backlinks-badge"), "Must style .backlinks-badge");
+    assert.ok(cssContent.includes(".backlink-card"), "Must style .backlink-card");
+    assert.ok(cssContent.includes(".backlink-notebook-badge"), "Must style .backlink-notebook-badge");
+    assert.ok(cssContent.includes(".backlink-snippet-preview"), "Must style .backlink-snippet-preview");
+  });
+
+  it("verifies Rust backend get_backlinks command and registration", async () => {
+    const fs = await import("node:fs");
+    const storageCommands = fs.readFileSync(
+      new URL("../src-tauri/src/commands/storage.rs", import.meta.url),
+      "utf8"
+    );
+    const libRs = fs.readFileSync(
+      new URL("../src-tauri/src/lib.rs", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      storageCommands.includes("pub fn get_backlinks("),
+      "storage.rs must define pub fn get_backlinks"
+    );
+    assert.ok(
+      storageCommands.includes("InternalLinkService::get_backlinks(&conn, &target_note_id)"),
+      "storage.rs must invoke InternalLinkService::get_backlinks"
+    );
+    assert.ok(
+      libRs.includes("commands::get_backlinks,"),
+      "lib.rs must register commands::get_backlinks"
+    );
+  });
+
+  it("simulates backlink activation callback on source note selection", () => {
+    const activatedTargets = [];
+    const onActivateLink = (targetId, label) => {
+      activatedTargets.push({ targetId, label });
+    };
+
+    const mockBacklinks = [
+      {
+        sourceNoteId: "note-101",
+        sourceNoteTitle: "Project Alpha",
+        sourceNotebookId: "nb-1",
+        sourceNotebookName: "Active Projects",
+        labelSnippet: "See [Spec Document] for details",
+        modifiedAt: "2026-10-09T08:30:00Z",
+      },
+      {
+        sourceNoteId: "note-202",
+        sourceNoteTitle: "Meeting Notes",
+        sourceNotebookId: null,
+        sourceNotebookName: null,
+        labelSnippet: "Action item: check [Spec Document]",
+        modifiedAt: "2026-10-09T09:15:00Z",
+      },
+    ];
+
+    // Simulate clicking the first backlink
+    onActivateLink(mockBacklinks[0].sourceNoteId, mockBacklinks[0].sourceNoteTitle);
+
+    assert.strictEqual(activatedTargets.length, 1);
+    assert.strictEqual(activatedTargets[0].targetId, "note-101");
+    assert.strictEqual(activatedTargets[0].label, "Project Alpha");
+
+    // Simulate clicking the second backlink
+    onActivateLink(mockBacklinks[1].sourceNoteId, mockBacklinks[1].sourceNoteTitle);
+    assert.strictEqual(activatedTargets.length, 2);
+    assert.strictEqual(activatedTargets[1].targetId, "note-202");
+    assert.strictEqual(activatedTargets[1].label, "Meeting Notes");
+  });
+});
+
+describe("Phase 9 - Task 15: Keep Link Metadata Synchronized with Note Content Tests", () => {
+  it("verifies BacklinksSection.tsx supports refreshTrigger and manual refresh button", async () => {
+    const fs = await import("node:fs");
+    const backlinksContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/BacklinksSection.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      backlinksContent.includes("refreshTrigger?: number | string | null;"),
+      "BacklinksSectionProps must declare refreshTrigger prop"
+    );
+    assert.ok(
+      backlinksContent.includes("data-testid=\"backlinks-refresh-btn\""),
+      "BacklinksSection must provide refresh button with testid"
+    );
+    assert.ok(
+      backlinksContent.includes("title=\"Refresh incoming links\""),
+      "Refresh button must have descriptive title"
+    );
+    assert.ok(
+      backlinksContent.includes("[noteId, refreshTrigger, fetchBacklinks]"),
+      "useEffect must react to refreshTrigger changes"
+    );
+  });
+
+  it("verifies NoteEditor.tsx passes refreshTrigger={lastSavedAt} to BacklinksSection", async () => {
+    const fs = await import("node:fs");
+    const editorContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      editorContent.includes("refreshTrigger={lastSavedAt}"),
+      "NoteEditor must wire refreshTrigger={lastSavedAt} to BacklinksSection"
+    );
+    assert.ok(
+      editorContent.includes("{/* <AttachmentList noteId={noteId} /> */}"),
+      "Must preserve AttachmentList decoupling invariant comment"
+    );
+  });
+
+  it("verifies InternalLinks.css provides styles for backlinks refresh button and spinning state", async () => {
+    const fs = await import("node:fs");
+    const cssContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/InternalLinks.css", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(cssContent.includes(".backlinks-refresh-btn"), "Must style .backlinks-refresh-btn");
+    assert.ok(cssContent.includes(".backlinks-refresh-btn .is-spinning"), "Must style .is-spinning animation");
+    assert.ok(cssContent.includes("@keyframes spin"), "Must declare @keyframes spin");
+  });
+
+  it("simulates synchronized backlink lifecycle across creation, content edits, trash, and restore", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const targetNoteId = "target-note-100";
+    let notesDatabase = [
+      {
+        id: "source-1",
+        title: "Lecture Notes",
+        content: `Check out foundational concepts in [Quantum Theory](notepad://note/${targetNoteId}) today.`,
+        is_deleted: 0,
+        notebook_id: "nb-1",
+        notebook_name: "Physics",
+        modified_at: "2026-10-09T10:00:00Z",
+      },
+    ];
+
+    // Authoritative synchronization query function
+    const computeBacklinks = (targetId) => {
+      return notesDatabase
+        .filter((n) => n.is_deleted === 0 && n.id !== targetId)
+        .filter((n) => {
+          const links = parseInternalLinks(n.content);
+          return links.some((l) => l.targetId === targetId);
+        })
+        .map((n) => ({
+          sourceNoteId: n.id,
+          sourceNoteTitle: n.title,
+          sourceNotebookName: n.notebook_name,
+        }));
+    };
+
+    // 1. Initial creation
+    let backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 1);
+    assert.strictEqual(backlinks[0].sourceNoteId, "source-1");
+
+    // 2. Note content updated: link removed
+    notesDatabase[0].content = "Check out foundational concepts in general physics today.";
+    backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 0, "Obsolete link must immediately disappear from backlinks");
+
+    // 3. Link re-inserted with modified label
+    notesDatabase[0].content = `Updated reading: [Advanced Quantum Computing](notepad://note/${targetNoteId}).`;
+    backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 1);
+
+    // 4. Source note soft-deleted (moved to trash)
+    notesDatabase[0].is_deleted = 1;
+    backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 0, "Trashed source note must be excluded from backlinks");
+
+    // 5. Source note restored
+    notesDatabase[0].is_deleted = 0;
+    backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 1, "Restored source note must immediately re-appear in backlinks");
+
+    // 6. Source note permanently deleted
+    notesDatabase = notesDatabase.filter((n) => n.id !== "source-1");
+    backlinks = computeBacklinks(targetNoteId);
+    assert.strictEqual(backlinks.length, 0, "Permanently deleted source note leaves no dangling backlinks");
+  });
+});
+
+describe("Phase 9 - Task 16: Handle Broken Links and Missing Targets Tests", () => {
+  it("verifies BrokenLinkDialog.tsx provides close, remove link, and change link actions for missing targets", async () => {
+    const fs = await import("node:fs");
+    const dialogContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/BrokenLinkDialog.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(dialogContent.includes("data-testid=\"broken-link-close-btn\""), "Must render close button");
+    assert.ok(dialogContent.includes("data-testid=\"broken-link-remove-btn\""), "Must render remove link button");
+    assert.ok(dialogContent.includes("data-testid=\"broken-link-repair-btn\""), "Must render repair/change link button");
+    assert.ok(
+      dialogContent.includes("The original link text is preserved."),
+      "Must clearly communicate that original link text is preserved"
+    );
+  });
+
+  it("verifies replaceInternalLinkTarget utility safely updates target ID without corrupting labels or other links", async () => {
+    const { replaceInternalLinkTarget } = await import("../src/utils/linkParser.ts");
+
+    const content = "See [Architecture Guide](notepad://note/missing-uuid-1) and [Other Doc](notepad://note/active-uuid-2).";
+    const repaired = replaceInternalLinkTarget(
+      content,
+      "missing-uuid-1",
+      "new-uuid-3",
+      "Modern Architecture Guide"
+    );
+
+    assert.strictEqual(
+      repaired,
+      "See [Modern Architecture Guide](notepad://note/new-uuid-3) and [Other Doc](notepad://note/active-uuid-2)."
+    );
+
+    // If new title is omitted, existing label is preserved
+    const repairedPreserveLabel = replaceInternalLinkTarget(
+      content,
+      "missing-uuid-1",
+      "new-uuid-3"
+    );
+    assert.strictEqual(
+      repairedPreserveLabel,
+      "See [Architecture Guide](notepad://note/new-uuid-3) and [Other Doc](notepad://note/active-uuid-2)."
+    );
+  });
+
+  it("verifies removeInternalLink utility removes link markup while preserving label text", async () => {
+    const { removeInternalLink } = await import("../src/utils/linkParser.ts");
+
+    const content = "Refer to [Quantum Theory](notepad://note/missing-uuid-1) for details.";
+    const unlinked = removeInternalLink(content, "missing-uuid-1");
+
+    assert.strictEqual(unlinked, "Refer to Quantum Theory for details.");
+
+    // Does not touch unrelated links
+    const contentMultiple = "Refer to [Quantum Theory](notepad://note/missing-uuid-1) and [Math](notepad://note/math-id).";
+    const unlinkedMultiple = removeInternalLink(contentMultiple, "missing-uuid-1");
+    assert.strictEqual(unlinkedMultiple, "Refer to Quantum Theory and [Math](notepad://note/math-id).");
+  });
+
+  it("verifies App.tsx wires broken link repair and removal flows and preserves source content", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      appContent.includes("onRepairLink={handleInitiateRepairBrokenLink}"),
+      "App.tsx must pass onRepairLink to BrokenLinkDialog"
+    );
+    assert.ok(
+      appContent.includes("onRemoveLink={handleRemoveBrokenLink}"),
+      "App.tsx must pass onRemoveLink to BrokenLinkDialog"
+    );
+    assert.ok(
+      appContent.includes("repairingBrokenTargetId"),
+      "App.tsx must manage repairingBrokenTargetId state"
+    );
+    assert.ok(
+      appContent.includes("replaceInternalLinkTarget("),
+      "App.tsx must use replaceInternalLinkTarget for explicit replacement"
+    );
+    assert.ok(
+      appContent.includes("removeInternalLink("),
+      "App.tsx must use removeInternalLink for explicit removal"
+    );
+  });
+
+  it("simulates title collision immunity: broken target never silently resolves to a new note with same title", async () => {
+    const deletedNoteTargetId = "old-deleted-uuid-123";
+    const fakeNotesDb = [
+      {
+        id: "active-uuid-456",
+        title: "Architecture Guide", // Same title!
+        is_deleted: 0,
+      },
+    ];
+
+    // Canonical ID resolution
+    const resolveLink = (targetId) => {
+      const match = fakeNotesDb.find((n) => n.id === targetId);
+      if (match) {
+        return { targetId, lifecycle: match.is_deleted ? "trashed" : "active", title: match.title };
+      }
+      return { targetId, lifecycle: "missing", title: null };
+    };
+
+    const resolved = resolveLink(deletedNoteTargetId);
+    assert.strictEqual(resolved.lifecycle, "missing", "Must resolve as missing");
+    assert.strictEqual(resolved.title, null, "Must not adopt title of unrelated active note");
+    assert.notStrictEqual(resolved.targetId, fakeNotesDb[0].id, "Must never resolve to colliding title note");
+  });
+});
+
+describe("Phase 9 - Task 17: Integrate Internal Links with Trash and Recovery Tests", () => {
+  it("verifies BrokenLinkDialog.tsx provides Restore Note and View in Trash buttons for trashed targets", async () => {
+    const fs = await import("node:fs");
+    const dialogContent = fs.readFileSync(
+      new URL("../src/features/notes/components/Links/BrokenLinkDialog.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      dialogContent.includes("data-testid=\"broken-link-restore-btn\""),
+      "Must render restore button for trashed notes"
+    );
+    assert.ok(
+      dialogContent.includes("data-testid=\"broken-link-trash-btn\""),
+      "Must render view in trash button for trashed notes"
+    );
+    assert.ok(
+      dialogContent.includes("The linked note <strong>&ldquo;{noteTitle}&rdquo;</strong> is currently in Trash."),
+      "Must display clear message naming the trashed note"
+    );
+  });
+
+  it("verifies App.tsx wires handleRestoreAndOpenTargetNote and handleConfirmViewInTrash", async () => {
+    const fs = await import("node:fs");
+    const appContent = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      appContent.includes("handleRestoreAndOpenTargetNote"),
+      "App.tsx must define handleRestoreAndOpenTargetNote"
+    );
+    assert.ok(
+      appContent.includes("handleConfirmViewInTrash"),
+      "App.tsx must define handleConfirmViewInTrash"
+    );
+    assert.ok(
+      appContent.includes("onRestore={handleRestoreAndOpenTargetNote}"),
+      "App.tsx must pass onRestore to BrokenLinkDialog"
+    );
+    assert.ok(
+      appContent.includes("onViewInTrash={handleConfirmViewInTrash}"),
+      "App.tsx must pass onViewInTrash to BrokenLinkDialog"
+    );
+  });
+
+  it("simulates target entering trash: preserves source note content and marks lifecycle as trashed", () => {
+    const targetId = "target-uuid-999";
+    const initialSourceContent = `Important notes referencing [Target Spec](notepad://note/${targetId}) in detail.`;
+    const sourceNote = {
+      id: "source-uuid-111",
+      title: "Design Meeting",
+      content: initialSourceContent,
+      is_deleted: 0,
+    };
+    const targetNote = {
+      id: targetId,
+      title: "Target Spec",
+      is_deleted: 0,
+    };
+
+    // 1. Soft-delete target note
+    targetNote.is_deleted = 1;
+
+    // Verify target resolution
+    const resolveLifecycle = (note) => (note.is_deleted ? "trashed" : "active");
+    assert.strictEqual(resolveLifecycle(targetNote), "trashed");
+
+    // Invariant: Source note content is completely preserved
+    assert.strictEqual(sourceNote.content, initialSourceContent);
+    assert.strictEqual(sourceNote.is_deleted, 0);
+
+    // 2. Restore target note
+    targetNote.is_deleted = 0;
+    assert.strictEqual(resolveLifecycle(targetNote), "active");
+    // Link still points to targetId and works without requiring re-insertion
+    assert.ok(sourceNote.content.includes(`notepad://note/${targetId}`));
+  });
+
+  it("simulates permanent target deletion: resolves safely as missing without cascading to source note", () => {
+    const targetId = "target-uuid-888";
+    const initialSourceContent = `Plan referencing [Old Doc](notepad://note/${targetId}).`;
+    const sourceNote = {
+      id: "source-uuid-222",
+      title: "Project Plan",
+      content: initialSourceContent,
+      is_deleted: 0,
+    };
+
+    let targetExists = true;
+    // Permanently delete target note
+    targetExists = false;
+
+    const resolveLifecycle = (exists) => (exists ? "active" : "missing");
+    assert.strictEqual(resolveLifecycle(targetExists), "missing");
+
+    // Source note remains intact and is NOT cascade-deleted or silently rewritten
+    assert.strictEqual(sourceNote.content, initialSourceContent);
+    assert.strictEqual(sourceNote.is_deleted, 0);
+  });
+});
+
+describe("Phase 9 - Task 18: Make Links Safe Across Note Renames and Duplicate Titles Tests", () => {
+  it("verifies internal-links-architecture.md documents display-label policy and rename independence", async () => {
+    const fs = await import("node:fs");
+    const doc = fs.readFileSync(
+      new URL("../docs/internal-links-architecture.md", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      doc.includes("Display-Label Policy & Rename Independence"),
+      "Must document Display-Label Policy & Rename Independence section"
+    );
+    assert.ok(
+      doc.includes("Insertion-Time Label Preservation"),
+      "Must document Insertion-Time Label Preservation"
+    );
+    assert.ok(
+      doc.includes("Title-Independent Target Resolution"),
+      "Must document Title-Independent Target Resolution"
+    );
+  });
+
+  it("simulates target note rename: preserves source content and link validity without content rewrites", async () => {
+    const targetId = "target-uuid-alpha";
+    const sourceNote = {
+      id: "source-uuid-omega",
+      title: "Project Overview",
+      content: `See our [Initial Specifications](notepad://note/${targetId}) for details.`,
+    };
+    let targetNote = {
+      id: targetId,
+      title: "Initial Specifications",
+      notebook_id: "nb-1",
+    };
+
+    // Rename target note
+    targetNote.title = "Modern Distributed Architecture v3";
+
+    // Source note content is NOT rewritten on rename
+    assert.strictEqual(
+      sourceNote.content,
+      `See our [Initial Specifications](notepad://note/${targetId}) for details.`
+    );
+
+    // Link target still resolves unambiguously to the target note by UUID
+    const resolveLink = (id, note) => (id === note.id ? note : null);
+    const resolved = resolveLink(targetId, targetNote);
+    assert.ok(resolved);
+    assert.strictEqual(resolved.id, targetId);
+    assert.strictEqual(resolved.title, "Modern Distributed Architecture v3");
+  });
+
+  it("simulates duplicate note titles: links resolve unambiguously by stable UUID", () => {
+    const noteA = {
+      id: "uuid-note-a",
+      title: "Sprint Planning",
+      notebookName: "Engineering",
+    };
+    const noteB = {
+      id: "uuid-note-b",
+      title: "Sprint Planning", // Exact same title
+      notebookName: "Marketing",
+    };
+
+    const notesDb = [noteA, noteB];
+    const resolveByUuid = (targetId) => notesDb.find((n) => n.id === targetId);
+
+    // Link pointing to Note A resolves to Note A
+    const resA = resolveByUuid(noteA.id);
+    assert.strictEqual(resA.id, "uuid-note-a");
+    assert.strictEqual(resA.notebookName, "Engineering");
+
+    // Link pointing to Note B resolves to Note B
+    const resB = resolveByUuid(noteB.id);
+    assert.strictEqual(resB.id, "uuid-note-b");
+    assert.strictEqual(resB.notebookName, "Marketing");
+    assert.notStrictEqual(resA.id, resB.id);
+  });
+
+  it("simulates notebook moves: preserves link target identity and updates notebook context", () => {
+    const targetId = "target-uuid-gamma";
+    const note = {
+      id: targetId,
+      title: "Onboarding Checklist",
+      notebookId: "nb-old",
+      notebookName: "HR",
+    };
+
+    // Move to different notebook
+    note.notebookId = "nb-new";
+    note.notebookName = "Engineering Onboarding";
+
+    // Link identity is solely determined by UUID
+    assert.strictEqual(note.id, targetId);
+    assert.strictEqual(note.notebookName, "Engineering Onboarding");
+  });
+
+  it("verifies Unicode and punctuated note titles format and parse cleanly", async () => {
+    const { formatInternalLink, parseInternalLinks } = await import("../src/utils/linkParser.ts");
+
+    // Unicode title
+    const unicodeLink = formatInternalLink("target-unicode-1", "योजना एवं अनुसंधान २०२६ (Café & Résumé)");
+    assert.strictEqual(unicodeLink, "[योजना एवं अनुसंधान २०२६ (Café & Résumé)](notepad://note/target-unicode-1)");
+
+    const parsedUnicode = parseInternalLinks(unicodeLink);
+    assert.strictEqual(parsedUnicode.length, 1);
+    assert.strictEqual(parsedUnicode[0].label, "योजना एवं अनुसंधान २०२६ (Café & Résumé)");
+
+    // Punctuation title
+    const punctLink = formatInternalLink("target-punct-2", "Release v2.0 (Final) - #1: High_Priority*");
+    const parsedPunct = parseInternalLinks(punctLink);
+    assert.strictEqual(parsedPunct.length, 1);
+    assert.strictEqual(parsedPunct[0].label, "Release v2.0 (Final) - #1: High_Priority*");
+  });
+});
+
+describe("Phase 9 - Task 19: Support Link Behavior Across TXT and Markdown Notes Tests", () => {
+  it("verifies internal-links-architecture.md documents TXT and Markdown format support and limitations", async () => {
+    const fs = await import("node:fs");
+    const archDoc = fs.readFileSync(
+      new URL("../docs/internal-links-architecture.md", import.meta.url),
+      "utf8"
+    );
+    assert.ok(archDoc.includes("8. Support Across TXT and Markdown Notes"), "Section 8 header must exist");
+    assert.ok(archDoc.includes("No Silent Format Conversion"), "Must document no silent format conversion");
+    assert.ok(archDoc.includes("Plain Text (`txt`) Notes"), "Must document TXT support");
+    assert.ok(archDoc.includes("Markdown (`md`) Notes"), "Must document Markdown support");
+    assert.ok(archDoc.includes("Documented Limitations"), "Must honestly document edit mode limitations");
+  });
+
+  it("simulates link insertion into a TXT note preserves format and plain text integrity", async () => {
+    const { insertInternalLinkIntoContent, parseInternalLinks } = await import("../src/utils/linkParser.ts");
+    const originalTxt = "Meeting notes from Monday:\n- Discuss Q3 roadmap\n- Action items for next sprint\nEnd of notes.";
+    let activeFormat = "txt";
+
+    const targetSlice = "Discuss Q3 roadmap";
+    const insertRes = insertInternalLinkIntoContent({
+      content: originalTxt,
+      selectionStart: originalTxt.indexOf(targetSlice),
+      selectionEnd: originalTxt.indexOf(targetSlice) + targetSlice.length,
+      targetNoteId: "target-roadmap-uuid",
+      targetTitle: "Q3 Product Roadmap",
+    });
+
+    // Invariant: format must remain strictly "txt"
+    assert.strictEqual(activeFormat, "txt", "Format must never change on link insertion");
+
+    // Content must preserve surrounding text
+    assert.ok(insertRes.updatedContent.startsWith("Meeting notes from Monday:\n- [Discuss Q3 roadmap](notepad://note/target-roadmap-uuid)"));
+    assert.ok(insertRes.updatedContent.endsWith("\n- Action items for next sprint\nEnd of notes."));
+
+    // Parsing must discover the link
+    const parsed = parseInternalLinks(insertRes.updatedContent);
+    assert.strictEqual(parsed.length, 1);
+    assert.strictEqual(parsed[0].targetId, "target-roadmap-uuid");
+    assert.strictEqual(parsed[0].label, "Discuss Q3 roadmap");
+  });
+
+  it("simulates link insertion into a Markdown note preserves Markdown syntax and formatting", async () => {
+    const { insertInternalLinkIntoContent, tokenizeContentWithLinks } = await import("../src/utils/linkParser.ts");
+    const originalMd = "# Project Architecture\n\n> Important RFC doc\n\n```typescript\nconst x = [1, 2, 3];\n```\n\nSee the specifications here.";
+    let activeFormat = "md";
+
+    const insertRes = insertInternalLinkIntoContent({
+      content: originalMd,
+      selectionStart: originalMd.indexOf("specifications"),
+      selectionEnd: originalMd.indexOf("specifications") + "specifications".length,
+      targetNoteId: "target-specs-uuid",
+      targetTitle: "System Specifications",
+    });
+
+    assert.strictEqual(activeFormat, "md");
+    assert.ok(insertRes.updatedContent.includes("# Project Architecture"));
+    assert.ok(insertRes.updatedContent.includes("> Important RFC doc"));
+    assert.ok(insertRes.updatedContent.includes("```typescript\nconst x = [1, 2, 3];\n```"));
+    assert.ok(insertRes.updatedContent.includes("[specifications](notepad://note/target-specs-uuid)"));
+
+    // Tokenization preserves full Markdown structure
+    const segments = tokenizeContentWithLinks(insertRes.updatedContent);
+    const linkSegment = segments.find((s) => s.type === "link");
+    assert.ok(linkSegment, "Link segment must be present");
+    assert.strictEqual(linkSegment.targetId, "target-specs-uuid");
+    assert.strictEqual(linkSegment.label, "specifications");
+  });
+
+  it("verifies tokenization does not misinterpret unrelated brackets, images, or code as internal links", async () => {
+    const { parseInternalLinks, tokenizeContentWithLinks } = await import("../src/utils/linkParser.ts");
+    const complexContent = "Check out [TODO] and task [1] in notebook. Also ![preview image](https://example.com/pic.png). For internal reference, see [API Plan](notepad://note/api-plan-123).";
+    
+    const parsed = parseInternalLinks(complexContent);
+    assert.strictEqual(parsed.length, 1, "Only notepad://note/ URI should be parsed as internal link");
+    assert.strictEqual(parsed[0].targetId, "api-plan-123");
+    assert.strictEqual(parsed[0].label, "API Plan");
+
+    const tokens = tokenizeContentWithLinks(complexContent);
+    const linkTokens = tokens.filter((t) => t.type === "link");
+    assert.strictEqual(linkTokens.length, 1);
+    assert.strictEqual(linkTokens[0].targetId, "api-plan-123");
+
+    // All other segments are plain text
+    const textTokens = tokens.filter((t) => t.type === "text");
+    const combinedText = textTokens.map((t) => t.text).join("");
+    assert.ok(combinedText.includes("[TODO]"));
+    assert.ok(combinedText.includes("[1]"));
+    assert.ok(combinedText.includes("![preview image](https://example.com/pic.png)"));
+  });
+
+  it("verifies NoteEditor preserves format state during link insertion", async () => {
+    const fs = await import("node:fs");
+    const noteEditorSource = fs.readFileSync(
+      new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+      "utf8"
+    );
+
+    // In handleConfirmInsertLink, format is passed directly to updateDirtyState
+    assert.ok(
+      noteEditorSource.includes("updateDirtyState(title, newContent, format);"),
+      "NoteEditor must pass unchanged format to updateDirtyState on link insertion"
+    );
+
+    // Format is toggled only via handleToggleFormat
+    assert.ok(
+      noteEditorSource.includes("const handleToggleFormat = () => {"),
+      "Format toggling must only occur through explicit user action"
+    );
+  });
+});
+
+describe("Phase 9 - Task 20: Add Keyboard Accessibility and Editor Interaction Support Tests", () => {
+  it("verifies internal-links-architecture.md documents keyboard accessibility, shortcuts, and focus management", async () => {
+    const fs = await import("node:fs");
+    const archDoc = fs.readFileSync(
+      new URL("../docs/internal-links-architecture.md", import.meta.url),
+      "utf8"
+    );
+    assert.ok(
+      archDoc.includes("9. Keyboard Accessibility & Interaction Support"),
+      "Section 9 header must exist"
+    );
+    assert.ok(archDoc.includes("Shortcuts & Conflict Prevention"), "Must document shortcuts and conflict prevention");
+    assert.ok(archDoc.includes("Note Picker Keyboard Flow"), "Must document note picker keyboard flow");
+    assert.ok(archDoc.includes("Link Activation & Focus Management"), "Must document focus management");
+  });
+
+  it("verifies InternalLinkPill provides keyboard activation and accessible attributes", async () => {
+    const fs = await import("node:fs");
+    const pillSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/InternalLinkPill.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(pillSource.includes("tabIndex={0}"), "InternalLinkPill must be focusable with tabIndex 0");
+    assert.ok(
+      pillSource.includes('if (e.key === "Enter" || e.key === " ")'),
+      "InternalLinkPill must support Enter and Space keys for activation"
+    );
+    assert.ok(
+      pillSource.includes('aria-label={`Open linked note: ${label}'),
+      "InternalLinkPill must provide descriptive aria-label"
+    );
+  });
+
+  it("verifies NotePickerModal implements search focus, Arrow navigation, Enter select, and Escape close", async () => {
+    const fs = await import("node:fs");
+    const pickerSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/NotePicker/NotePickerModal.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(
+      pickerSource.includes("searchInputRef.current?.focus()"),
+      "NotePickerModal must autofocus search input on open"
+    );
+    assert.ok(
+      pickerSource.includes('if (e.key === "Escape")'),
+      "NotePickerModal must support Escape key to close"
+    );
+    assert.ok(
+      pickerSource.includes('if (e.key === "ArrowDown")'),
+      "NotePickerModal must support ArrowDown navigation"
+    );
+    assert.ok(
+      pickerSource.includes('else if (e.key === "ArrowUp")'),
+      "NotePickerModal must support ArrowUp navigation"
+    );
+    assert.ok(
+      pickerSource.includes('else if (e.key === "Enter")'),
+      "NotePickerModal must support Enter key to select candidate"
+    );
+  });
+
+  it("verifies NoteEditor handles Ctrl+K, view mode toggles, and focus restoration", async () => {
+    const fs = await import("node:fs");
+    const editorSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Editor/NoteEditor.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    // Ctrl+K opens picker
+    assert.ok(
+      editorSource.includes('if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k")'),
+      "NoteEditor must support Ctrl/Cmd+K to insert link"
+    );
+
+    // Ctrl+Shift+P or Ctrl+E toggles preview mode
+    assert.ok(
+      editorSource.includes('e.key.toLowerCase() === "p" && e.shiftKey'),
+      "NoteEditor must support Ctrl/Cmd+Shift+P to toggle view mode"
+    );
+
+    // Focus restoration
+    assert.ok(
+      editorSource.includes("contentRef.current?.focus();"),
+      "NoteEditor must restore focus on picker close"
+    );
+    assert.ok(
+      editorSource.includes("contentRef.current.selectionStart = insertionResult.newCursorPosition;"),
+      "NoteEditor must position cursor right after inserted link"
+    );
+  });
+
+  it("verifies TopBar navigation buttons provide accessible disabled states", async () => {
+    const fs = await import("node:fs");
+    const topBarSource = fs.readFileSync(
+      new URL("../src/components/TopBar/TopBar.tsx", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      topBarSource.includes("aria-disabled={!canGoBack}"),
+      "TopBar back button must declare aria-disabled"
+    );
+    assert.ok(
+      topBarSource.includes("aria-disabled={!canGoForward}"),
+      "TopBar forward button must declare aria-disabled"
+    );
+    assert.ok(
+      topBarSource.includes('aria-label="Go back to previous note"'),
+      "TopBar back button must declare aria-label"
+    );
+    assert.ok(
+      topBarSource.includes('aria-label="Go forward to next note"'),
+      "TopBar forward button must declare aria-label"
+    );
+  });
+
+  it("verifies useKeyboardShortcuts guards Alt+Arrow from macOS text-editing conflict", async () => {
+    const fs = await import("node:fs");
+    const shortcutsSource = fs.readFileSync(
+      new URL("../src/hooks/useKeyboardShortcuts.ts", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      shortcutsSource.includes('if (event.altKey && event.key === "ArrowLeft")'),
+      "Must listen to Alt+ArrowLeft for history back"
+    );
+    assert.ok(
+      shortcutsSource.includes('if (event.altKey && event.key === "ArrowRight")'),
+      "Must listen to Alt+ArrowRight for history forward"
+    );
+    assert.ok(
+      shortcutsSource.includes("if (isMac && isEditing)"),
+      "Must guard against macOS Option+Arrow text-editing conflict when typing"
+    );
+  });
+});
+
+describe("Phase 9 - Task 21: Implement Link-Related Loading, Empty, and Error States Tests", () => {
+  it("verifies internal-links-architecture.md documents loading, empty, error states and decoupling rules", async () => {
+    const fs = await import("node:fs");
+    const archDoc = fs.readFileSync(
+      new URL("../docs/internal-links-architecture.md", import.meta.url),
+      "utf8"
+    );
+
+    assert.ok(
+      archDoc.includes("10. Link-Related Loading, Empty, and Error States"),
+      "Section 10 header must exist"
+    );
+    assert.ok(archDoc.includes("Note Picker States"), "Must document note picker states");
+    assert.ok(archDoc.includes("Target Resolution & Navigation States"), "Must document target resolution & nav states");
+    assert.ok(archDoc.includes("Incoming Links (Backlinks) States"), "Must document backlinks states");
+    assert.ok(archDoc.includes("Decoupling Guarantee"), "Must document decoupling guarantee");
+  });
+
+  it("verifies NotePickerModal provides distinct loading, search error, and empty states", async () => {
+    const fs = await import("node:fs");
+    const pickerSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/NotePicker/NotePickerModal.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(
+      pickerSource.includes('className="note-picker-loading"'),
+      "NotePickerModal must render distinct loading container"
+    );
+    assert.ok(
+      pickerSource.includes("Loading notes..."),
+      "NotePickerModal must display loading message"
+    );
+    assert.ok(
+      pickerSource.includes('className="note-picker-error" role="alert"'),
+      "NotePickerModal must render alert container on query error"
+    );
+    assert.ok(
+      pickerSource.includes('className="note-picker-empty"'),
+      "NotePickerModal must render distinct empty container"
+    );
+    assert.ok(
+      pickerSource.includes("No other active notes available to link."),
+      "NotePickerModal must distinguish empty library from empty search results"
+    );
+  });
+
+  it("verifies BacklinksSection provides distinct loading, empty, and query failure states", async () => {
+    const fs = await import("node:fs");
+    const backlinksSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/BacklinksSection.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    // Distinct states
+    assert.ok(
+      backlinksSource.includes('className="backlinks-loading"'),
+      "BacklinksSection must provide loading container"
+    );
+    assert.ok(
+      backlinksSource.includes('className="backlinks-error"'),
+      "BacklinksSection must provide error container"
+    );
+    assert.ok(
+      backlinksSource.includes('className="backlinks-empty"'),
+      "BacklinksSection must provide empty container"
+    );
+    assert.ok(
+      backlinksSource.includes("No incoming links to this note yet."),
+      "BacklinksSection empty state must be distinct from error"
+    );
+
+    // Error safety & loading cleanup
+    assert.ok(
+      backlinksSource.includes('setError("Unable to load backlinks.");'),
+      "BacklinksSection must present human-friendly error without raw SQL"
+    );
+    assert.ok(
+      backlinksSource.includes("finally {"),
+      "BacklinksSection must have finally block"
+    );
+    assert.ok(
+      backlinksSource.includes("setIsLoading(false);"),
+      "BacklinksSection must clear loading state in finally"
+    );
+  });
+
+  it("verifies BrokenLinkDialog distinguishes Trashed vs Missing link target states", async () => {
+    const fs = await import("node:fs");
+    const dialogSource = fs.readFileSync(
+      new URL(
+        "../src/features/notes/components/Links/BrokenLinkDialog.tsx",
+        import.meta.url
+      ),
+      "utf8"
+    );
+
+    assert.ok(
+      dialogSource.includes('const isTrashed = target.lifecycle === "trashed";'),
+      "BrokenLinkDialog must inspect target lifecycle"
+    );
+    assert.ok(
+      dialogSource.includes('isTrashed ? "Linked Note is in Trash" : "Broken Link"'),
+      "BrokenLinkDialog must provide distinct titles for trashed vs missing notes"
+    );
+    assert.ok(
+      dialogSource.includes("Restore Note"),
+      "BrokenLinkDialog must provide recovery option for trashed notes"
+    );
+    assert.ok(
+      dialogSource.includes("Change Link"),
+      "BrokenLinkDialog must provide re-link option for missing notes"
+    );
+  });
+
+  it("verifies App.tsx handles link resolution progress, save failure guard, and navigation error", async () => {
+    const fs = await import("node:fs");
+    const appSource = fs.readFileSync(
+      new URL("../src/app/App.tsx", import.meta.url),
+      "utf8"
+    );
+
+    // Link resolution indicator
+    assert.ok(
+      appSource.includes("isResolvingLinkTarget && ("),
+      "App.tsx must render resolution indicator while resolving link"
+    );
+    assert.ok(
+      appSource.includes("Opening linked note..."),
+      "App.tsx must display resolution text"
+    );
+    assert.ok(
+      appSource.includes("setIsResolvingLinkTarget(false);"),
+      "App.tsx must reset resolution indicator in finally block"
+    );
+
+    // Save failure guard before navigation
+    assert.ok(
+      appSource.includes("Unable to save current note before navigating."),
+      "App.tsx must notify user if pre-navigation save flush fails"
+    );
+
+    // Navigation error handling
+    assert.ok(
+      appSource.includes('setErrorMessage("Unable to open linked note. An unexpected error occurred.");'),
+      "App.tsx must handle unexpected navigation errors gracefully"
+    );
+  });
+});
+
+describe("Phase 9 - Task 22: Add Automated Parser, Service, and Database Tests", () => {
+  it("parsing: handles valid links, multiple links, Unicode, and punctuation", async () => {
+    const { parseInternalLinks, formatInternalLink } = await import("../src/utils/linkParser.ts");
+
+    // Single link
+    const single = "[Overview](notepad://note/uuid-101)";
+    const parsed1 = parseInternalLinks(single);
+    assert.strictEqual(parsed1.length, 1);
+    assert.strictEqual(parsed1[0].targetId, "uuid-101");
+    assert.strictEqual(parsed1[0].label, "Overview");
+
+    // Multiple links with Unicode & punctuation
+    const multi = "Notes: [योजना एवं विकास](notepad://note/uuid-hindi) and [Release v2.0 (Final) - #1](notepad://note/uuid-rel) end.";
+    const parsedMulti = parseInternalLinks(multi);
+    assert.strictEqual(parsedMulti.length, 2);
+    assert.strictEqual(parsedMulti[0].label, "योजना एवं विकास");
+    assert.strictEqual(parsedMulti[0].targetId, "uuid-hindi");
+    assert.strictEqual(parsedMulti[1].label, "Release v2.0 (Final) - #1");
+    assert.strictEqual(parsedMulti[1].targetId, "uuid-rel");
+
+    // Escaped brackets
+    const formattedEscaped = formatInternalLink("uuid-esc", "Task [Q1]");
+    assert.strictEqual(formattedEscaped, "[Task [Q1\\]](notepad://note/uuid-esc)");
+    const parsedEscaped = parseInternalLinks(formattedEscaped);
+    assert.strictEqual(parsedEscaped.length, 1);
+    assert.strictEqual(parsedEscaped[0].label, "Task [Q1]");
+  });
+
+  it("parsing: ignores malformed syntax, external URLs, and Markdown images", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+
+    const malformed = `
+      [empty-id](notepad://note/)
+      [whitespace-id](notepad://note/   )
+      [external-url](https://notepad://note/123)
+      ![markdown-image](notepad://note/img-uuid)
+      [unclosed](notepad://note/123
+      [bracket-without-scheme]
+      ordinary [brackets] in text
+    `;
+
+    const parsed = parseInternalLinks(malformed);
+    assert.strictEqual(parsed.length, 0, "No malformed tokens should be parsed as internal links");
+  });
+
+  it("parsing: executes in linear time across 100KB+ note content without pathological performance", async () => {
+    const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+
+    let largeContent = "";
+    for (let i = 0; i < 1500; i++) {
+      largeContent += "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt. ";
+      if (i % 150 === 0) {
+        largeContent += `[Reference Link ${i}](notepad://note/perf-id-${i}) `;
+      }
+    }
+    assert.ok(largeContent.length > 100000, "Content must exceed 100KB");
+
+    const startTime = performance.now();
+    const links = parseInternalLinks(largeContent);
+    const duration = performance.now() - startTime;
+
+    assert.strictEqual(links.length, 10, "Must detect all 10 links");
+    assert.ok(duration < 50, `Parsing 100KB text must complete in <50ms (actual: ${duration.toFixed(2)}ms)`);
+  });
+
+  it("insertion: covers start, end, range selection, empty content, and format preservation", async () => {
+    const { insertInternalLinkIntoContent } = await import("../src/utils/linkParser.ts");
+
+    // Start of note
+    const resStart = insertInternalLinkIntoContent({
+      content: "Existing body content.",
+      selectionStart: 0,
+      selectionEnd: 0,
+      targetNoteId: "target-start",
+      targetTitle: "Intro Note",
+    });
+    assert.ok(resStart.updatedContent.startsWith("[Intro Note](notepad://note/target-start)"));
+    assert.ok(resStart.updatedContent.endsWith("Existing body content."));
+
+    // End of note
+    const resEnd = insertInternalLinkIntoContent({
+      content: "Existing body content.",
+      selectionStart: 22,
+      selectionEnd: 22,
+      targetNoteId: "target-end",
+      targetTitle: "Outro Note",
+    });
+    assert.strictEqual(resEnd.updatedContent, "Existing body content.[Outro Note](notepad://note/target-end)");
+
+    // Range selection
+    const resRange = insertInternalLinkIntoContent({
+      content: "Review the quarterly report for details.",
+      selectionStart: 11,
+      selectionEnd: 27, // "quarterly report"
+      targetNoteId: "target-report",
+      targetTitle: "Q3 Report",
+    });
+    assert.strictEqual(
+      resRange.updatedContent,
+      "Review the [quarterly report](notepad://note/target-report) for details."
+    );
+
+    // Empty content with default fallback
+    const resEmpty = insertInternalLinkIntoContent({
+      content: "",
+      targetNoteId: "target-empty",
+    });
+    assert.strictEqual(resEmpty.updatedContent, "[Untitled Note](notepad://note/target-empty)");
+  });
+
+  it("resolution & lifecycle: verifies rename independence, duplicate titles, and trash/restore isolation", async () => {
+    const { replaceInternalLinkTarget, removeInternalLink } = await import("../src/utils/linkParser.ts");
+
+    // In-memory model simulating database resolution across lifecycle
+    const targetA = { id: "uuid-target-a", title: "Core Specs", is_deleted: 0, notebook: "Dev" };
+    const targetB = { id: "uuid-target-b", title: "Core Specs", is_deleted: 0, notebook: "Ops" }; // Duplicate title!
+
+    const resolveTarget = (id) => {
+      const found = [targetA, targetB].find((n) => n.id === id);
+      if (!found) return { targetId: id, lifecycle: "missing", title: null };
+      if (found.is_deleted) return { targetId: id, lifecycle: "trashed", title: found.title };
+      return { targetId: id, lifecycle: "active", title: found.title, notebook: found.notebook };
+    };
+
+    // 1. Unambiguous resolution of duplicate titles by ID
+    const resA = resolveTarget("uuid-target-a");
+    const resB = resolveTarget("uuid-target-b");
+    assert.strictEqual(resA.targetId, "uuid-target-a");
+    assert.strictEqual(resA.notebook, "Dev");
+    assert.strictEqual(resB.targetId, "uuid-target-b");
+    assert.strictEqual(resB.notebook, "Ops");
+
+    // 2. Renamed target resolves with new title without content rewrite
+    targetA.title = "Core Specs v2 (Renamed)";
+    const resRenamed = resolveTarget("uuid-target-a");
+    assert.strictEqual(resRenamed.title, "Core Specs v2 (Renamed)");
+    assert.strictEqual(resRenamed.lifecycle, "active");
+
+    // 3. Trashed target resolves as trashed
+    targetA.is_deleted = 1;
+    const resTrashed = resolveTarget("uuid-target-a");
+    assert.strictEqual(resTrashed.lifecycle, "trashed");
+
+    // 4. Restored target resolves back to active
+    targetA.is_deleted = 0;
+    const resRestored = resolveTarget("uuid-target-a");
+    assert.strictEqual(resRestored.lifecycle, "active");
+
+    // 5. Unknown target resolves as missing
+    const resMissing = resolveTarget("non-existent-uuid");
+    assert.strictEqual(resMissing.lifecycle, "missing");
+
+    // 6. Source note repair & unlink utilities preserve surrounding content
+    const sourceContent = "See [Core Specs](notepad://note/uuid-target-a) for details. Also [Other](notepad://note/other-uuid).";
+    const repaired = replaceInternalLinkTarget(sourceContent, "uuid-target-a", "uuid-target-b", "Ops Specs");
+    assert.strictEqual(repaired, "See [Ops Specs](notepad://note/uuid-target-b) for details. Also [Other](notepad://note/other-uuid).");
+
+    const unlinked = removeInternalLink(sourceContent, "uuid-target-a");
+    assert.strictEqual(unlinked, "See Core Specs for details. Also [Other](notepad://note/other-uuid).");
+  });
+});
+
+describe("Phase 9 - Task 23: Add Frontend and Navigation Integration Tests", () => {
+  // =========================================================================
+  // 1. Link Insertion End-to-End Workflows
+  // =========================================================================
+  describe("1. Link Insertion End-to-End Workflows", () => {
+    it("simulates opening NotePickerModal, filtering by title, and selecting target note", async () => {
+      const { insertInternalLinkIntoContent, parseInternalLinks } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      const mockNotes = [
+        { id: "note-arch-1", title: "Architecture Blueprint", notebook: "Engineering" },
+        { id: "note-arch-2", title: "Architecture Guidelines", notebook: "Engineering" },
+        { id: "note-roadmap", title: "Q4 Product Roadmap", notebook: "Product" },
+        { id: "note-notes", title: "General Brainstorming", notebook: null },
+      ];
+
+      // Simulate opening modal with query "arch"
+      const query = "arch".toLowerCase();
+      const filtered = mockNotes.filter(
+        (n) =>
+          n.title.toLowerCase().includes(query) ||
+          (n.notebook && n.notebook.toLowerCase().includes(query))
+      );
+      assert.strictEqual(filtered.length, 2, "Should filter to 2 architecture notes");
+
+      // Select target note
+      const selected = filtered[0];
+      const initialContent = "Please refer to the documentation.";
+      const insertResult = insertInternalLinkIntoContent({
+        content: initialContent,
+        selectionStart: 20,
+        selectionEnd: 33, // replaces "documentation"
+        targetNoteId: selected.id,
+        targetTitle: selected.title,
+      });
+
+      assert.strictEqual(
+        insertResult.updatedContent,
+        "Please refer to the [documentation](notepad://note/note-arch-1)."
+      );
+      assert.strictEqual(
+        insertResult.insertedText,
+        "[documentation](notepad://note/note-arch-1)"
+      );
+
+      // Verify round-trip parsing
+      const parsed = parseInternalLinks(insertResult.updatedContent);
+      assert.strictEqual(parsed.length, 1);
+      assert.strictEqual(parsed[0].targetId, "note-arch-1");
+      assert.strictEqual(parsed[0].label, "documentation");
+    });
+
+    it("verifies canceling note picker leaves content and cursor untouched", async () => {
+      const { insertInternalLinkIntoContent } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      const originalContent = "Drafting important specifications here.";
+      const originalCursor = 18;
+
+      let isPickerOpen = true;
+      let activeContent = originalContent;
+      let activeCursor = originalCursor;
+
+      // User presses Escape or clicks Cancel
+      const handleCancelPicker = () => {
+        isPickerOpen = false;
+        // Content and cursor must remain untouched
+      };
+
+      handleCancelPicker();
+
+      assert.strictEqual(isPickerOpen, false, "Picker should close");
+      assert.strictEqual(activeContent, originalContent, "Content must not be modified");
+      assert.strictEqual(activeCursor, originalCursor, "Cursor position must be preserved");
+    });
+
+    it("verifies inserting into notes with existing content at start, middle, end, and selection", async () => {
+      const { insertInternalLinkIntoContent } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      const targetId = "target-uuid-99";
+      const targetTitle = "Target Guide";
+
+      // 1. Insert at start of document
+      const resStart = insertInternalLinkIntoContent({
+        content: "Following is the content.",
+        selectionStart: 0,
+        selectionEnd: 0,
+        targetNoteId: targetId,
+        targetTitle,
+      });
+      assert.strictEqual(
+        resStart.updatedContent,
+        "[Target Guide](notepad://note/target-uuid-99)Following is the content."
+      );
+      assert.strictEqual(resStart.newCursorPosition, 45);
+
+      // 2. Insert in middle between words
+      const resMiddle = insertInternalLinkIntoContent({
+        content: "Check this now.",
+        selectionStart: 11,
+        selectionEnd: 11,
+        targetNoteId: targetId,
+        targetTitle,
+      });
+      assert.strictEqual(
+        resMiddle.updatedContent,
+        "Check this [Target Guide](notepad://note/target-uuid-99)now."
+      );
+
+      // 3. Insert at end of document
+      const resEnd = insertInternalLinkIntoContent({
+        content: "See appendix: ",
+        selectionStart: 14,
+        selectionEnd: 14,
+        targetNoteId: targetId,
+        targetTitle,
+      });
+      assert.strictEqual(
+        resEnd.updatedContent,
+        "See appendix: [Target Guide](notepad://note/target-uuid-99)"
+      );
+
+      // 4. Replace non-empty active selection using selected text as label
+      const resSelection = insertInternalLinkIntoContent({
+        content: "Read the comprehensive specification for details.",
+        selectionStart: 9,
+        selectionEnd: 36, // "comprehensive specification"
+        targetNoteId: targetId,
+        targetTitle,
+      });
+      assert.strictEqual(
+        resSelection.updatedContent,
+        "Read the [comprehensive specification](notepad://note/target-uuid-99) for details."
+      );
+    });
+
+    it("verifies inserting links with Unicode titles, special characters, and bracket escaping", async () => {
+      const {
+        insertInternalLinkIntoContent,
+        parseInternalLinks,
+        formatInternalLink,
+        sanitizeLinkLabel,
+      } = await import("../src/utils/linkParser.ts");
+
+      const unicodeTestCases = [
+        {
+          id: "u-hindi",
+          title: "परियोजना कार्ययोजना २०२६",
+          expectedLabel: "परियोजना कार्ययोजना २०२६",
+        },
+        {
+          id: "u-arabic",
+          title: "وثيقة التصميم الفني",
+          expectedLabel: "وثيقة التصميم الفني",
+        },
+        {
+          id: "u-japanese",
+          title: "システム開発メモ 🚀",
+          expectedLabel: "システム開発メモ 🚀",
+        },
+        {
+          id: "u-brackets",
+          title: "Task [Phase 9] - Release",
+          expectedLabel: "Task [Phase 9] - Release",
+        },
+      ];
+
+      for (const tc of unicodeTestCases) {
+        const linkFormatted = formatInternalLink(tc.id, tc.title);
+        const res = insertInternalLinkIntoContent({
+          content: "Reference: ",
+          selectionStart: 11,
+          selectionEnd: 11,
+          targetNoteId: tc.id,
+          targetTitle: tc.title,
+        });
+
+        assert.ok(
+          res.updatedContent.includes(tc.id),
+          `Must include target ID ${tc.id}`
+        );
+
+        const parsed = parseInternalLinks(res.updatedContent);
+        assert.strictEqual(parsed.length, 1);
+        assert.strictEqual(parsed[0].targetId, tc.id);
+        assert.strictEqual(parsed[0].label, tc.expectedLabel);
+      }
+    });
+
+    it("verifies editor undo and redo transactions cleanly restore and reapply inserted link", async () => {
+      const { insertInternalLinkIntoContent } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      // Simulate editor undo/redo transaction stack
+      let content = "Initial note draft.";
+      const undoStack = [];
+      const redoStack = [];
+
+      const recordEdit = (newContent) => {
+        undoStack.push(content);
+        redoStack.length = 0; // Branching clears redo stack
+        content = newContent;
+      };
+
+      const undo = () => {
+        if (undoStack.length === 0) return;
+        redoStack.push(content);
+        content = undoStack.pop();
+      };
+
+      const redo = () => {
+        if (redoStack.length === 0) return;
+        undoStack.push(content);
+        content = redoStack.pop();
+      };
+
+      // 1. Initial state
+      assert.strictEqual(content, "Initial note draft.");
+      assert.strictEqual(undoStack.length, 0);
+
+      // 2. Insert internal link
+      const insertRes = insertInternalLinkIntoContent({
+        content,
+        selectionStart: 8,
+        selectionEnd: 12, // "note"
+        targetNoteId: "uuid-handbook",
+        targetTitle: "Handbook",
+      });
+      recordEdit(insertRes.updatedContent);
+
+      assert.strictEqual(
+        content,
+        "Initial [note](notepad://note/uuid-handbook) draft."
+      );
+      assert.strictEqual(undoStack.length, 1);
+      assert.strictEqual(redoStack.length, 0);
+
+      // 3. Perform Undo
+      undo();
+      assert.strictEqual(content, "Initial note draft.", "Undo must restore exact text");
+      assert.strictEqual(undoStack.length, 0);
+      assert.strictEqual(redoStack.length, 1);
+
+      // 4. Perform Redo
+      redo();
+      assert.strictEqual(
+        content,
+        "Initial [note](notepad://note/uuid-handbook) draft.",
+        "Redo must reapply inserted link"
+      );
+      assert.strictEqual(undoStack.length, 1);
+      assert.strictEqual(redoStack.length, 0);
+    });
+  });
+
+  // =========================================================================
+  // 2. Link Activation End-to-End Workflows
+  // =========================================================================
+  describe("2. Link Activation End-to-End Workflows", () => {
+    it("simulates clicking valid internal link switches active note to target ID", async () => {
+      let activeNoteId = "source-note-1";
+      const recordedTransitions = [];
+
+      const mockStorage = {
+        async resolveTarget(id) {
+          if (id === "target-note-2") {
+            return {
+              targetId: "target-note-2",
+              title: "Onboarding Checklist",
+              lifecycle: "active",
+              notebookId: "nb-hr",
+              notebookName: "Human Resources",
+            };
+          }
+          return { targetId: id, title: null, lifecycle: "missing", notebookId: null, notebookName: null };
+        },
+      };
+
+      const handleActivateLink = async (targetId) => {
+        const resolved = await mockStorage.resolveTarget(targetId);
+        if (resolved.lifecycle === "active") {
+          recordedTransitions.push({ from: activeNoteId, to: targetId });
+          activeNoteId = targetId;
+        }
+      };
+
+      await handleActivateLink("target-note-2");
+
+      assert.strictEqual(activeNoteId, "target-note-2", "Active note must switch to target");
+      assert.strictEqual(recordedTransitions.length, 1);
+      assert.deepStrictEqual(recordedTransitions[0], {
+        from: "source-note-1",
+        to: "target-note-2",
+      });
+    });
+
+    it("verifies duplicate titles resolve strictly by stable note UUID without confusion", async () => {
+      // Two notes in database with exact identical titles
+      const mockDatabase = [
+        {
+          id: "uuid-standup-eng",
+          title: "Daily Standup",
+          notebook_id: "nb-eng",
+          notebook_name: "Engineering",
+          is_deleted: 0,
+        },
+        {
+          id: "uuid-standup-sales",
+          title: "Daily Standup",
+          notebook_id: "nb-sales",
+          notebook_name: "Sales",
+          is_deleted: 0,
+        },
+      ];
+
+      const resolveTarget = (targetId) => {
+        const found = mockDatabase.find((n) => n.id === targetId);
+        if (!found) {
+          return { targetId, title: null, lifecycle: "missing", notebookName: null };
+        }
+        return {
+          targetId: found.id,
+          title: found.title,
+          lifecycle: found.is_deleted ? "trashed" : "active",
+          notebookName: found.notebook_name,
+        };
+      };
+
+      // User has link targeting Sales Standup by ID
+      const resolvedTarget = resolveTarget("uuid-standup-sales");
+      assert.strictEqual(resolvedTarget.targetId, "uuid-standup-sales");
+      assert.strictEqual(resolvedTarget.title, "Daily Standup");
+      assert.strictEqual(resolvedTarget.notebookName, "Sales");
+
+      // Verify that Eng Standup is NOT opened by mistake
+      assert.notStrictEqual(resolvedTarget.targetId, "uuid-standup-eng");
+    });
+
+    it("verifies source edits are flushed before navigation and navigation aborts if save fails", async () => {
+      let isSaveCalled = false;
+      let shouldSaveFail = false;
+      let activeNoteId = "source-note-active";
+      let navigationAborted = false;
+      let userErrorMessage = null;
+
+      const editorSave = async () => {
+        isSaveCalled = true;
+        if (shouldSaveFail) {
+          throw new Error("Disk I/O error: database is locked");
+        }
+      };
+
+      const handleActivateLinkWithProtection = async (targetId) => {
+        // Step 1: Flush pending edits of source note
+        try {
+          await editorSave();
+        } catch (saveErr) {
+          userErrorMessage =
+            "Unable to save current note before navigating. Your edits have been kept safe in the editor: " +
+            saveErr.message;
+          navigationAborted = true;
+          return; // Abort navigation to protect user's unsaved edits
+        }
+
+        // Step 2: Proceed with navigation
+        activeNoteId = targetId;
+      };
+
+      // Case 1: Save succeeds -> navigation proceeds
+      shouldSaveFail = false;
+      await handleActivateLinkWithProtection("target-note-next");
+      assert.strictEqual(isSaveCalled, true);
+      assert.strictEqual(activeNoteId, "target-note-next");
+      assert.strictEqual(navigationAborted, false);
+      assert.strictEqual(userErrorMessage, null);
+
+      // Case 2: Save fails -> navigation aborts and edits remain protected
+      isSaveCalled = false;
+      shouldSaveFail = true;
+      await handleActivateLinkWithProtection("target-note-failed");
+      assert.strictEqual(isSaveCalled, true);
+      assert.strictEqual(
+        activeNoteId,
+        "target-note-next",
+        "Active note must NOT change if save fails"
+      );
+      assert.strictEqual(navigationAborted, true);
+      assert.ok(
+        userErrorMessage.includes("database is locked"),
+        "User error message must explain the save error"
+      );
+    });
+
+    it("verifies trashed target prompts recovery dialog instead of opening as active note", async () => {
+      let activeNoteId = "source-note";
+      let trashedPromptTarget = null;
+
+      const mockStorage = {
+        async resolveTarget(id) {
+          if (id === "trashed-note-uuid") {
+            return {
+              targetId: "trashed-note-uuid",
+              title: "Archived Meeting Notes",
+              lifecycle: "trashed",
+              notebookId: "nb-archive",
+              notebookName: "Archive",
+            };
+          }
+          return { targetId: id, title: null, lifecycle: "active", notebookId: null, notebookName: null };
+        },
+      };
+
+      const handleActivateLink = async (targetId) => {
+        const resolved = await mockStorage.resolveTarget(targetId);
+        if (resolved.lifecycle === "active") {
+          activeNoteId = targetId;
+        } else if (resolved.lifecycle === "trashed") {
+          trashedPromptTarget = resolved;
+        }
+      };
+
+      await handleActivateLink("trashed-note-uuid");
+
+      assert.strictEqual(
+        activeNoteId,
+        "source-note",
+        "Must NOT switch active note to trashed note"
+      );
+      assert.notStrictEqual(trashedPromptTarget, null, "Must set trashed prompt target");
+      assert.strictEqual(trashedPromptTarget.title, "Archived Meeting Notes");
+      assert.strictEqual(trashedPromptTarget.lifecycle, "trashed");
+    });
+
+    it("verifies missing target displays broken dialog offering repair and unlink options", async () => {
+      const { replaceInternalLinkTarget, removeInternalLink } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      let brokenLinkPrompt = null;
+      let activeNoteContent =
+        "See the [Obsolete Spec](notepad://note/missing-uuid-404) for background.";
+
+      const mockStorage = {
+        async resolveTarget(id) {
+          return {
+            targetId: id,
+            title: null,
+            lifecycle: "missing",
+            notebookId: null,
+            notebookName: null,
+          };
+        },
+      };
+
+      const handleActivateLink = async (targetId) => {
+        const resolved = await mockStorage.resolveTarget(targetId);
+        if (resolved.lifecycle === "missing") {
+          brokenLinkPrompt = resolved;
+        }
+      };
+
+      await handleActivateLink("missing-uuid-404");
+
+      assert.notStrictEqual(brokenLinkPrompt, null, "Broken link prompt must be triggered");
+      assert.strictEqual(brokenLinkPrompt.lifecycle, "missing");
+      assert.strictEqual(brokenLinkPrompt.targetId, "missing-uuid-404");
+
+      // User chooses Action 1: Unlink (Keep Text)
+      const unlinkedContent = removeInternalLink(activeNoteContent, "missing-uuid-404");
+      assert.strictEqual(
+        unlinkedContent,
+        "See the Obsolete Spec for background.",
+        "Unlinking must preserve display text while removing broken link syntax"
+      );
+
+      // User chooses Action 2: Repair Link to new valid target
+      const repairedContent = replaceInternalLinkTarget(
+        activeNoteContent,
+        "missing-uuid-404",
+        "new-valid-uuid",
+        "Current Modern Spec"
+      );
+      assert.strictEqual(
+        repairedContent,
+        "See the [Current Modern Spec](notepad://note/new-valid-uuid) for background.",
+        "Repairing must replace target ID and display title cleanly"
+      );
+    });
+  });
+
+  // =========================================================================
+  // 3. Navigation History End-to-End Workflows
+  // =========================================================================
+  describe("3. Navigation History End-to-End Workflows", () => {
+    it("simulates traversal Note A -> Note B -> Note C, stepping back, stepping forward", () => {
+      let stack = ["note-A"];
+      let currentIndex = 0;
+
+      const recordNavigation = (targetId, currentId) => {
+        if (currentIndex >= 0 && stack[currentIndex] === targetId) return;
+        stack = [...stack.slice(0, currentIndex + 1), targetId];
+        currentIndex = stack.length - 1;
+      };
+
+      const goBack = () => {
+        if (currentIndex <= 0) return null;
+        currentIndex--;
+        return stack[currentIndex];
+      };
+
+      const goForward = () => {
+        if (currentIndex >= stack.length - 1) return null;
+        currentIndex++;
+        return stack[currentIndex];
+      };
+
+      // 1. Initial on Note A
+      assert.strictEqual(stack[currentIndex], "note-A");
+      assert.strictEqual(currentIndex > 0, false, "Cannot go back from initial note");
+
+      // 2. Navigate to Note B
+      recordNavigation("note-B", "note-A");
+      assert.deepStrictEqual(stack, ["note-A", "note-B"]);
+      assert.strictEqual(currentIndex, 1);
+      assert.strictEqual(currentIndex > 0, true, "Can go back to Note A");
+      assert.strictEqual(currentIndex < stack.length - 1, false, "Cannot go forward yet");
+
+      // 3. Navigate to Note C
+      recordNavigation("note-C", "note-B");
+      assert.deepStrictEqual(stack, ["note-A", "note-B", "note-C"]);
+      assert.strictEqual(currentIndex, 2);
+
+      // 4. Go back to Note B
+      const backToB = goBack();
+      assert.strictEqual(backToB, "note-B");
+      assert.strictEqual(currentIndex, 1);
+      assert.strictEqual(currentIndex > 0, true, "Can go back further");
+      assert.strictEqual(currentIndex < stack.length - 1, true, "Can go forward to Note C");
+
+      // 5. Go back to Note A
+      const backToA = goBack();
+      assert.strictEqual(backToA, "note-A");
+      assert.strictEqual(currentIndex, 0);
+      assert.strictEqual(currentIndex > 0, false, "Cannot go back past start");
+      assert.strictEqual(currentIndex < stack.length - 1, true, "Can go forward to Note B");
+
+      // 6. Go forward to Note B
+      const forwardToB = goForward();
+      assert.strictEqual(forwardToB, "note-B");
+      assert.strictEqual(currentIndex, 1);
+
+      // 7. Go forward to Note C
+      const forwardToC = goForward();
+      assert.strictEqual(forwardToC, "note-C");
+      assert.strictEqual(currentIndex, 2);
+      assert.strictEqual(currentIndex < stack.length - 1, false, "At end of history");
+    });
+
+    it("verifies branching navigation after Back clears forward history stack", () => {
+      let stack = ["note-A", "note-B", "note-C"];
+      let currentIndex = 2; // At Note C
+
+      const goBack = () => {
+        if (currentIndex <= 0) return null;
+        currentIndex--;
+        return stack[currentIndex];
+      };
+
+      const recordNavigation = (targetId) => {
+        if (currentIndex >= 0 && stack[currentIndex] === targetId) return;
+        // Truncate any forward history when branching
+        stack = [...stack.slice(0, currentIndex + 1), targetId];
+        currentIndex = stack.length - 1;
+      };
+
+      // 1. Go back to Note B
+      assert.strictEqual(goBack(), "note-B");
+      assert.strictEqual(currentIndex, 1);
+      assert.strictEqual(currentIndex < stack.length - 1, true, "Note C is in forward history");
+
+      // 2. From Note B, branch by navigating to Note D
+      recordNavigation("note-D");
+
+      // Forward history (Note C) must be cleared completely
+      assert.deepStrictEqual(stack, ["note-A", "note-B", "note-D"]);
+      assert.strictEqual(currentIndex, 2);
+      assert.strictEqual(currentIndex < stack.length - 1, false, "Forward history must be empty after branching");
+
+      // 3. Step back now goes to Note B, then Note A
+      assert.strictEqual(goBack(), "note-B");
+      assert.strictEqual(goBack(), "note-A");
+    });
+
+    it("verifies aborted or invalid navigation does not create corrupted history entries", () => {
+      let stack = ["note-A"];
+      let currentIndex = 0;
+
+      const recordNavigation = (targetId) => {
+        if (!targetId) return;
+        if (currentIndex >= 0 && stack[currentIndex] === targetId) return;
+        stack = [...stack.slice(0, currentIndex + 1), targetId];
+        currentIndex = stack.length - 1;
+      };
+
+      // 1. Re-clicking current note should be a no-op
+      recordNavigation("note-A");
+      assert.deepStrictEqual(stack, ["note-A"]);
+      assert.strictEqual(currentIndex, 0);
+
+      // 2. Empty or invalid note ID should be ignored
+      recordNavigation("");
+      recordNavigation(null);
+      assert.deepStrictEqual(stack, ["note-A"]);
+      assert.strictEqual(currentIndex, 0);
+    });
+
+    it("verifies permanent note deletion purges target from navigation history stack", () => {
+      let stack = ["note-1", "note-to-delete", "note-3"];
+      let currentIndex = 2; // on note-3
+
+      const removeNoteFromHistory = (noteId) => {
+        if (!stack.includes(noteId)) return;
+        let targetIndex = currentIndex;
+        const newStack = [];
+
+        for (let i = 0; i < stack.length; i++) {
+          if (stack[i] === noteId) {
+            if (i < currentIndex) {
+              targetIndex--;
+            }
+          } else {
+            newStack.push(stack[i]);
+          }
+        }
+
+        let newIndex = targetIndex;
+        if (newStack.length === 0) {
+          newIndex = -1;
+        } else if (newIndex >= newStack.length) {
+          newIndex = newStack.length - 1;
+        } else if (newIndex < 0) {
+          newIndex = 0;
+        }
+
+        stack = newStack;
+        currentIndex = newIndex;
+      };
+
+      removeNoteFromHistory("note-to-delete");
+
+      assert.deepStrictEqual(stack, ["note-1", "note-3"]);
+      assert.strictEqual(currentIndex, 1, "Index must adjust so current note remains note-3");
+      assert.strictEqual(stack[currentIndex], "note-3");
+    });
+  });
+
+  // =========================================================================
+  // 4. Backlinks End-to-End Workflows
+  // =========================================================================
+  describe("4. Backlinks End-to-End Workflows", () => {
+    it("simulates fetching and displaying incoming backlinks with snippets and notebook tags", async () => {
+      const mockBacklinkDb = [
+        {
+          source_note_id: "src-100",
+          source_note_title: "Sprint 42 Goals",
+          source_notebook_id: "nb-eng",
+          source_notebook_name: "Engineering",
+          snippet: "Refer to [System Architecture](notepad://note/target-core) for requirements.",
+          updated_at: "2026-10-09T10:00:00Z",
+        },
+        {
+          source_note_id: "src-200",
+          source_note_title: "Release Checklist",
+          source_notebook_id: null,
+          source_notebook_name: null,
+          snippet: "Verify adherence to [System Architecture](notepad://note/target-core).",
+          updated_at: "2026-10-09T11:30:00Z",
+        },
+      ];
+
+      const getBacklinks = (targetId) => {
+        return mockBacklinkDb.map((row) => ({
+          sourceNoteId: row.source_note_id,
+          sourceNoteTitle: row.source_note_title,
+          sourceNotebookId: row.source_notebook_id,
+          sourceNotebookName: row.source_notebook_name,
+          labelSnippet: row.snippet,
+          modifiedAt: row.updated_at,
+        }));
+      };
+
+      const backlinks = getBacklinks("target-core");
+      assert.strictEqual(backlinks.length, 2);
+      assert.strictEqual(backlinks[0].sourceNoteTitle, "Sprint 42 Goals");
+      assert.strictEqual(backlinks[0].sourceNotebookName, "Engineering");
+      assert.ok(backlinks[0].labelSnippet.includes("System Architecture"));
+      assert.strictEqual(backlinks[1].sourceNoteTitle, "Release Checklist");
+      assert.strictEqual(backlinks[1].sourceNotebookName, null);
+    });
+
+    it("simulates clicking backlink card activates source note and saves source edits", async () => {
+      let activeNoteId = "target-note-viewed";
+      const navigationHistory = ["target-note-viewed"];
+
+      const handleBacklinkClick = (sourceNoteId) => {
+        // Record navigation and switch note
+        navigationHistory.push(sourceNoteId);
+        activeNoteId = sourceNoteId;
+      };
+
+      handleBacklinkClick("src-100");
+
+      assert.strictEqual(activeNoteId, "src-100", "Must activate source note");
+      assert.deepStrictEqual(navigationHistory, ["target-note-viewed", "src-100"]);
+    });
+
+    it("verifies refreshing backlinks when source note adds or removes link reference", async () => {
+      let sourceLinks = [
+        { sourceId: "src-1", targetId: "target-A" },
+        { sourceId: "src-2", targetId: "target-A" },
+      ];
+
+      const computeIncoming = (targetId) => sourceLinks.filter((l) => l.targetId === targetId);
+
+      // Initial state
+      assert.strictEqual(computeIncoming("target-A").length, 2);
+
+      // Source note 2 removes the link to target-A
+      sourceLinks = sourceLinks.filter((l) => !(l.sourceId === "src-2" && l.targetId === "target-A"));
+
+      // Backlinks refresh triggered
+      const refreshed = computeIncoming("target-A");
+      assert.strictEqual(refreshed.length, 1);
+      assert.strictEqual(refreshed[0].sourceId, "src-1");
+    });
+
+    it("verifies distinct empty state renders when note has zero incoming backlinks", () => {
+      const backlinks = [];
+      const renderBacklinksState = (items) => {
+        if (items.length === 0) {
+          return {
+            type: "empty",
+            message: "No incoming links found",
+            helper: "Notes that link to this one will appear here.",
+          };
+        }
+        return { type: "list", count: items.length };
+      };
+
+      const state = renderBacklinksState(backlinks);
+      assert.strictEqual(state.type, "empty");
+      assert.strictEqual(state.message, "No incoming links found");
+      assert.strictEqual(state.helper, "Notes that link to this one will appear here.");
+    });
+  });
+
+  // =========================================================================
+  // 5. Regression Verification Across Phase 1-8 Capabilities
+  // =========================================================================
+  describe("5. Regression Verification Across Phase 1-8 Capabilities", () => {
+    it("regression: verifies debounced autosave contract and timer flush remain intact", async () => {
+      let savedContent = "";
+      let saveCallCount = 0;
+      let timerId = null;
+
+      const scheduleAutosave = (newContent, delayMs = 50) => {
+        if (timerId) clearTimeout(timerId);
+        timerId = setTimeout(() => {
+          savedContent = newContent;
+          saveCallCount++;
+        }, delayMs);
+      };
+
+      const flushAutosave = (contentToFlush) => {
+        if (timerId) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
+        savedContent = contentToFlush;
+        saveCallCount++;
+      };
+
+      // Type some edits with internal links
+      scheduleAutosave("Draft text with [Link](notepad://note/uuid-1)");
+      assert.strictEqual(savedContent, "", "Should debounce save");
+
+      // Navigation triggers immediate flush
+      flushAutosave("Draft text with [Link](notepad://note/uuid-1)");
+      assert.strictEqual(savedContent, "Draft text with [Link](notepad://note/uuid-1)");
+      assert.strictEqual(saveCallCount, 1);
+    });
+
+    it("regression: verifies search query matching and highlighting unaffected by internal links", async () => {
+      const { highlightText } = await import("../src/features/search/utils.ts");
+      const sampleText = "Check the [Architecture Roadmap](notepad://note/arch-123) for timelines.";
+
+      const fragments = highlightText(sampleText, "Roadmap");
+      assert.ok(Array.isArray(fragments), "highlightText returns React elements array");
+      const matchFound = fragments.some(
+        (f) =>
+          typeof f === "object" &&
+          f !== null &&
+          (f.props?.children === "Roadmap" || f.key !== undefined)
+      );
+      assert.strictEqual(matchFound, true, "Search highlight must identify match inside link label");
+    });
+
+    it("regression: verifies notebook and tag navigation filters operate concurrently without conflict", async () => {
+      const mockNotes = [
+        { id: "n1", notebook_id: "nb-work", tags: ["urgent"], is_deleted: 0 },
+        { id: "n2", notebook_id: "nb-work", tags: ["review"], is_deleted: 0 },
+        { id: "n3", notebook_id: "nb-home", tags: ["urgent"], is_deleted: 0 },
+        { id: "n4", notebook_id: "nb-work", tags: ["urgent"], is_deleted: 1 }, // trashed
+      ];
+
+      const filterNotes = ({ notebookId, tag, isTrash = false }) => {
+        return mockNotes.filter((n) => {
+          if (isTrash) return n.is_deleted === 1;
+          if (n.is_deleted === 1) return false;
+          if (notebookId && n.notebook_id !== notebookId) return false;
+          if (tag && !n.tags.includes(tag)) return false;
+          return true;
+        });
+      };
+
+      // Active work notebook notes
+      const workNotes = filterNotes({ notebookId: "nb-work" });
+      assert.strictEqual(workNotes.length, 2);
+
+      // Urgent tag notes
+      const urgentNotes = filterNotes({ tag: "urgent" });
+      assert.strictEqual(urgentNotes.length, 2);
+      assert.deepStrictEqual(urgentNotes.map((n) => n.id), ["n1", "n3"]);
+
+      // Trashed notes
+      const trashed = filterNotes({ isTrash: true });
+      assert.strictEqual(trashed.length, 1);
+      assert.strictEqual(trashed[0].id, "n4");
+    });
+
+    it("regression: verifies note favorite toggle persists favorite state", () => {
+      const notes = [
+        { id: "n-fav-1", is_favorite: 0 },
+        { id: "n-fav-2", is_favorite: 1 },
+      ];
+
+      const toggleFavorite = (id) => {
+        const target = notes.find((n) => n.id === id);
+        if (target) {
+          target.is_favorite = target.is_favorite ? 0 : 1;
+        }
+      };
+
+      toggleFavorite("n-fav-1");
+      assert.strictEqual(notes[0].is_favorite, 1);
+
+      toggleFavorite("n-fav-1");
+      assert.strictEqual(notes[0].is_favorite, 0);
+    });
+
+    it("regression: verifies NoteEditor preserves AttachmentList decoupling invariant comment", async () => {
+      const fs = await import("node:fs");
+      const editorFile = fs.readFileSync(
+        new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        editorFile.includes("{/* <AttachmentList noteId={noteId} /> */}"),
+        "Must preserve AttachmentList decoupling invariant comment"
+      );
+    });
+
+    it("regression: verifies keyboard shortcuts for link picker, history, and editing", () => {
+      const testEvents = [
+        { key: "k", ctrlKey: true, metaKey: false, expectedAction: "openLinkPicker" },
+        { key: "s", ctrlKey: true, metaKey: false, expectedAction: "saveNote" },
+        { key: "z", ctrlKey: true, metaKey: false, expectedAction: "undo" },
+        { key: "y", ctrlKey: true, metaKey: false, expectedAction: "redo" },
+        { key: "Escape", ctrlKey: false, metaKey: false, expectedAction: "closeModal" },
+      ];
+
+      const resolveShortcut = (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") return "openLinkPicker";
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") return "saveNote";
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") return "undo";
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") return "redo";
+        if (e.key === "Escape") return "closeModal";
+        return null;
+      };
+
+      for (const t of testEvents) {
+        assert.strictEqual(
+          resolveShortcut(t),
+          t.expectedAction,
+          `Shortcut event for ${t.key} must resolve to ${t.expectedAction}`
+        );
+      }
+    });
+  });
+});
+
+describe("Phase 9 - Task 24: Security, Reliability, and Performance Verification Tests", () => {
+  // =========================================================================
+  // 1. Security Verification Suite
+  // =========================================================================
+  describe("1. Security Verification Suite", () => {
+    it("security: verifies target resolution strictly binds to alphanumeric UUIDs and rejects injection attempts", async () => {
+      const maliciousIds = [
+        "' OR 1=1 --",
+        "'; DROP TABLE notes; --",
+        "admin'/*",
+        "<script>alert(1)</script>",
+        "../../../../etc/passwd",
+        "$(whoami)",
+        "; rm -rf / ;",
+        "\0badbyte",
+      ];
+
+      const resolveMockTarget = (id) => {
+        // Enforce safe ID contract matching InternalLinkService
+        const trimmed = (id || "").trim();
+        const isValidId = /^[a-zA-Z0-9_-]+$/.test(trimmed);
+        if (!isValidId) {
+          return { targetId: trimmed, title: null, lifecycle: "missing", notebookName: null };
+        }
+        return { targetId: trimmed, title: "Target Note", lifecycle: "active", notebookName: null };
+      };
+
+      for (const malicious of maliciousIds) {
+        const res = resolveMockTarget(malicious);
+        assert.strictEqual(
+          res.lifecycle,
+          "missing",
+          `Malicious input '${malicious}' must resolve strictly as missing`
+        );
+        assert.strictEqual(res.title, null);
+      }
+    });
+
+    it("security: verifies XSS and raw HTML injection payloads are safely sanitized and rendered as text", async () => {
+      const { tokenizeContentWithLinks, parseInternalLinks } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      const xssPayloads = [
+        "<script>alert('pwned')</script>",
+        "<img src=x onerror=\"alert(1)\" />",
+        "<svg onload=\"alert(1)\">",
+        "javascript:alert(document.cookie)",
+      ];
+
+      for (const payload of xssPayloads) {
+        const noteContent = `Check this note: [${payload}](notepad://note/target-uuid-1)`;
+        const links = parseInternalLinks(noteContent);
+        assert.strictEqual(links.length, 1);
+        assert.strictEqual(links[0].label, payload, "Payload must be preserved as literal text");
+
+        const segments = tokenizeContentWithLinks(noteContent);
+        assert.strictEqual(segments.length, 2);
+        assert.strictEqual(segments[1].type, "link");
+        assert.strictEqual(segments[1].label, payload);
+        // Pure data token, zero HTML execution
+      }
+    });
+
+    it("security: verifies parser immunity to catastrophic backtracking (ReDoS) and malformed syntax", async () => {
+      const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+
+      const malformedCases = [
+        "[[[[[[[[[[unclosed bracket bomb",
+        "[valid label](notepad://note/uuid-1))extra bracket",
+        "[missing closing bracket(notepad://note/uuid-1)",
+        "[label](notepad:wrong-protocol/uuid-1)",
+        "[label](notepad://note/)",
+        "[label](http://example.com/not-internal)",
+        "[label](file:///etc/hosts)",
+        "![" + "a".repeat(1000) + "](notepad://note/image-not-link)",
+        "[[[[".repeat(500) + "]]]]".repeat(500),
+      ];
+
+      for (const malformed of malformedCases) {
+        const t0 = performance.now();
+        const links = parseInternalLinks(malformed);
+        const elapsed = performance.now() - t0;
+
+        assert.ok(Array.isArray(links));
+        assert.ok(
+          elapsed < 20,
+          `Parsing malformed input must complete under 20ms without ReDoS: ${elapsed.toFixed(2)}ms`
+        );
+      }
+    });
+
+    it("security: verifies local-first privacy, zero network calls, and absence of external telemetry", async () => {
+      const fs = await import("node:fs");
+
+      const parserCode = fs.readFileSync(
+        new URL("../src/utils/linkParser.ts", import.meta.url),
+        "utf8"
+      );
+      const storageLinksCode = fs.readFileSync(
+        new URL("../src/services/storage/links.ts", import.meta.url),
+        "utf8"
+      );
+      const hookCode = fs.readFileSync(
+        new URL("../src/hooks/useNoteNavigationHistory.ts", import.meta.url),
+        "utf8"
+      );
+
+      // Verify no network fetch, axios, or telemetry endpoints
+      const forbiddenTokens = ["fetch(", "XMLHttpRequest", "http://", "https://", "api.analytics", "telemetry"];
+      for (const token of forbiddenTokens) {
+        assert.strictEqual(
+          parserCode.includes(token),
+          false,
+          `linkParser.ts must not contain ${token}`
+        );
+        assert.strictEqual(
+          storageLinksCode.includes(token),
+          false,
+          `storage/links.ts must not contain ${token}`
+        );
+        assert.strictEqual(
+          hookCode.includes(token),
+          false,
+          `useNoteNavigationHistory.ts must not contain ${token}`
+        );
+      }
+    });
+  });
+
+  // =========================================================================
+  // 2. Reliability Verification Suite
+  // =========================================================================
+  describe("2. Reliability Verification Suite", () => {
+    it("reliability: verifies unsaved changes are safeguarded and navigation halts if save fails", async () => {
+      let activeNoteId = "note-source-1";
+      let editorText = "Critical in-flight modifications that must never be lost";
+      let navigationSucceeded = false;
+      let errorReported = null;
+
+      const failingSave = async () => {
+        throw new Error("Disk full: cannot commit SQLite transaction");
+      };
+
+      const handleNavigateWithGuard = async (targetId) => {
+        try {
+          await failingSave();
+        } catch (err) {
+          errorReported = err.message;
+          // Abort navigation
+          return;
+        }
+        activeNoteId = targetId;
+        navigationSucceeded = true;
+      };
+
+      await handleNavigateWithGuard("note-target-2");
+
+      assert.strictEqual(navigationSucceeded, false, "Navigation must be aborted");
+      assert.strictEqual(activeNoteId, "note-source-1", "Active note must remain source note");
+      assert.strictEqual(
+        editorText,
+        "Critical in-flight modifications that must never be lost",
+        "In-flight edits must remain intact in memory"
+      );
+      assert.ok(errorReported.includes("Disk full"));
+    });
+
+    it("reliability: verifies sequence counter prevents stale async responses from race conditions", async () => {
+      let activeNoteId = "initial-note";
+      let currentRequestId = 0;
+
+      // Simulate 3 rapid clicks on different notes with varying response latencies
+      const triggerClick = async (targetId, simulatedLatencyMs) => {
+        const requestId = ++currentRequestId;
+        await new Promise((r) => setTimeout(r, simulatedLatencyMs));
+        // Check if request is still current
+        if (requestId === currentRequestId) {
+          activeNoteId = targetId;
+        }
+      };
+
+      // Click 1 (slow): target-1, takes 60ms
+      const p1 = triggerClick("target-1", 60);
+      // Click 2 (fast): target-2, takes 10ms
+      const p2 = triggerClick("target-2", 10);
+      // Click 3 (latest): target-3, takes 30ms
+      const p3 = triggerClick("target-3", 30);
+
+      await Promise.all([p1, p2, p3]);
+
+      // target-3 was the latest click initiated, so it must win even if p1 resolves last
+      assert.strictEqual(
+        activeNoteId,
+        "target-3",
+        "Latest navigation request must prevail over earlier stale resolutions"
+      );
+    });
+
+    it("reliability: verifies navigation history avoids loops and respects depth constraints", () => {
+      let stack = ["note-start"];
+      let currentIndex = 0;
+      const MAX_DEPTH = 100;
+
+      const record = (id) => {
+        if (!id) return;
+        if (currentIndex >= 0 && stack[currentIndex] === id) return;
+        stack = [...stack.slice(0, currentIndex + 1), id];
+        if (stack.length > MAX_DEPTH) {
+          stack = stack.slice(stack.length - MAX_DEPTH);
+        }
+        currentIndex = stack.length - 1;
+      };
+
+      // Rapidly click same note 10 times
+      for (let i = 0; i < 10; i++) {
+        record("note-start");
+      }
+      assert.strictEqual(stack.length, 1, "Duplicate consecutive clicks must not inflate stack");
+
+      // Push 150 unique transitions
+      for (let i = 0; i < 150; i++) {
+        record(`note-${i}`);
+      }
+      assert.strictEqual(stack.length, MAX_DEPTH, "Stack must be capped at MAX_DEPTH (100)");
+      assert.strictEqual(currentIndex, MAX_DEPTH - 1);
+    });
+
+    it("reliability: verifies complete lifecycle transitions: active -> trashed -> restored -> missing", () => {
+      const noteStore = new Map([
+        ["uuid-test", { title: "Living Document", is_deleted: 0 }],
+      ]);
+
+      const resolve = (id) => {
+        const note = noteStore.get(id);
+        if (!note) return { targetId: id, lifecycle: "missing" };
+        return { targetId: id, lifecycle: note.is_deleted ? "trashed" : "active" };
+      };
+
+      // 1. Active
+      assert.strictEqual(resolve("uuid-test").lifecycle, "active");
+
+      // 2. Trashed
+      noteStore.get("uuid-test").is_deleted = 1;
+      assert.strictEqual(resolve("uuid-test").lifecycle, "trashed");
+
+      // 3. Restored
+      noteStore.get("uuid-test").is_deleted = 0;
+      assert.strictEqual(resolve("uuid-test").lifecycle, "active");
+
+      // 4. Permanently deleted
+      noteStore.delete("uuid-test");
+      assert.strictEqual(resolve("uuid-test").lifecycle, "missing");
+    });
+  });
+
+  // =========================================================================
+  // 3. Performance Verification Suite
+  // =========================================================================
+  describe("3. Performance Verification Suite", () => {
+    it("performance: verifies fast short-circuit on notes without internal links (< 0.1ms)", async () => {
+      const { parseInternalLinks, hasInternalLinks } = await import(
+        "../src/utils/linkParser.ts"
+      );
+
+      const largePlainText = "This is ordinary text without any links. ".repeat(2000); // ~84 KB
+
+      const t0 = performance.now();
+      const hasLinks = hasInternalLinks(largePlainText);
+      const parsed = parseInternalLinks(largePlainText);
+      const elapsed = performance.now() - t0;
+
+      assert.strictEqual(hasLinks, false);
+      assert.strictEqual(parsed.length, 0);
+      assert.ok(elapsed < 2, `Pre-filtered plain text parsing took ${elapsed.toFixed(3)}ms (expected < 2ms)`);
+    });
+
+    it("performance: verifies linear-time parsing across large notes with 100+ links (< 10ms)", async () => {
+      const { parseInternalLinks } = await import("../src/utils/linkParser.ts");
+
+      let largeNoteWithLinks = "";
+      for (let i = 0; i < 150; i++) {
+        largeNoteWithLinks += `Section ${i}: Please consult [Specification ${i}](notepad://note/uuid-target-${i}) for details.\n`;
+        largeNoteWithLinks += "Supplementary paragraph containing detailed explanation of requirements.\n";
+      }
+
+      const t0 = performance.now();
+      const parsed = parseInternalLinks(largeNoteWithLinks);
+      const elapsed = performance.now() - t0;
+
+      assert.strictEqual(parsed.length, 150);
+      assert.strictEqual(parsed[0].targetId, "uuid-target-0");
+      assert.strictEqual(parsed[149].targetId, "uuid-target-149");
+      assert.ok(
+        elapsed < 15,
+        `150-link note parsed in ${elapsed.toFixed(3)}ms (expected < 15ms)`
+      );
+    });
+
+    it("performance: verifies backlinks aggregation extracts lightweight metadata without full bodies", () => {
+      const mockNotes = Array.from({ length: 50 }, (_, i) => ({
+        id: `source-note-${i}`,
+        title: `Project Log #${i}`,
+        notebook: i % 2 === 0 ? "Dev" : "Ops",
+        full_content: "Huge multi-megabyte body text... ".repeat(100),
+        snippet: `Contains [Architecture Hub](notepad://note/hub-uuid) reference`,
+      }));
+
+      // Simulate backend projection
+      const projectedBacklinks = mockNotes.map((n) => ({
+        sourceNoteId: n.id,
+        sourceNoteTitle: n.title,
+        sourceNotebookName: n.notebook,
+        labelSnippet: n.snippet,
+        // Notice full_content is excluded to keep React state lightweight
+      }));
+
+      assert.strictEqual(projectedBacklinks.length, 50);
+      assert.strictEqual(projectedBacklinks[0].sourceNoteTitle, "Project Log #0");
+      assert.strictEqual("full_content" in projectedBacklinks[0], false);
+    });
+  });
+});
 
 

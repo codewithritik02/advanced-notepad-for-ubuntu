@@ -4,6 +4,9 @@ import { storageService, Tag } from "../../../../services/storage";
 import { TagPicker } from "../../../tags";
 import { AttachmentList } from "../../../attachments";
 import { NoteMetadataPanel } from "./NoteMetadataPanel";
+import { NotePickerModal } from "../NotePicker";
+import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
+import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -23,9 +26,32 @@ export interface NoteEditorProps {
   onDeleteNote?: (noteId: string) => Promise<void> | void;
   onRestoreNote?: (noteId: string) => void;
   onPermanentlyDeleteNote?: (noteId: string) => void;
+  onActivateLink?: (targetNoteId: string) => void;
+  onNavigateToNote?: (noteId: string) => void;
 }
 
 // Inline lightweight SVG icons for editor toolbar
+const LinkIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </svg>
+);
+
+const EyeIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EditIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+  </svg>
+);
+
 const InfoIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <circle cx="12" cy="12" r="10" />
@@ -178,6 +204,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onDeleteNote,
   onRestoreNote,
   onPermanentlyDeleteNote,
+  onActivateLink,
+  onNavigateToNote,
 }) => {
   const [loadedNote, setLoadedNote] = useState<Note | null>(null);
   const isReadOnly = isTrash || !!loadedNote?.is_deleted;
@@ -210,9 +238,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [format, setFormat] = useState<NoteFormat>("txt");
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [viewMode, setViewMode] = useState<"edit" | "preview">("edit");
 
   // Memoized metrics avoiding full-string allocations on large notes
   const wordCount = useMemo(() => countWords(content), [content]);
+
+  // Memoized parsed internal links for in-editor recognition and preview
+  const parsedLinks = useMemo(() => parseInternalLinks(content), [content]);
 
   // Track active fetch request cancellation token
   const activeFetchIdRef = useRef<string | null>(null);
@@ -307,6 +339,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, []);
 
   useEffect(() => {
+    setViewMode("edit");
+
     if (!noteId) {
       setLoadedNote(null);
       setEditorStatus("idle");
@@ -489,15 +523,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           // If no new typing occurred since this save was initiated, mark as clean
           if (revisionRef.current === rev) {
             setIsDirty(false);
+            isDirtyRef.current = false;
             setEditorStatus("saved");
           }
         }
-      } catch {
+      } catch (err) {
         setIsDirty(true);
+        isDirtyRef.current = true;
         setEditorStatus("error");
         setSaveError(
           "Unable to save changes. Your changes are still available locally in the editor."
         );
+        throw err;
       } finally {
         isSavingRef.current = false;
         setIsSaving(false);
@@ -506,7 +543,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         if (revisionRef.current > latestPersistedRevisionRef.current) {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = setTimeout(() => {
-            const followUpPromise = executeSave(targetNoteId, revisionRef.current);
+            const followUpPromise = executeSave(targetNoteId, revisionRef.current).catch(() => {});
             inFlightSavePromiseRef.current = followUpPromise;
             followUpPromise.finally(() => {
               if (inFlightSavePromiseRef.current === followUpPromise) {
@@ -529,7 +566,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         clearTimeout(debounceTimerRef.current);
       }
       debounceTimerRef.current = setTimeout(() => {
-        const savePromise = executeSave(targetNoteId, currentRev);
+        const savePromise = executeSave(targetNoteId, currentRev).catch(() => {});
         inFlightSavePromiseRef.current = savePromise;
         savePromise.finally(() => {
           if (inFlightSavePromiseRef.current === savePromise) {
@@ -600,6 +637,136 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [noteId]);
 
+  // Link Picker State & Handlers (Phase 9, Task 6 & 7)
+  const [isLinkPickerOpen, setIsLinkPickerOpen] = useState(false);
+  const [linkPickerInitialLabel, setLinkPickerInitialLabel] = useState("");
+  const pendingInsertionSelectionRef = useRef<{ start: number; end: number; sourceNoteId: string } | null>(null);
+
+  // Close and invalidate pending picker if note selection changes
+  useEffect(() => {
+    setIsLinkPickerOpen(false);
+    pendingInsertionSelectionRef.current = null;
+  }, [noteId]);
+
+  const handleOpenLinkPicker = useCallback(() => {
+    if (isReadOnly || !noteId) return;
+
+    let start = content.length;
+    let end = content.length;
+    let selectedText = "";
+
+    if (contentRef.current) {
+      start = contentRef.current.selectionStart;
+      end = contentRef.current.selectionEnd;
+      if (start < end) {
+        selectedText = content.slice(start, end).trim();
+      }
+    }
+
+    pendingInsertionSelectionRef.current = {
+      start,
+      end,
+      sourceNoteId: noteId,
+    };
+    setLinkPickerInitialLabel(selectedText);
+    setIsLinkPickerOpen(true);
+  }, [isReadOnly, noteId, content]);
+
+  const handleSelectLinkTarget = useCallback(
+    (target: { id: string; title: string; customLabel?: string }) => {
+      setIsLinkPickerOpen(false);
+
+      const pending = pendingInsertionSelectionRef.current;
+      pendingInsertionSelectionRef.current = null;
+
+      // Invalidate if note switched or editor is read-only
+      if (!pending || pending.sourceNoteId !== noteId || !noteId || isReadOnly) {
+        return;
+      }
+
+      const insertionResult = insertInternalLinkIntoContent({
+        content: latestDataRef.current.content,
+        selectionStart: pending.start,
+        selectionEnd: pending.end,
+        targetNoteId: target.id,
+        targetTitle: target.title,
+        customLabel: target.customLabel,
+      });
+
+      const newContent = insertionResult.updatedContent;
+      latestDataRef.current.content = newContent;
+      isDirtyRef.current = true;
+      setContent(newContent);
+      updateDirtyState(title, newContent, format);
+      scheduleAutosave(noteId);
+
+      // Restore focus and place cursor right after inserted link
+      requestAnimationFrame(() => {
+        if (contentRef.current) {
+          contentRef.current.focus();
+          contentRef.current.selectionStart = insertionResult.newCursorPosition;
+          contentRef.current.selectionEnd = insertionResult.newCursorPosition;
+          handleRecordSelection();
+        }
+      });
+    },
+    [noteId, isReadOnly, title, format, scheduleAutosave, handleRecordSelection]
+  );
+
+  const handleCloseLinkPicker = useCallback(() => {
+    setIsLinkPickerOpen(false);
+    pendingInsertionSelectionRef.current = null;
+    requestAnimationFrame(() => {
+      contentRef.current?.focus();
+    });
+  }, []);
+
+  // Internal link activation handler (Phase 9, Task 8 & 10)
+  const handleActivateLink = useCallback(
+    (targetNoteId: string) => {
+      if (onActivateLink) {
+        onActivateLink(targetNoteId);
+      } else if (onNavigateToNote) {
+        onNavigateToNote(targetNoteId);
+      } else {
+        console.debug("[InternalLink] Activated link target:", targetNoteId);
+      }
+    },
+    [onActivateLink, onNavigateToNote]
+  );
+
+  // Toggle Edit / Preview mode handler
+  const handleToggleViewMode = useCallback(() => {
+    setViewMode((prev) => {
+      const next = prev === "edit" ? "preview" : "edit";
+      if (next === "edit") {
+        requestAnimationFrame(() => {
+          contentRef.current?.focus();
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  // Global window listener to toggle back to Edit mode from Preview mode (Ctrl+Shift+P or Ctrl+E)
+  useEffect(() => {
+    if (viewMode !== "preview") return;
+
+    const handleWindowKeyDown = (e: KeyboardEvent) => {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        ((e.key.toLowerCase() === "p" && e.shiftKey) || e.key.toLowerCase() === "e")
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleToggleViewMode();
+      }
+    };
+
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, [viewMode, handleToggleViewMode]);
+
   const handleContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Explicit Save shortcut (Ctrl/Cmd + S)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -607,6 +774,27 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       if (!isReadOnly) {
         handleSave();
       }
+      return;
+    }
+
+    // Insert Link shortcut (Ctrl/Cmd + K)
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!isReadOnly && noteId) {
+        handleOpenLinkPicker();
+      }
+      return;
+    }
+
+    // Toggle Edit / Preview mode shortcut (Ctrl/Cmd + Shift + P or Ctrl/Cmd + E)
+    if (
+      (e.ctrlKey || e.metaKey) &&
+      ((e.key.toLowerCase() === "p" && e.shiftKey) || e.key.toLowerCase() === "e")
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleToggleViewMode();
       return;
     }
 
@@ -910,6 +1098,25 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         </div>
 
+        <div className="toolbar-divider" />
+
+        <div className="toolbar-group">
+          <button
+            type="button"
+            className="toolbar-btn"
+            title="Insert link (Ctrl+K)"
+            aria-label="Insert link"
+            disabled={isReadOnly || !noteId}
+            onMouseDown={(e) => {
+              // Keep textarea selection intact when clicking button
+              e.preventDefault();
+            }}
+            onClick={handleOpenLinkPicker}
+          >
+            <LinkIcon />
+          </button>
+        </div>
+
         <div className="toolbar-spacer" />
 
         {!isReadOnly && onMoveNote && loadedNote && (
@@ -993,6 +1200,26 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           onClick={handleToggleFormat}
         >
           <span>{format.toUpperCase()}</span>
+        </button>
+
+        <button
+          type="button"
+          className={`toolbar-btn ${viewMode === "preview" ? "is-active" : ""}`}
+          title={
+            viewMode === "preview"
+              ? "Switch to Edit mode (Ctrl+Shift+P / Ctrl+E)"
+              : "Switch to Reading/Preview mode (Ctrl+Shift+P / Ctrl+E)"
+          }
+          aria-label={
+            viewMode === "preview"
+              ? "Switch to Edit mode"
+              : "Switch to Reading/Preview mode"
+          }
+          aria-pressed={viewMode === "preview"}
+          disabled={!noteId}
+          onClick={handleToggleViewMode}
+        >
+          {viewMode === "preview" ? <EditIcon /> : <EyeIcon />}
         </button>
       </div>
 
@@ -1081,24 +1308,46 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           {/* <AttachmentList noteId={noteId} /> */}
           <AttachmentList noteId={noteId} isReadOnly={isReadOnly} />
 
+          {/* Outgoing Internal Links Strip (Phase 9, Task 8) */}
+          <NoteLinksBar links={parsedLinks} onActivateLink={handleActivateLink} />
+
           <div className="editor-body-divider" />
 
           {/* Note Body Content */}
-          <div className="editor-body-wrap" onClick={handleBodyWrapClick}>
-            <textarea
-              ref={contentRef}
-              className="editor-content-area selectable-text"
-              placeholder={isReadOnly ? "No content in this note." : "Start writing your note..."}
-              value={content}
-              readOnly={isReadOnly}
-              onChange={handleContentChange}
-              onKeyDown={handleContentKeyDown}
-              onSelect={handleRecordSelection}
-              onKeyUp={handleRecordSelection}
-              onMouseUp={handleRecordSelection}
-              aria-label="Note content"
-            />
+          <div
+            className="editor-body-wrap"
+            onClick={viewMode === "edit" ? handleBodyWrapClick : undefined}
+          >
+            {viewMode === "edit" ? (
+              <textarea
+                ref={contentRef}
+                className="editor-content-area selectable-text"
+                placeholder={isReadOnly ? "No content in this note." : "Start writing your note..."}
+                value={content}
+                readOnly={isReadOnly}
+                onChange={handleContentChange}
+                onKeyDown={handleContentKeyDown}
+                onSelect={handleRecordSelection}
+                onKeyUp={handleRecordSelection}
+                onMouseUp={handleRecordSelection}
+                aria-label="Note content"
+              />
+            ) : (
+              <RenderedNoteContent
+                content={content}
+                onActivateLink={handleActivateLink}
+                placeholder={isReadOnly ? "No content in this note." : "No content to preview."}
+              />
+            )}
           </div>
+
+          {/* Incoming Links / Backlinks (Phase 9, Task 14 & 15) */}
+          <BacklinksSection
+            noteId={noteId}
+            onActivateLink={handleActivateLink}
+            isReadOnly={isReadOnly}
+            refreshTrigger={lastSavedAt}
+          />
         </div>
       </div>
 
@@ -1140,6 +1389,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </span>
         </div>
       </footer>
+
+      {/* Internal Note Picker Modal (Phase 9, Task 6 & 7) */}
+      <NotePickerModal
+        isOpen={isLinkPickerOpen}
+        onClose={handleCloseLinkPicker}
+        onSelectNote={handleSelectLinkTarget}
+        currentNoteId={noteId}
+        initialLabel={linkPickerInitialLabel}
+      />
     </div>
   );
 };

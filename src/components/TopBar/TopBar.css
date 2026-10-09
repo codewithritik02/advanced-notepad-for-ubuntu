@@ -11,12 +11,18 @@
 }
 
 /* ==========================================================================
-   Left: Branding
+   Left: Branding & History Navigation
    ========================================================================== */
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 180px;
+}
+
 .topbar-brand {
   display: flex;
   align-items: center;
-  min-width: 180px;
 }
 
 .topbar-brand-title {
@@ -24,6 +30,25 @@
   font-weight: var(--font-weight-semibold);
   letter-spacing: -0.01em;
   color: var(--color-text-primary);
+}
+
+.topbar-nav-history {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 2px;
+}
+
+.topbar-nav-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+}
+
+.topbar-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 /* ==========================================================================

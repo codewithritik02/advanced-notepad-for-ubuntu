@@ -228,3 +228,64 @@ export interface StorageInfo {
   database_file: string;
   is_initialized: boolean;
 }
+
+/**
+ * Strongly-typed lifecycle status of an internal link target (Phase 9, Task 3)
+ */
+export type LinkTargetLifecycle = "active" | "trashed" | "missing";
+
+/**
+ * Representation of a parsed internal link token in note content
+ */
+export interface ParsedInternalLink {
+  targetId: string;
+  label: string;
+  raw: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+/**
+ * Resolved target metadata for following or inspecting an internal link
+ */
+export interface ResolvedLinkTarget {
+  targetId: string;
+  title: string | null;
+  lifecycle: LinkTargetLifecycle;
+  notebookId: string | null;
+  notebookName?: string | null;
+}
+
+/**
+ * Lightweight search candidate for selecting a note to link to (Note Picker)
+ */
+export interface LinkableNoteItem {
+  id: string;
+  title: string;
+  preview: string;
+  notebookId: string | null;
+  notebookName?: string | null;
+  modifiedAt: string;
+}
+
+/**
+ * Backlink entry indicating a source note that links to the target note
+ */
+export interface BacklinkItem {
+  sourceNoteId: string;
+  sourceNoteTitle: string;
+  sourceNotebookId: string | null;
+  sourceNotebookName?: string | null;
+  labelSnippet?: string | null;
+  modifiedAt: string;
+}
+
+/**
+ * Input parameters for inserting an internal link into editor content
+ */
+export interface InsertInternalLinkInput {
+  targetNoteId: string;
+  targetTitle: string;
+  customLabel?: string;
+}
+
