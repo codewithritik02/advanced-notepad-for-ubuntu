@@ -26,7 +26,26 @@ export interface NotesListProps {
   onRestoreNote?: (noteId: string) => void;
   onPermanentlyDeleteNote?: (noteId: string) => void;
   onEmptyTrash?: () => void;
+  onExport?: () => void;
+  exportLabel?: string;
+  onImport?: () => void;
 }
+
+const ExportIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+);
+
+const ImportIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+);
 
 const EmptyNotesIcon = () => (
   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -65,6 +84,9 @@ export const NotesList: React.FC<NotesListProps> = ({
   onRestoreNote,
   onPermanentlyDeleteNote,
   onEmptyTrash,
+  onExport,
+  exportLabel,
+  onImport,
 }) => {
   const isSearchMode = mode === "search";
   const isTrashMode = isTrash || mode === "trash";
@@ -126,6 +148,32 @@ export const NotesList: React.FC<NotesListProps> = ({
                 {countBadgeText}
               </Badge>
             )
+          )}
+        </div>
+        <div className="notes-list-header-actions">
+          {onImport && !isTrashMode && !isSearchMode && (
+            <button
+              type="button"
+              className="notes-list-action-btn notes-list-import-btn"
+              onClick={onImport}
+              title="Import notes"
+              aria-label="Import notes"
+            >
+              <ImportIcon />
+              <span>Import</span>
+            </button>
+          )}
+          {onExport && !isTrashMode && !isSearchMode && notes.length > 0 && (
+            <button
+              type="button"
+              className="notes-list-action-btn notes-list-export-btn"
+              onClick={onExport}
+              title={exportLabel || "Export notes"}
+              aria-label={exportLabel || "Export notes"}
+            >
+              <ExportIcon />
+              <span>{exportLabel || "Export"}</span>
+            </button>
           )}
         </div>
         {isTrashMode && onEmptyTrash && (

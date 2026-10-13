@@ -395,6 +395,392 @@ pub struct BacklinkItem {
     pub modified_at: String,
 }
 
+/// Supported formats for importing notes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportFormat {
+    Txt,
+    Md,
+    Json,
+}
+
+/// Supported formats for exporting notes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Txt,
+    Md,
+    Json,
+}
+
+/// Duplicate resolution policy during import
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicatePolicy {
+    #[default]
+    ImportAsNew,
+    SkipExact,
+    Ask,
+}
+
+/// Detailed classification of duplicate check results against active database notes
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DuplicateMatch {
+    ExactMatch { existing_id: String, existing_title: String },
+    ContentMatch { existing_id: String, existing_title: String },
+    TitleCollisionOnly { existing_id: String, existing_title: String },
+    None,
+}
+
+/// Validation status of an import candidate file
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationStatus {
+    Valid,
+    Warning,
+    Invalid,
+}
+
+/// A scanned candidate file ready for user inspection in preview
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidate {
+    pub id: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub detected_format: ImportFormat,
+    pub proposed_title: String,
+    pub validation_status: ValidationStatus,
+    pub warnings: Vec<String>,
+    pub error_message: Option<String>,
+    pub is_duplicate: bool,
+    pub duplicate_note_id: Option<String>,
+    pub duplicate_note_title: Option<String>,
+    pub selected: bool,
+}
+
+/// Batch preview result returned after scanning candidate files
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreview {
+    pub candidates: Vec<ImportCandidate>,
+    pub total_files: usize,
+    pub valid_files: usize,
+    pub invalid_files: usize,
+    pub duplicate_files: usize,
+    pub total_size_bytes: u64,
+}
+
+/// Options configured by the user in the import preview modal
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOptions {
+    pub target_notebook_id: Option<String>,
+    pub duplicate_policy: DuplicatePolicy,
+}
+
+/// Per-candidate override submitted in the execution request
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportCandidateOverride {
+    pub id: String,
+    #[serde(default)]
+    pub file_path: String,
+    pub selected: bool,
+    pub custom_title: Option<String>,
+}
+
+/// Overall operation outcome category per Phase 10, Task 19 specification
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationOutcome {
+    FullSuccess,
+    SuccessWithWarnings,
+    PartialSuccess,
+    Cancelled,
+    TotalFailure,
+}
+
+/// Progress notification emitted during an import operation
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportProgress {
+    pub operation_id: Option<String>,
+    pub total: usize,
+    pub current_index: usize,
+    pub current_file: String,
+    pub imported_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    pub cancelled_count: usize,
+}
+
+/// Progress notification emitted during an export operation
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportProgress {
+    pub operation_id: Option<String>,
+    pub total: usize,
+    pub current_index: usize,
+    pub current_title: String,
+    pub exported_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    pub cancelled_count: usize,
+}
+
+/// Full execution request payload for committing an import
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRequest {
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    pub candidates: Vec<ImportCandidateOverride>,
+    pub options: ImportOptions,
+}
+
+/// Status of an individual imported file
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportItemStatus {
+    Imported,
+    Skipped,
+    Rejected,
+    Cancelled,
+    Failed,
+}
+
+/// Result of importing an individual file
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportFileResult {
+    pub candidate_id: String,
+    pub file_name: String,
+    pub status: ImportItemStatus,
+    pub created_note_id: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Overall execution summary report of an import batch
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSummary {
+    pub total_processed: usize,
+    pub imported_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    #[serde(default)]
+    pub cancelled_count: usize,
+    #[serde(default)]
+    pub outcome: Option<OperationOutcome>,
+    pub results: Vec<ImportFileResult>,
+    pub duration_ms: u64,
+}
+
+impl ImportSummary {
+    pub fn calculate_outcome(&self) -> OperationOutcome {
+        if self.cancelled_count > 0 {
+            OperationOutcome::Cancelled
+        } else if self.total_processed > 0 && self.failed_count == self.total_processed {
+            OperationOutcome::TotalFailure
+        } else if self.failed_count > 0 {
+            OperationOutcome::PartialSuccess
+        } else if self.skipped_count > 0 || self.results.iter().any(|r| r.message.is_some()) {
+            OperationOutcome::SuccessWithWarnings
+        } else {
+            OperationOutcome::FullSuccess
+        }
+    }
+}
+
+/// Request to export a single note
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSingleNoteRequest {
+    pub note_id: String,
+    pub format: ExportFormat,
+    pub destination_path: String,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Scope of notes selected for export (Phase 10, Task 15)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExportScope {
+    SingleNote { note_id: String },
+    SelectedNotes { note_ids: Vec<String> },
+    Notebook { notebook_id: String, include_nested: bool },
+    AllNotes,
+}
+
+/// Lightweight metadata item for notes resolved in an export selection preview
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportNoteMetadataItem {
+    pub id: String,
+    pub title: String,
+    pub format: String,
+    pub notebook_id: Option<String>,
+    pub notebook_path: Option<String>,
+    pub is_favorite: bool,
+    pub is_pinned: bool,
+    pub tag_count: usize,
+    pub content_length_bytes: usize,
+    pub modified_at: String,
+}
+
+/// Preview and validation report of a proposed export selection
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSelectionPreview {
+    pub total_requested: usize,
+    pub total_included: usize,
+    pub skipped_trashed_count: usize,
+    pub skipped_missing_count: usize,
+    pub notes: Vec<ExportNoteMetadataItem>,
+    pub included_notebook_count: usize,
+}
+
+/// Request to export multiple notes or an entire notebook
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportBatchRequest {
+    #[serde(default)]
+    pub operation_id: Option<String>,
+    #[serde(default)]
+    pub scope: Option<ExportScope>,
+    #[serde(default)]
+    pub note_ids: Vec<String>,
+    pub format: ExportFormat,
+    #[serde(default)]
+    pub destination_dir: String,
+    pub destination_file: Option<String>,
+    #[serde(default)]
+    pub include_metadata: bool,
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Status of an individual exported note
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportItemStatus {
+    Exported,
+    Skipped,
+    Cancelled,
+    Failed,
+}
+
+/// Result of exporting an individual note
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportFileResult {
+    pub note_id: String,
+    pub note_title: String,
+    pub file_path: String,
+    pub status: ExportItemStatus,
+    pub message: Option<String>,
+}
+
+/// Overall execution summary report of an export batch
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    pub total_notes: usize,
+    pub exported_count: usize,
+    pub skipped_count: usize,
+    pub failed_count: usize,
+    #[serde(default)]
+    pub cancelled_count: usize,
+    #[serde(default)]
+    pub outcome: Option<OperationOutcome>,
+    pub results: Vec<ExportFileResult>,
+    pub duration_ms: u64,
+}
+
+impl ExportSummary {
+    pub fn calculate_outcome(&self) -> OperationOutcome {
+        if self.cancelled_count > 0 {
+            OperationOutcome::Cancelled
+        } else if self.total_notes > 0 && self.failed_count == self.total_notes {
+            OperationOutcome::TotalFailure
+        } else if self.failed_count > 0 {
+            OperationOutcome::PartialSuccess
+        } else if self.skipped_count > 0 || self.results.iter().any(|r| r.message.is_some()) {
+            OperationOutcome::SuccessWithWarnings
+        } else {
+            OperationOutcome::FullSuccess
+        }
+    }
+}
+
+/// Version 1.0 Portable Interchange Document Schema
+fn default_format_identifier() -> String {
+    "personal-notepad-interchange".to_string()
+}
+
+fn default_interchange_format() -> String {
+    "txt".to_string()
+}
+
+/// Representation of an internal note link reference inside an interchange note
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterchangeInternalLink {
+    pub label: String,
+    pub target_export_id: String,
+    pub is_package_internal: bool,
+}
+
+/// Version 1.0 Portable Interchange Document Schema
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterchangeDocument {
+    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none", default)]
+    pub schema: Option<String>,
+    pub app: String,
+    #[serde(default = "default_format_identifier")]
+    pub format: String,
+    pub version: String,
+    #[serde(default)]
+    pub exported_at: String,
+    #[serde(default)]
+    pub note_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_link_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_policy: Option<String>,
+    pub notes: Vec<InterchangeNote>,
+}
+
+/// Individual note representation in the portable interchange document
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterchangeNote {
+    pub export_id: String,
+    pub title: String,
+    pub content: String,
+    #[serde(default = "default_interchange_format")]
+    pub format: String,
+    #[serde(default)]
+    pub notebook_path: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub is_pinned: bool,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub modified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments_omitted_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub internal_links: Vec<InterchangeInternalLink>,
+}
+
+
 
 #[cfg(test)]
 mod tests {
@@ -605,6 +991,152 @@ mod tests {
         assert!(backlink_json.contains("\"sourceNoteId\":\"src-uuid-1\""));
         assert!(backlink_json.contains("\"sourceNoteTitle\":\"Project Overview\""));
         assert!(backlink_json.contains("\"labelSnippet\":\"See [Meeting Plan]\""));
+    }
+
+    #[test]
+    fn test_import_export_models_serde() {
+        // Test ImportFormat, ExportFormat, DuplicatePolicy, ValidationStatus
+        assert_eq!(serde_json::to_string(&ImportFormat::Txt).unwrap(), "\"txt\"");
+        assert_eq!(serde_json::to_string(&ImportFormat::Md).unwrap(), "\"md\"");
+        assert_eq!(serde_json::to_string(&ImportFormat::Json).unwrap(), "\"json\"");
+
+        assert_eq!(serde_json::to_string(&ExportFormat::Txt).unwrap(), "\"txt\"");
+        assert_eq!(serde_json::to_string(&ExportFormat::Md).unwrap(), "\"md\"");
+        assert_eq!(serde_json::to_string(&ExportFormat::Json).unwrap(), "\"json\"");
+
+        assert_eq!(serde_json::to_string(&DuplicatePolicy::ImportAsNew).unwrap(), "\"import_as_new\"");
+        assert_eq!(serde_json::to_string(&DuplicatePolicy::SkipExact).unwrap(), "\"skip_exact\"");
+        assert_eq!(serde_json::to_string(&DuplicatePolicy::Ask).unwrap(), "\"ask\"");
+
+        assert_eq!(serde_json::to_string(&ValidationStatus::Valid).unwrap(), "\"valid\"");
+        assert_eq!(serde_json::to_string(&ValidationStatus::Warning).unwrap(), "\"warning\"");
+        assert_eq!(serde_json::to_string(&ValidationStatus::Invalid).unwrap(), "\"invalid\"");
+
+        // Test ImportCandidate camelCase serialization
+        let candidate = ImportCandidate {
+            id: "c-1".to_string(),
+            file_path: "/tmp/notes/test.md".to_string(),
+            file_name: "test.md".to_string(),
+            file_size: 1024,
+            detected_format: ImportFormat::Md,
+            proposed_title: "test".to_string(),
+            validation_status: ValidationStatus::Valid,
+            warnings: vec![],
+            error_message: None,
+            is_duplicate: false,
+            duplicate_note_id: None,
+            duplicate_note_title: None,
+            selected: true,
+        };
+        let c_json = serde_json::to_string(&candidate).unwrap();
+        assert!(c_json.contains("\"filePath\":\"/tmp/notes/test.md\""));
+        assert!(c_json.contains("\"fileName\":\"test.md\""));
+        assert!(c_json.contains("\"detectedFormat\":\"md\""));
+        assert!(c_json.contains("\"proposedTitle\":\"test\""));
+        assert!(c_json.contains("\"validationStatus\":\"valid\""));
+
+        // Test ImportPreview serialization
+        let preview = ImportPreview {
+            candidates: vec![candidate],
+            total_files: 1,
+            valid_files: 1,
+            invalid_files: 0,
+            duplicate_files: 0,
+            total_size_bytes: 1024,
+        };
+        let p_json = serde_json::to_string(&preview).unwrap();
+        assert!(p_json.contains("\"totalFiles\":1"));
+        assert!(p_json.contains("\"totalSizeBytes\":1024"));
+
+        // Test ImportSummary & ImportFileResult
+        let summary = ImportSummary {
+            total_processed: 1,
+            imported_count: 1,
+            skipped_count: 0,
+            failed_count: 0,
+            cancelled_count: 0,
+            outcome: Some(OperationOutcome::FullSuccess),
+            results: vec![ImportFileResult {
+                candidate_id: "c-1".to_string(),
+                file_name: "test.md".to_string(),
+                status: ImportItemStatus::Imported,
+                created_note_id: Some("note-new-uuid".to_string()),
+                message: None,
+            }],
+            duration_ms: 45,
+        };
+        let s_json = serde_json::to_string(&summary).unwrap();
+        assert!(s_json.contains("\"importedCount\":1"));
+        assert!(s_json.contains("\"status\":\"imported\""));
+        assert!(s_json.contains("\"createdNoteId\":\"note-new-uuid\""));
+
+        // Test ExportSummary & ExportFileResult
+        let exp_summary = ExportSummary {
+            total_notes: 1,
+            exported_count: 1,
+            skipped_count: 0,
+            failed_count: 0,
+            cancelled_count: 0,
+            outcome: Some(OperationOutcome::FullSuccess),
+            results: vec![ExportFileResult {
+                note_id: "note-1".to_string(),
+                note_title: "Project".to_string(),
+                file_path: "/out/Project.md".to_string(),
+                status: ExportItemStatus::Exported,
+                message: None,
+            }],
+            duration_ms: 12,
+        };
+        let es_json = serde_json::to_string(&exp_summary).unwrap();
+        assert!(es_json.contains("\"exportedCount\":1"));
+        assert!(es_json.contains("\"filePath\":\"/out/Project.md\""));
+
+        // Test InterchangeDocument schema
+        let doc = InterchangeDocument {
+            schema: Some("https://personal-notepad.local/schemas/interchange-v1.json".to_string()),
+            app: "personal-notepad".to_string(),
+            format: "personal-notepad-interchange".to_string(),
+            version: "1.0".to_string(),
+            exported_at: "2026-10-10T10:00:00Z".to_string(),
+            note_count: 1,
+            internal_link_policy: Some("Package-scoped internal links map export_id to new local IDs.".to_string()),
+            attachment_policy: Some("Attachments omitted from portable JSON interchange.".to_string()),
+            notes: vec![InterchangeNote {
+                export_id: "exp-1".to_string(),
+                title: "Doc Note".to_string(),
+                content: "Content with [Target Note](notepad://note/exp-2)".to_string(),
+                format: "md".to_string(),
+                notebook_path: Some("Work/Projects".to_string()),
+                tags: vec!["tag1".to_string()],
+                is_favorite: true,
+                is_pinned: false,
+                created_at: Some("2026-10-01T10:00:00Z".to_string()),
+                modified_at: Some("2026-10-05T10:00:00Z".to_string()),
+                attachments_omitted_count: Some(2),
+                internal_links: vec![InterchangeInternalLink {
+                    label: "Target Note".to_string(),
+                    target_export_id: "exp-2".to_string(),
+                    is_package_internal: false,
+                }],
+            }],
+        };
+        let doc_json = serde_json::to_string(&doc).unwrap();
+        assert!(doc_json.contains("\"$schema\":"));
+        assert!(doc_json.contains("\"app\":\"personal-notepad\""));
+        assert!(doc_json.contains("\"format\":\"personal-notepad-interchange\""));
+        assert!(doc_json.contains("\"version\":\"1.0\""));
+        assert!(doc_json.contains("\"internal_link_policy\":"));
+        assert!(doc_json.contains("\"attachment_policy\":"));
+        assert!(doc_json.contains("\"attachments_omitted_count\":2"));
+        assert!(doc_json.contains("\"is_package_internal\":false"));
+        assert!(doc_json.contains("\"notebook_path\":\"Work/Projects\""));
+
+        // Round-trip parse test
+        let parsed_doc: InterchangeDocument = serde_json::from_str(&doc_json).unwrap();
+        assert_eq!(parsed_doc.notes.len(), 1);
+        assert_eq!(parsed_doc.notes[0].attachments_omitted_count, Some(2));
+        assert_eq!(parsed_doc.notes[0].internal_links.len(), 1);
+        assert!(!parsed_doc.notes[0].internal_links[0].is_package_internal);
     }
 }
 

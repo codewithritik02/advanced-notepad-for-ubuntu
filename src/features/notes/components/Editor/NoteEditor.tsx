@@ -7,6 +7,7 @@ import { NoteMetadataPanel } from "./NoteMetadataPanel";
 import { NotePickerModal } from "../NotePicker";
 import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
+import { ExportNoteModal } from "../../../importExport";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -159,6 +160,23 @@ const TrashIcon = () => (
   </svg>
 );
 
+const ExportIcon = () => (
+  <svg
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
+  </svg>
+);
+
 interface NoteSessionViewState {
   cursorStart: number;
   cursorEnd: number;
@@ -219,6 +237,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [attachmentCount, setAttachmentCount] = useState<number>(0);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   // Fetch targeted attachment count for metadata panel (Phase 7, Task 19)
   useEffect(() => {
@@ -841,6 +860,21 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   };
 
+  const handleOpenExport = async () => {
+    if (loadedNote && isDirtyRef.current) {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      try {
+        await executeSave(loadedNote.id, revisionRef.current);
+      } catch {
+        // Handled in executeSave error state
+      }
+    }
+    setIsExportModalOpen(true);
+  };
+
   const handleToggleFormat = () => {
     if (isReadOnly) return;
     const nextFormat: NoteFormat = format === "txt" ? "md" : "txt";
@@ -1193,6 +1227,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
+        {loadedNote && !isTrash && (
+          <button
+            type="button"
+            className="toolbar-btn"
+            title="Export Note..."
+            aria-label={`Export "${loadedNote.title || 'Untitled Note'}"`}
+            onClick={handleOpenExport}
+          >
+            <ExportIcon />
+          </button>
+        )}
+
         <button
           type="button"
           className="toolbar-format-btn"
@@ -1398,6 +1444,29 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         currentNoteId={noteId}
         initialLabel={linkPickerInitialLabel}
       />
+
+      {/* Export Note Modal (Phase 10, Task 14) */}
+      {loadedNote && (
+        <ExportNoteModal
+          isOpen={isExportModalOpen}
+          onClose={() => setIsExportModalOpen(false)}
+          note={{
+            id: loadedNote.id,
+            title: title || loadedNote.title,
+            content: content || loadedNote.content,
+            format: (format || loadedNote.format) as string,
+          }}
+          onFlushSave={async () => {
+            if (loadedNote && isDirtyRef.current) {
+              if (debounceTimerRef.current) {
+                clearTimeout(debounceTimerRef.current);
+                debounceTimerRef.current = null;
+              }
+              await executeSave(loadedNote.id, revisionRef.current);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

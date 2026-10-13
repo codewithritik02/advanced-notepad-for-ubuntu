@@ -74,6 +74,12 @@ pub fn run() {
             commands::cleanup_abandoned_temp_files,
             commands::resolve_link_target,
             commands::get_backlinks,
+            commands::scan_import_files,
+            commands::execute_import,
+            commands::cancel_import_export_operation,
+            commands::export_single_note,
+            commands::preview_export_selection,
+            commands::export_notes_batch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

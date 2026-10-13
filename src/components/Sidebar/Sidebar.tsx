@@ -28,6 +28,8 @@ export interface SidebarProps {
   onCreateNotebook?: (parentId?: string | null) => void;
   onRenameNotebook?: (notebook: Notebook) => void;
   onDeleteNotebook?: (notebook: Notebook) => void;
+  onExportNotebook?: (notebook: Notebook) => void;
+  onImportNotes?: () => void;
   onDropNote?: (noteId: string, destinationNotebookId: string | null) => void;
   onRetryNotebooks?: () => void;
   noteCounts?: Record<string, number>;
@@ -47,6 +49,14 @@ const PlusIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19" />
     <line x1="5" y1="12" x2="19" y2="12" />
+  </svg>
+);
+
+const ImportIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <polyline points="7 10 12 15 17 10" />
+    <line x1="12" y1="15" x2="12" y2="3" />
   </svg>
 );
 
@@ -102,6 +112,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCreateNotebook,
   onRenameNotebook,
   onDeleteNotebook,
+  onExportNotebook,
+  onImportNotes,
   onDropNote,
   onRetryNotebooks,
   noteCounts,
@@ -166,6 +178,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <PlusIcon />
           <span>New Note</span>
         </button>
+        {onImportNotes && (
+          <button
+            type="button"
+            className="btn-import-notes"
+            onClick={onImportNotes}
+            aria-label="Import notes"
+            title="Import Notes..."
+          >
+            <ImportIcon />
+            <span>Import</span>
+          </button>
+        )}
       </div>
 
       {/* Navigation Scrollable Area */}
@@ -252,6 +276,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onCreateNotebook={onCreateNotebook}
             onRenameNotebook={onRenameNotebook}
             onDeleteNotebook={onDeleteNotebook}
+            onExportNotebook={onExportNotebook}
             onDropNote={onDropNote}
             onRetry={onRetryNotebooks}
             noteCounts={noteCounts}

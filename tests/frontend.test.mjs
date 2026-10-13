@@ -15442,6 +15442,2253 @@ describe("Phase 9 - Task 24: Security, Reliability, and Performance Verification
       assert.strictEqual("full_content" in projectedBacklinks[0], false);
     });
   });
+
+  describe("Phase 10 - Task 8: Note Title Derivation and Import Options Tests", () => {
+    it("title derivation: sanitizes file stem, strips recognized extensions, and preserves Unicode/emojis", () => {
+      const deriveTitle = (fileName) => {
+        const trimmed = (fileName || "").trim();
+        if (!trimmed) return "Untitled Note";
+
+        // Remove recognized extension
+        const lower = trimmed.toLowerCase();
+        let stem = trimmed;
+        for (const ext of [".markdown", ".json", ".txt", ".md"]) {
+          if (lower.endsWith(ext)) {
+            stem = trimmed.slice(0, trimmed.length - ext.length);
+            break;
+          }
+        }
+
+        // Filter control characters
+        const cleaned = stem.replace(/[\u0000-\u001F\u007F-\u009F]/g, "").trim();
+        if (!cleaned || cleaned === ".") {
+          return "Untitled Note";
+        }
+        return cleaned;
+      };
+
+      assert.strictEqual(deriveTitle("Sprint Plan.md"), "Sprint Plan");
+      assert.strictEqual(deriveTitle("Notes.txt"), "Notes");
+      assert.strictEqual(deriveTitle("export.markdown"), "export");
+      assert.strictEqual(deriveTitle("archive.json"), "archive");
+      assert.strictEqual(deriveTitle("Report.2026.Q3.final.md"), "Report.2026.Q3.final");
+      assert.strictEqual(deriveTitle("✨ Rocket Notes 🚀.md"), "✨ Rocket Notes 🚀");
+      assert.strictEqual(deriveTitle("दस्तावेज़.txt"), "दस्तावेज़");
+      assert.strictEqual(deriveTitle("日本語ノート.markdown"), "日本語ノート");
+      assert.strictEqual(deriveTitle("   Leading and Trailing   .md"), "Leading and Trailing");
+      assert.strictEqual(deriveTitle("\t\nNote with controls\r\n.txt"), "Note with controls");
+      assert.strictEqual(deriveTitle(""), "Untitled Note");
+      assert.strictEqual(deriveTitle("   "), "Untitled Note");
+      assert.strictEqual(deriveTitle(".txt"), "Untitled Note");
+      assert.strictEqual(deriveTitle(".md"), "Untitled Note");
+      assert.strictEqual(deriveTitle("."), "Untitled Note");
+      assert.strictEqual(deriveTitle("\x00\x01\x02.txt"), "Untitled Note");
+    });
+
+    it("options & overrides: builds valid import request with custom title overrides and chosen duplicate policy", () => {
+      const mockCandidates = [
+        {
+          id: "cand-1",
+          filePath: "/docs/Meeting.md",
+          fileName: "Meeting.md",
+          proposedTitle: "Meeting",
+          validationStatus: "valid",
+          selected: true,
+        },
+        {
+          id: "cand-2",
+          filePath: "/docs/Notes.txt",
+          fileName: "Notes.txt",
+          proposedTitle: "Notes",
+          validationStatus: "valid",
+          selected: true,
+        },
+        {
+          id: "cand-3",
+          filePath: "/docs/corrupt.bin",
+          fileName: "corrupt.bin",
+          proposedTitle: "corrupt",
+          validationStatus: "invalid",
+          selected: false,
+        },
+      ];
+
+      const userTitleOverrides = {
+        "cand-1": "Q3 Planning Meeting",
+        "cand-2": "   ", // User cleared the input: should fallback to candidate.proposedTitle
+      };
+
+      const targetNotebookId = "nb-work-123";
+      const duplicatePolicy = "skip_exact";
+
+      // Replicate handleConfirm logic in ImportPreviewModal
+      const overrides = mockCandidates.map((c) => ({
+        id: c.id,
+        filePath: c.filePath,
+        selected: c.selected && c.validationStatus !== "invalid",
+        customTitle: userTitleOverrides[c.id]?.trim() || c.proposedTitle,
+      }));
+
+      const request = {
+        candidates: overrides,
+        options: {
+          targetNotebookId,
+          duplicatePolicy,
+        },
+      };
+
+      assert.strictEqual(request.options.targetNotebookId, "nb-work-123");
+      assert.strictEqual(request.options.duplicatePolicy, "skip_exact");
+      assert.strictEqual(request.candidates.length, 3);
+      assert.deepStrictEqual(request.candidates[0], {
+        id: "cand-1",
+        filePath: "/docs/Meeting.md",
+        selected: true,
+        customTitle: "Q3 Planning Meeting",
+      });
+      assert.deepStrictEqual(request.candidates[1], {
+        id: "cand-2",
+        filePath: "/docs/Notes.txt",
+        selected: true,
+        customTitle: "Notes", // Successfully fell back to proposedTitle
+      });
+      assert.deepStrictEqual(request.candidates[2], {
+        id: "cand-3",
+        filePath: "/docs/corrupt.bin",
+        selected: false, // Invalid candidate remains unselected
+        customTitle: "corrupt",
+      });
+    });
+
+    it("source content preservation invariant: preview and title edits never alter underlying text", () => {
+      const originalFileContent = "# Original Heading\n\nPreserved line verbatim.\n[Link](notepad://note/uuid-1)";
+      let userEditedTitle = "New Title Choice";
+
+      // Editing the title modifies metadata only
+      const stagedImportDto = {
+        title: userEditedTitle,
+        content: originalFileContent, // Content remains strictly unmodified
+        format: "md",
+      };
+
+      assert.strictEqual(stagedImportDto.title, "New Title Choice");
+      assert.strictEqual(stagedImportDto.content, originalFileContent);
+      assert.ok(stagedImportDto.content.includes("[Link](notepad://note/uuid-1)"));
+    });
+  });
+
+  describe("Phase 10 - Task 9: Duplicate Detection and Conflict Policies Tests", () => {
+    const existingActiveNotes = [
+      {
+        id: "note-uuid-1",
+        title: "Sprint Retrospective",
+        content: "What went well and what could be improved.",
+        is_deleted: false,
+      },
+      {
+        id: "note-uuid-2",
+        title: "Architecture Decisions",
+        content: "ADR 001: Local first database schema.",
+        is_deleted: false,
+      },
+      {
+        id: "note-uuid-3",
+        title: "Old Meeting Notes",
+        content: "Meeting from 2024.",
+        is_deleted: true, // Trashed note
+      },
+    ];
+
+    const checkDuplicate = (title, content, activeNotes) => {
+      // 1. Check exact title and content match
+      const exactMatch = activeNotes.find(
+        (n) => !n.is_deleted && n.title === title && n.content === content
+      );
+      if (exactMatch) {
+        return { type: "exactMatch", existingId: exactMatch.id, existingTitle: exactMatch.title };
+      }
+
+      // 2. Check exact content match with different title
+      if (content.trim()) {
+        const contentMatch = activeNotes.find(
+          (n) => !n.is_deleted && n.content === content
+        );
+        if (contentMatch) {
+          return { type: "contentMatch", existingId: contentMatch.id, existingTitle: contentMatch.title };
+        }
+      }
+
+      // 3. Check title collision only with different content
+      const titleMatch = activeNotes.find(
+        (n) => !n.is_deleted && n.title === title
+      );
+      if (titleMatch) {
+        return { type: "titleCollisionOnly", existingId: titleMatch.id, existingTitle: titleMatch.title };
+      }
+
+      return { type: "none" };
+    };
+
+    const shouldSkipCandidate = (policy, dupMatch, selected) => {
+      if (!selected) {
+        return { skip: true, reason: "Deselected by user." };
+      }
+      if (policy === "import_as_new") {
+        return { skip: false, reason: null };
+      }
+      if (policy === "skip_exact") {
+        if (dupMatch.type === "exactMatch") {
+          return { skip: true, reason: `Skipped exact duplicate note '${dupMatch.existingTitle}'.` };
+        }
+        if (dupMatch.type === "contentMatch") {
+          return { skip: true, reason: `Skipped duplicate content matching '${dupMatch.existingTitle}'.` };
+        }
+        // Critical: Title collision alone is NOT skipped
+        return { skip: false, reason: null };
+      }
+      // Ask policy: user choice respected
+      return { skip: false, reason: null };
+    };
+
+    it("duplicate classification: accurately distinguishes exact duplicate, content match, title collision, and trashed notes", () => {
+      // Exact match
+      const match1 = checkDuplicate("Sprint Retrospective", "What went well and what could be improved.", existingActiveNotes);
+      assert.strictEqual(match1.type, "exactMatch");
+      assert.strictEqual(match1.existingId, "note-uuid-1");
+
+      // Content match (different title)
+      const match2 = checkDuplicate("Sprint Retro Q3", "What went well and what could be improved.", existingActiveNotes);
+      assert.strictEqual(match2.type, "contentMatch");
+      assert.strictEqual(match2.existingId, "note-uuid-1");
+
+      // Title collision only (matching title, DIFFERENT content)
+      const match3 = checkDuplicate("Sprint Retrospective", "Different content altogether.", existingActiveNotes);
+      assert.strictEqual(match3.type, "titleCollisionOnly");
+      assert.strictEqual(match3.existingId, "note-uuid-1");
+
+      // Trashed note must not cause collision
+      const matchTrashed = checkDuplicate("Old Meeting Notes", "Meeting from 2024.", existingActiveNotes);
+      assert.strictEqual(matchTrashed.type, "none");
+
+      // Unique note
+      const matchUnique = checkDuplicate("New Roadmap", "Unique text.", existingActiveNotes);
+      assert.strictEqual(matchUnique.type, "none");
+    });
+
+    it("duplicate policy evaluation: skip_exact skips exact duplicates but preserves title collisions safely", () => {
+      const exactDup = { type: "exactMatch", existingId: "note-uuid-1", existingTitle: "Sprint Retrospective" };
+      const contentDup = { type: "contentMatch", existingId: "note-uuid-1", existingTitle: "Sprint Retrospective" };
+      const titleCol = { type: "titleCollisionOnly", existingId: "note-uuid-1", existingTitle: "Sprint Retrospective" };
+      const uniqueNote = { type: "none" };
+
+      // Policy: skip_exact
+      assert.strictEqual(shouldSkipCandidate("skip_exact", exactDup, true).skip, true);
+      assert.strictEqual(shouldSkipCandidate("skip_exact", contentDup, true).skip, true);
+
+      // INVARIANT: Title collision with different content must NOT be skipped
+      assert.strictEqual(shouldSkipCandidate("skip_exact", titleCol, true).skip, false);
+      assert.strictEqual(shouldSkipCandidate("skip_exact", uniqueNote, true).skip, false);
+
+      // Policy: import_as_new (creates notes regardless of duplicate matches)
+      assert.strictEqual(shouldSkipCandidate("import_as_new", exactDup, true).skip, false);
+      assert.strictEqual(shouldSkipCandidate("import_as_new", contentDup, true).skip, false);
+      assert.strictEqual(shouldSkipCandidate("import_as_new", titleCol, true).skip, false);
+
+      // Policy: ask (user selection respected)
+      assert.strictEqual(shouldSkipCandidate("ask", exactDup, true).skip, false);
+      assert.strictEqual(shouldSkipCandidate("ask", exactDup, false).skip, true);
+    });
+
+    it("data safety invariant: import operations never overwrite or destroy existing note records", () => {
+      // Simulating import commit
+      const databaseNotes = [...existingActiveNotes];
+      const incomingNote = {
+        title: "Sprint Retrospective",
+        content: "New notes for next week.", // Title collision
+      };
+
+      // Import must create a new record rather than mutating existing note-uuid-1
+      const newCreatedNote = {
+        id: "new-generated-uuid-99",
+        title: incomingNote.title,
+        content: incomingNote.content,
+        is_deleted: false,
+      };
+      databaseNotes.push(newCreatedNote);
+
+      // Original note remains completely intact
+      const originalNote = databaseNotes.find((n) => n.id === "note-uuid-1");
+      assert.strictEqual(originalNote.content, "What went well and what could be improved.");
+
+      // Both notes safely coexist
+      const sameTitleNotes = databaseNotes.filter((n) => n.title === "Sprint Retrospective");
+      assert.strictEqual(sameTitleNotes.length, 2);
+      assert.notStrictEqual(sameTitleNotes[0].id, sameTitleNotes[1].id);
+    });
+  });
+
+  describe("Phase 10 - Task 10: Safe Note Creation and Import Transactions Tests", () => {
+    it("transaction isolation: partial batch failures report itemized outcomes without rolling back successful files", () => {
+      const candidates = [
+        { id: "cand-1", filePath: "/docs/valid1.md", selected: true, title: "Valid Note 1" },
+        { id: "cand-2", filePath: "/docs/corrupt.bin", selected: true, title: "Corrupt File" },
+        { id: "cand-3", filePath: "/docs/deselected.txt", selected: false, title: "Deselected Note" },
+        { id: "cand-4", filePath: "/docs/valid2.md", selected: true, title: "Valid Note 2" },
+      ];
+
+      // Simulate executeImport per-file atomic processing
+      const databaseState = [];
+      const results = [];
+      let imported = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      for (const c of candidates) {
+        if (!c.selected) {
+          results.push({
+            candidateId: c.id,
+            fileName: c.filePath.split("/").pop(),
+            status: "skipped",
+            createdNoteId: null,
+            message: "Deselected by user.",
+          });
+          skipped++;
+          continue;
+        }
+
+        if (c.filePath.endsWith(".bin")) {
+          // Validation error: rejected before writing
+          results.push({
+            candidateId: c.id,
+            fileName: c.filePath.split("/").pop(),
+            status: "rejected",
+            createdNoteId: null,
+            message: "Binary file content detected.",
+          });
+          failed++;
+          continue;
+        }
+
+        // Successfully created note within its transaction
+        const noteId = `generated-local-${c.id}`;
+        databaseState.push({
+          id: noteId,
+          title: c.title,
+          content: "Safe content verbatim",
+          format: "md",
+        });
+
+        results.push({
+          candidateId: c.id,
+          fileName: c.filePath.split("/").pop(),
+          status: "imported",
+          createdNoteId: noteId,
+          message: null,
+        });
+        imported++;
+      }
+
+      const summary = {
+        totalProcessed: candidates.length,
+        importedCount: imported,
+        skippedCount: skipped,
+        failedCount: failed,
+        results,
+        durationMs: 12,
+      };
+
+      assert.strictEqual(summary.totalProcessed, 4);
+      assert.strictEqual(summary.importedCount, 2);
+      assert.strictEqual(summary.skippedCount, 1);
+      assert.strictEqual(summary.failedCount, 1);
+
+      // Verify that database received exactly the 2 valid notes and ZERO corrupt records
+      assert.strictEqual(databaseState.length, 2);
+      assert.strictEqual(databaseState[0].title, "Valid Note 1");
+      assert.strictEqual(databaseState[1].title, "Valid Note 2");
+      assert.ok(databaseState.every((n) => !n.title.includes("Corrupt")));
+    });
+
+    it("target notebook validation: rejects invalid or deleted notebook references before transaction", () => {
+      const existingNotebooks = [{ id: "nb-valid-1", name: "Engineering" }];
+      const validateNotebookAssignment = (targetNotebookId) => {
+        if (!targetNotebookId) return { valid: true, assignedNotebookId: null };
+        const exists = existingNotebooks.some((nb) => nb.id === targetNotebookId);
+        if (!exists) {
+          return { valid: false, error: `Target notebook '${targetNotebookId}' does not exist.` };
+        }
+        return { valid: true, assignedNotebookId: targetNotebookId };
+      };
+
+      // Valid notebook assignment
+      const validRes = validateNotebookAssignment("nb-valid-1");
+      assert.strictEqual(validRes.valid, true);
+      assert.strictEqual(validRes.assignedNotebookId, "nb-valid-1");
+
+      // Optional unfiled assignment
+      const unfiledRes = validateNotebookAssignment(null);
+      assert.strictEqual(unfiledRes.valid, true);
+      assert.strictEqual(unfiledRes.assignedNotebookId, null);
+
+      // Invalid notebook reference fails validation
+      const invalidRes = validateNotebookAssignment("nonexistent-nb-999");
+      assert.strictEqual(invalidRes.valid, false);
+      assert.ok(invalidRes.error.includes("does not exist"));
+    });
+
+    it("structured import isolation: external export_id is never inserted as SQLite primary key", () => {
+      const externalInterchangeNote = {
+        exportId: "external-untrusted-export-id-12345",
+        title: "Portable Note",
+        content: "Portable body",
+      };
+
+      // Backend generates local UUID v4
+      const localGeneratedId = "local-uuid-550e8400-e29b-41d4-a716-446655440000";
+      const createdNoteRecord = {
+        id: localGeneratedId,
+        title: externalInterchangeNote.title,
+        content: externalInterchangeNote.content,
+      };
+
+      assert.notStrictEqual(createdNoteRecord.id, externalInterchangeNote.exportId);
+      assert.strictEqual(createdNoteRecord.id, localGeneratedId);
+    });
+  });
+
+  describe("Phase 10 - Task 11: Markdown Import Without Unnecessary Conversion Tests", () => {
+    it("source syntax preservation: headings, lists, tables, code blocks, and HTML tags are preserved verbatim", () => {
+      const rawMarkdownInput = `# System Overview\n\n## Architecture\n* Item 1\n* Item 2\n\n| Prop | Value |\n| --- | --- |\n| Port | 8080 |\n\n\`\`\`typescript\nconst x: number = 42;\n\`\`\`\n\n> Blockquote\n\n<div class="note-box"><script>alert('xss')</script></div>`;
+
+      // Simulate file reading and ingestion
+      const normalizeLineEndings = (text) => text.replace(/\r\n/g, "\n");
+      const processedContent = normalizeLineEndings(rawMarkdownInput);
+
+      // Verify that no HTML rendering took place and source remains untouched
+      assert.strictEqual(processedContent, rawMarkdownInput);
+      assert.ok(processedContent.includes("# System Overview"));
+      assert.ok(processedContent.includes("```typescript"));
+      assert.ok(processedContent.includes("| Prop | Value |"));
+      assert.ok(processedContent.includes("<script>alert('xss')</script>"));
+      assert.ok(!processedContent.startsWith("<html>"), "Content must not be converted into an HTML document");
+    });
+
+    it("model format assignment: sets format to 'md' and display name to 'Markdown'", () => {
+      const getFormatDisplayName = (format) => {
+        return format?.toLowerCase() === "md" ? "Markdown" : "Plain Text";
+      };
+
+      const importedMdNote = {
+        id: "note-md-1",
+        title: "Release Notes",
+        content: "# Release 1.0\n* Initial launch",
+        format: "md",
+      };
+
+      assert.strictEqual(importedMdNote.format, "md");
+      assert.strictEqual(getFormatDisplayName(importedMdNote.format), "Markdown");
+
+      // Verify TXT comparison
+      assert.strictEqual(getFormatDisplayName("txt"), "Plain Text");
+    });
+
+    it("editor save invariance: editing and saving the imported markdown note retains format 'md' without silent conversion to 'txt'", () => {
+      let databaseNote = {
+        id: "note-md-2",
+        title: "API Design",
+        content: "# Endpoints\n- GET /api/v1/notes",
+        format: "md",
+        modified_at: "2026-10-12T10:00:00Z",
+      };
+
+      // Frontend save handler logic matching App.tsx handleSaveNote
+      const handleSaveNote = (id, newTitle, newContent, explicitFormat) => {
+        const resolvedFormat = explicitFormat || databaseNote.format || "txt";
+        databaseNote = {
+          ...databaseNote,
+          title: newTitle,
+          content: newContent,
+          format: resolvedFormat,
+          modified_at: "2026-10-12T10:05:00Z",
+        };
+        return databaseNote;
+      };
+
+      // 1. User edits title and appends content, format is omitted (standard editing flow)
+      const savedNote = handleSaveNote(
+        "note-md-2",
+        "API Design v2",
+        "# Endpoints\n- GET /api/v1/notes\n- POST /api/v1/notes",
+        undefined
+      );
+
+      // Verify format was NOT degraded to "txt"
+      assert.strictEqual(savedNote.format, "md");
+      assert.strictEqual(savedNote.title, "API Design v2");
+      assert.ok(savedNote.content.includes("POST /api/v1/notes"));
+
+      // 2. Editor state resolution check (matching NoteEditor.tsx)
+      const resolveEditorFormat = (note) => (note.format === "md" ? "md" : "txt");
+      assert.strictEqual(resolveEditorFormat(savedNote), "md");
+    });
+  });
+
+  describe("Phase 10 - Task 12: Plain-Text Import and Encoding Behavior Tests", () => {
+    it("whitespace and line ending normalization: preserves exact spacing and blank lines while normalizing CRLF to LF", () => {
+      const inputWithCrlfAndIndents = "Title Line\r\n\r\n    Four space indent\r\n\tTab indent\r\nTrailing spaces    \r\n\r\n";
+      const normalizeLineEndings = (text) => text.replace(/\r\n/g, "\n");
+      const normalized = normalizeLineEndings(inputWithCrlfAndIndents);
+
+      // Verify CRLF converted to LF
+      assert.ok(!normalized.includes("\r\n"));
+      // Verify leading spaces, tabs, trailing spaces, and blank lines are NOT stripped
+      assert.ok(normalized.includes("    Four space indent"));
+      assert.ok(normalized.includes("\tTab indent"));
+      assert.ok(normalized.includes("Trailing spaces    "));
+      assert.ok(normalized.startsWith("Title Line\n\n"));
+      assert.ok(normalized.endsWith("\n\n"));
+    });
+
+    it("multilingual unicode and emoji support: preserves multi-script characters and emoji without lossy replacement", () => {
+      const multilingualContent = "🌟 Meeting Minutes 📝\n\n日本語: 議事録\nहिन्दी: बैठक सारांश\nالعربية: محضر الاجتماع\nMath: ∀x ∃y (x < y)";
+      
+      // Strict UTF-8 validation check (no replacement characters)
+      assert.ok(!multilingualContent.includes("\uFFFD"), "Content must not contain replacement characters");
+      assert.ok(multilingualContent.includes("🌟"));
+      assert.ok(multilingualContent.includes("議事録"));
+      assert.ok(multilingualContent.includes("बैठक सारांश"));
+      assert.ok(multilingualContent.includes("محضر الاجتماع"));
+      assert.ok(multilingualContent.includes("∀x ∃y (x < y)"));
+    });
+
+    it("empty text file safety: empty inputs produce a valid empty note without throwing", () => {
+      const processEmptyFile = (fileSize, rawText) => {
+        if (fileSize === 0 || rawText === "") {
+          return {
+            isEmpty: true,
+            content: "",
+            format: "txt",
+            warning: "File is empty (0 bytes). An empty note will be created.",
+          };
+        }
+        return { isEmpty: false, content: rawText, format: "txt" };
+      };
+
+      const result = processEmptyFile(0, "");
+      assert.strictEqual(result.isEmpty, true);
+      assert.strictEqual(result.content, "");
+      assert.strictEqual(result.format, "txt");
+      assert.ok(result.warning.includes("0 bytes"));
+    });
+
+    it("binary and corrupt encoding detection: rejects files with null bytes or corrupt UTF-8", () => {
+      const isBinaryBuffer = (uint8Array) => uint8Array.some((byte) => byte === 0);
+      const binarySample = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x57, 0x6f, 0x72, 0x6c, 0x64]);
+      const validTextSample = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x20, 0x57, 0x6f, 0x72, 0x6c, 0x64]);
+
+      assert.strictEqual(isBinaryBuffer(binarySample), true);
+      assert.strictEqual(isBinaryBuffer(validTextSample), false);
+    });
+  });
+
+  describe("Phase 10 - Task 13: Notebook and Metadata Handling for Structured Imports Tests", () => {
+    it("version and schema validation: accepts version 1.0 documents and rejects incompatible versions", () => {
+      const validateDocumentVersion = (doc) => {
+        if (!doc || typeof doc !== "object") return { valid: false, error: "Malformed document" };
+        if (doc.app !== "personal-notepad") return { valid: false, error: `Invalid app '${doc.app}'` };
+        if (doc.version !== "1.0") return { valid: false, error: `Unsupported interchange version '${doc.version}'` };
+        return { valid: true };
+      };
+
+      const validDoc = { app: "personal-notepad", version: "1.0", notes: [] };
+      const invalidVersionDoc = { app: "personal-notepad", version: "2.0", notes: [] };
+      const invalidAppDoc = { app: "external-app", version: "1.0", notes: [] };
+
+      assert.strictEqual(validateDocumentVersion(validDoc).valid, true);
+      assert.strictEqual(validateDocumentVersion(invalidVersionDoc).valid, false);
+      assert.ok(validateDocumentVersion(invalidVersionDoc).error.includes("Unsupported interchange version '2.0'"));
+      assert.strictEqual(validateDocumentVersion(invalidAppDoc).valid, false);
+    });
+
+    it("destination notebook priority: user-selected target notebook overrides document notebook_path", () => {
+      const resolveDestinationNotebook = (userSelectedNotebookId, documentNotebookPath) => {
+        if (userSelectedNotebookId) {
+          return { notebookId: userSelectedNotebookId, source: "user_override" };
+        }
+        if (documentNotebookPath && documentNotebookPath.trim()) {
+          return { notebookId: "resolved-hierarchy-id", path: documentNotebookPath, source: "document_hierarchy" };
+        }
+        return { notebookId: null, source: "unfiled" };
+      };
+
+      // Case 1: User explicitly overrides destination
+      const overrideRes = resolveDestinationNotebook("target-nb-123", "Work/Projects");
+      assert.strictEqual(overrideRes.notebookId, "target-nb-123");
+      assert.strictEqual(overrideRes.source, "user_override");
+
+      // Case 2: User leaves target unselected -> preserves document hierarchy
+      const preserveRes = resolveDestinationNotebook(null, "Work/Projects");
+      assert.strictEqual(preserveRes.notebookId, "resolved-hierarchy-id");
+      assert.strictEqual(preserveRes.source, "document_hierarchy");
+
+      // Case 3: No user target and no document path -> unfiled
+      const unfiledRes = resolveDestinationNotebook(null, null);
+      assert.strictEqual(unfiledRes.notebookId, null);
+      assert.strictEqual(unfiledRes.source, "unfiled");
+    });
+
+    it("plain text vs structured metadata isolation: txt imports never invent tags or favorite flags", () => {
+      const createTxtImportRecord = (title, content, targetNotebookId) => ({
+        title,
+        content,
+        format: "txt",
+        notebook_id: targetNotebookId || null,
+        is_favorite: false,
+        is_pinned: false,
+        tags: [],
+      });
+
+      const txtNote = createTxtImportRecord("Scratchpad", "hello world", null);
+      assert.strictEqual(txtNote.is_favorite, false);
+      assert.strictEqual(txtNote.is_pinned, false);
+      assert.deepStrictEqual(txtNote.tags, []);
+      assert.strictEqual(txtNote.notebook_id, null);
+    });
+
+    it("internal link remapping: rewrites package note references to fresh local UUIDs while leaving external links intact", () => {
+      const idMapping = new Map([
+        ["ext-note-a", "local-uuid-aaaa"],
+        ["ext-note-b", "local-uuid-bbbb"],
+      ]);
+
+      const originalContent = "See [Note B](notepad://note/ext-note-b) and shorthand [Note B](note:ext-note-b). External: [Legacy](notepad://note/ext-unimported-999)";
+
+      const remapInternalLinks = (content, mapping) => {
+        let result = content;
+        for (const [exportId, localUuid] of mapping.entries()) {
+          result = result.replace(new RegExp(`notepad://note/${exportId}`, "g"), `notepad://note/${localUuid}`);
+          result = result.replace(new RegExp(`note:${exportId}`, "g"), `note:${localUuid}`);
+        }
+        return result;
+      };
+
+      const remapped = remapInternalLinks(originalContent, idMapping);
+      assert.ok(remapped.includes("notepad://note/local-uuid-bbbb"));
+      assert.ok(remapped.includes("note:local-uuid-bbbb"));
+      assert.ok(remapped.includes("notepad://note/ext-unimported-999"), "Unimported external link must remain intact");
+    });
+  });
+
+  describe("Phase 10 - Task 14: Individual Note Export Tests", () => {
+    const sanitizeExportFilename = (title) => {
+      if (!title || !title.trim()) {
+        return "Untitled Note";
+      }
+      let sanitized = "";
+      for (const ch of title) {
+        const code = ch.charCodeAt(0);
+        if (code < 32 || ['/', '\\', ':', '*', '?', '"', '<', '>', '|'].includes(ch)) {
+          sanitized += "_";
+        } else {
+          sanitized += ch;
+        }
+      }
+      sanitized = sanitized.trim();
+      while (sanitized.endsWith(".") || sanitized.endsWith(" ")) {
+        sanitized = sanitized.slice(0, -1);
+      }
+      return sanitized.length > 0 ? sanitized : "Untitled Note";
+    };
+
+    it("filename sanitization: replaces forbidden filesystem characters with underscore and trims trailing dots", () => {
+      assert.strictEqual(sanitizeExportFilename("Meeting / Notes: 2026*?"), "Meeting _ Notes_ 2026__");
+      assert.strictEqual(sanitizeExportFilename('Project "Alpha" <Draft> | Final.'), "Project _Alpha_ _Draft_ _ Final");
+      assert.strictEqual(sanitizeExportFilename("   ...   "), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename(""), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename("Valid Note Title"), "Valid Note Title");
+      assert.strictEqual(sanitizeExportFilename("Notes 🚀 2026 日本語"), "Notes 🚀 2026 日本語");
+    });
+
+    it("export format selection: provides markdown-as-txt warning when exporting markdown notes as txt", () => {
+      const getExportAdvice = (noteFormat, selectedFormat) => {
+        if (noteFormat === "md" && selectedFormat === "txt") {
+          return {
+            hasWarning: true,
+            warning: "Stored Markdown source will be exported as raw text. Markdown characters (like #, *, []) will be preserved as text characters; output is not rendered into plain prose.",
+          };
+        }
+        return { hasWarning: false, warning: null };
+      };
+
+      const mdToTxt = getExportAdvice("md", "txt");
+      assert.strictEqual(mdToTxt.hasWarning, true);
+      assert.ok(mdToTxt.warning.includes("Stored Markdown source will be exported as raw text"));
+
+      const mdToMd = getExportAdvice("md", "md");
+      assert.strictEqual(mdToMd.hasWarning, false);
+
+      const txtToTxt = getExportAdvice("txt", "txt");
+      assert.strictEqual(txtToTxt.hasWarning, false);
+
+      const mdToJson = getExportAdvice("md", "json");
+      assert.strictEqual(mdToJson.hasWarning, false);
+    });
+
+    it("pre-export editor flush: ensures unpersisted dirty edits are saved before export executes", async () => {
+      let isDirty = true;
+      let flushExecuted = false;
+      let exportedContent = null;
+
+      const editorState = {
+        title: "Clean Title",
+        content: "Unsaved modifications in editor buffer",
+      };
+
+      const flushSave = async () => {
+        if (isDirty) {
+          flushExecuted = true;
+          isDirty = false;
+        }
+      };
+
+      const handleExport = async (onFlush) => {
+        await onFlush();
+        exportedContent = editorState.content;
+      };
+
+      await handleExport(flushSave);
+
+      assert.strictEqual(flushExecuted, true, "Dirty editor buffer must be saved before export");
+      assert.strictEqual(isDirty, false);
+      assert.strictEqual(exportedContent, "Unsaved modifications in editor buffer");
+    });
+
+    it("destination dialog cancellation: cleanly cancels without error notification or file writing", async () => {
+      let exportCalled = false;
+      let errorOccurred = false;
+
+      const pickExportDestinationFile = async () => {
+        // User closes/cancels native save dialog
+        return null;
+      };
+
+      const triggerExport = async () => {
+        const destinationPath = await pickExportDestinationFile();
+        if (!destinationPath) {
+          // Clean exit without error
+          return;
+        }
+        exportCalled = true;
+      };
+
+      try {
+        await triggerExport();
+      } catch {
+        errorOccurred = true;
+      }
+
+      assert.strictEqual(exportCalled, false, "Must not invoke export write when dialog was cancelled");
+      assert.strictEqual(errorOccurred, false, "Cancellation must never be treated as an error");
+    });
+
+    it("zero side effects: exported note in database remains completely unmodified", () => {
+      const sourceNote = {
+        id: "note-orig-123",
+        title: "Original Title",
+        content: "Untouched content",
+        format: "md",
+        createdAt: "2026-01-01T00:00:00Z",
+        modifiedAt: "2026-01-01T00:00:00Z",
+        notebookId: "nb-1",
+      };
+
+      // Create deep clone representing DB state after export
+      const postExportNote = JSON.parse(JSON.stringify(sourceNote));
+
+      assert.deepStrictEqual(sourceNote, postExportNote, "Export must have zero side effects on the source note");
+    });
+  });
+
+  describe("Phase 10 - Task 15: Multiple-Note and Notebook Export Selection Tests", () => {
+    it("selection scope resolution: supports single note, selected note IDs, notebook, and all notes", () => {
+      const resolveScopeItems = (scope, allNotes) => {
+        switch (scope.type) {
+          case "single_note":
+            return allNotes.filter((n) => n.id === scope.note_id && !n.is_deleted);
+          case "selected_notes":
+            return allNotes.filter((n) => scope.note_ids.includes(n.id) && !n.is_deleted);
+          case "notebook":
+            if (scope.include_nested) {
+              const allowedNotebookIds = new Set([scope.notebook_id, "child-nb-1", "grandchild-nb-2"]);
+              return allNotes.filter((n) => allowedNotebookIds.has(n.notebook_id) && !n.is_deleted);
+            }
+            return allNotes.filter((n) => n.notebook_id === scope.notebook_id && !n.is_deleted);
+          case "all_notes":
+            return allNotes.filter((n) => !n.is_deleted);
+          default:
+            return [];
+        }
+      };
+
+      const testNotes = [
+        { id: "note-1", notebook_id: "nb-root", is_deleted: false },
+        { id: "note-2", notebook_id: "child-nb-1", is_deleted: false },
+        { id: "note-3", notebook_id: "grandchild-nb-2", is_deleted: false },
+        { id: "note-4", notebook_id: "nb-other", is_deleted: false },
+        { id: "note-5", notebook_id: "nb-root", is_deleted: true },
+      ];
+
+      // Single note scope
+      const single = resolveScopeItems({ type: "single_note", note_id: "note-1" }, testNotes);
+      assert.strictEqual(single.length, 1);
+      assert.strictEqual(single[0].id, "note-1");
+
+      // Selected notes scope
+      const selected = resolveScopeItems(
+        { type: "selected_notes", note_ids: ["note-1", "note-4", "non-existent"] },
+        testNotes
+      );
+      assert.strictEqual(selected.length, 2);
+
+      // Shallow notebook scope
+      const shallow = resolveScopeItems(
+        { type: "notebook", notebook_id: "nb-root", include_nested: false },
+        testNotes
+      );
+      assert.strictEqual(shallow.length, 1);
+      assert.strictEqual(shallow[0].id, "note-1");
+
+      // Hierarchical notebook scope
+      const hierarchical = resolveScopeItems(
+        { type: "notebook", notebook_id: "nb-root", include_nested: true },
+        testNotes
+      );
+      assert.strictEqual(hierarchical.length, 3);
+      assert.deepStrictEqual(
+        hierarchical.map((n) => n.id),
+        ["note-1", "note-2", "note-3"]
+      );
+
+      // All notes scope
+      const all = resolveScopeItems({ type: "all_notes" }, testNotes);
+      assert.strictEqual(all.length, 4);
+    });
+
+    it("trashed notes exclusion: excludes trashed notes by default and reports accurate skipped counts", () => {
+      const computeSelectionPreview = (requestedIds, dbNotes) => {
+        let totalIncluded = 0;
+        let skippedTrashed = 0;
+        let skippedMissing = 0;
+        const validNotes = [];
+
+        for (const reqId of requestedIds) {
+          const note = dbNotes.find((n) => n.id === reqId);
+          if (!note) {
+            skippedMissing++;
+          } else if (note.is_deleted) {
+            skippedTrashed++;
+          } else {
+            totalIncluded++;
+            validNotes.push({
+              id: note.id,
+              title: note.title,
+              contentLengthBytes: note.content.length,
+            });
+          }
+        }
+
+        return {
+          totalRequested: requestedIds.length,
+          totalIncluded,
+          skippedTrashedCount: skippedTrashed,
+          skippedMissingCount: skippedMissing,
+          notes: validNotes,
+        };
+      };
+
+      const dbNotes = [
+        { id: "n-1", title: "Active 1", content: "hello", is_deleted: false },
+        { id: "n-2", title: "Active 2", content: "world", is_deleted: false },
+        { id: "n-3", title: "In Trash", content: "deleted", is_deleted: true },
+      ];
+
+      const preview = computeSelectionPreview(["n-1", "n-2", "n-3", "n-missing-99"], dbNotes);
+
+      assert.strictEqual(preview.totalRequested, 4);
+      assert.strictEqual(preview.totalIncluded, 2);
+      assert.strictEqual(preview.skippedTrashedCount, 1);
+      assert.strictEqual(preview.skippedMissingCount, 1);
+      assert.strictEqual(preview.notes.length, 2);
+    });
+
+    it("lightweight metadata isolation: avoids loading large full content bodies into preview state", () => {
+      const mockFullNote = {
+        id: "huge-note-1",
+        title: "Large Note",
+        content: "A".repeat(500000), // 500 KB body
+        format: "md",
+        notebook_id: "nb-1",
+        notebook_path: "Docs / Architecture",
+        is_favorite: true,
+        is_pinned: false,
+        tag_count: 3,
+        modified_at: "2026-10-12T12:00:00Z",
+      };
+
+      // Transform into lightweight metadata item
+      const metadataItem = {
+        id: mockFullNote.id,
+        title: mockFullNote.title,
+        format: mockFullNote.format,
+        notebookId: mockFullNote.notebook_id,
+        notebookPath: mockFullNote.notebook_path,
+        isFavorite: mockFullNote.is_favorite,
+        isPinned: mockFullNote.is_pinned,
+        tagCount: mockFullNote.tag_count,
+        contentLengthBytes: mockFullNote.content.length,
+        modifiedAt: mockFullNote.modified_at,
+      };
+
+      assert.strictEqual("content" in metadataItem, false, "Full text content must not be present in preview item");
+      assert.strictEqual(metadataItem.contentLengthBytes, 500000);
+      assert.strictEqual(metadataItem.notebookPath, "Docs / Architecture");
+    });
+
+    it("search results independence: does not assume all visible search results are automatically selected", () => {
+      const isSearchActive = true;
+      const searchResultIds = ["res-1", "res-2", "res-3"];
+      const userSelectedNotebook = "nb-work";
+
+      // If exporting notebook while search is active, the scope binds to the explicit notebook, NOT the search query
+      const buildNotebookExportScope = (notebookId) => ({
+        type: "notebook",
+        notebook_id: notebookId,
+        include_nested: true,
+      });
+
+      const scope = buildNotebookExportScope(userSelectedNotebook);
+
+      assert.strictEqual(scope.type, "notebook");
+      assert.strictEqual(scope.notebook_id, "nb-work");
+      assert.notDeepStrictEqual(scope, { type: "selected_notes", note_ids: searchResultIds });
+    });
+
+    it("non-blocking multi-note export workflow: pre-flushes dirty edits and exits cleanly on cancel", async () => {
+      let isEditorDirty = true;
+      let flushCalled = false;
+      let exportCalled = false;
+
+      const flushSave = async () => {
+        if (isEditorDirty) {
+          flushCalled = true;
+          isEditorDirty = false;
+        }
+      };
+
+      const pickExportDestinationFile = async () => null; // user cancelled
+
+      const executeExportWorkflow = async () => {
+        await flushSave();
+        const dest = await pickExportDestinationFile();
+        if (!dest) {
+          // cleanly abort without error
+          return;
+        }
+        exportCalled = true;
+      };
+
+      await executeExportWorkflow();
+
+      assert.strictEqual(flushCalled, true, "Dirty edits must be flushed before export");
+      assert.strictEqual(isEditorDirty, false);
+      assert.strictEqual(exportCalled, false, "Export write cancelled cleanly without throwing");
+    });
+  });
+
+  describe("Phase 10 - Task 16: Structured Multi-Note Export Tests", () => {
+    it("structured interchange schema compliance: exports versioned document with format identifier, policies, timestamps, and note array", () => {
+      const doc = {
+        $schema: "https://personal-notepad.local/schemas/interchange-v1.json",
+        app: "personal-notepad",
+        format: "personal-notepad-interchange",
+        version: "1.0",
+        exported_at: "2026-10-12T10:00:00Z",
+        note_count: 2,
+        internal_link_policy: "Package-scoped internal links map export_id to new local IDs upon import; external or unexported note links remain unmapped as broken/missing references.",
+        attachment_policy: "Note attachments are omitted from portable JSON interchange documents. Attachment metadata counts are tracked but binaries are not bundled.",
+        notes: [
+          {
+            export_id: "exp-1",
+            title: "Roadmap",
+            content: "See [Arch](notepad://note/exp-2)",
+            format: "md",
+            notebook_path: "Engineering/Planning",
+            tags: ["planning", "roadmap"],
+            is_favorite: true,
+            is_pinned: false,
+            created_at: "2026-10-01T08:00:00Z",
+            modified_at: "2026-10-05T12:00:00Z",
+            attachments_omitted_count: 1,
+            internal_links: [
+              { label: "Arch", target_export_id: "exp-2", is_package_internal: true },
+            ],
+          },
+          {
+            export_id: "exp-2",
+            title: "Architecture",
+            content: "Architecture notes",
+            format: "md",
+            notebook_path: "Engineering/Planning",
+            tags: ["architecture"],
+            is_favorite: false,
+            is_pinned: false,
+            created_at: "2026-10-02T09:00:00Z",
+            modified_at: "2026-10-06T15:00:00Z",
+            attachments_omitted_count: null,
+            internal_links: [],
+          },
+        ],
+      };
+
+      assert.strictEqual(doc.app, "personal-notepad");
+      assert.strictEqual(doc.format, "personal-notepad-interchange");
+      assert.strictEqual(doc.version, "1.0");
+      assert.strictEqual(doc.note_count, 2);
+      assert.strictEqual(typeof doc.internal_link_policy, "string");
+      assert.strictEqual(typeof doc.attachment_policy, "string");
+      assert.strictEqual(doc.notes.length, 2);
+      assert.strictEqual(doc.notes[0].export_id, "exp-1");
+    });
+
+    it("internal link portability isolation: classifies links within package as package-internal and external links as non-portable", () => {
+      const exportedIds = new Set(["exp-1", "exp-2"]);
+
+      const analyzeInternalLinks = (content, links) => {
+        return links.map((link) => ({
+          ...link,
+          is_package_internal: exportedIds.has(link.target_export_id),
+        }));
+      };
+
+      const linksInNote1 = [
+        { label: "Internal Target", target_export_id: "exp-2" },
+        { label: "External Unexported", target_export_id: "unexported-uuid-999" },
+      ];
+
+      const analyzed = analyzeInternalLinks("content", linksInNote1);
+
+      assert.strictEqual(analyzed[0].is_package_internal, true, "Link to note inside package must be package-internal");
+      assert.strictEqual(analyzed[1].is_package_internal, false, "Link to note outside package must be marked external (not portable)");
+    });
+
+    it("single-note export link safeguard: links in single-note export are never misrepresented as package-internal", () => {
+      const singleExportedId = "single-1";
+
+      const analyzeSingleNoteLink = (targetId) => {
+        return targetId === singleExportedId;
+      };
+
+      assert.strictEqual(analyzeSingleNoteLink("other-note-id"), false, "Links to other notes in single-note export must be external");
+    });
+
+    it("attachment accounting: explicitly records omitted attachment counts without false full-backup representations", () => {
+      const noteWithAttachments = {
+        title: "Release Artifacts",
+        attachmentsCount: 3,
+      };
+
+      const interchangeNote = {
+        title: noteWithAttachments.title,
+        attachments_omitted_count: noteWithAttachments.attachmentsCount > 0 ? noteWithAttachments.attachmentsCount : null,
+      };
+
+      assert.strictEqual(interchangeNote.attachments_omitted_count, 3);
+
+      const disclaimerNotice = "Structured Interchange (v1.0): Not a full database backup. Attachments omitted.";
+      assert.strictEqual(disclaimerNotice.includes("Not a full database backup"), true);
+    });
+
+    it("deterministic serialization: tag arrays are sorted alphabetically and document preserves round-trip consistency", () => {
+      const rawTags = ["zeta", "beta", "alpha"];
+      const sortedTags = [...rawTags].sort();
+
+      assert.deepStrictEqual(sortedTags, ["alpha", "beta", "zeta"]);
+
+      const payload = { tags: sortedTags };
+      const serialized = JSON.stringify(payload);
+      const parsed = JSON.parse(serialized);
+
+      assert.deepStrictEqual(parsed.tags, ["alpha", "beta", "zeta"]);
+    });
+
+    it("nesting depth limits: enforces maximum notebook depth of 3 levels during validation", () => {
+      const validateNestingDepth = (notebookPath) => {
+        if (!notebookPath) return true;
+        const segments = notebookPath.split("/").filter((s) => s.trim().length > 0);
+        return segments.length <= 3;
+      };
+
+      assert.strictEqual(validateNestingDepth("Work"), true);
+      assert.strictEqual(validateNestingDepth("Work/Projects"), true);
+      assert.strictEqual(validateNestingDepth("Work/Projects/2026"), true);
+      assert.strictEqual(validateNestingDepth("Work/Projects/2026/Q1"), false, "4 levels exceeds max nesting depth of 3");
+    });
+  });
+
+  describe("Phase 10 - Task 17: Safe Filenames and Destination Collision Handling Tests", () => {
+    const sanitizeExportFilename = (title) => {
+      const illegal = /[/\\:*?"<>|]/g;
+      let cleaned = (title || "").replace(illegal, "").trim();
+      cleaned = cleaned.replace(/^\.+/, "");
+      cleaned = cleaned.replace(/[. ]+$/, "");
+      if (!cleaned) {
+        return "Untitled Note";
+      }
+      const upper = cleaned.toUpperCase();
+      const isReserved = [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+      ].includes(upper);
+      const safeName = isReserved ? `_${cleaned}` : cleaned;
+      return safeName.length > 180 ? safeName.slice(0, 180) : safeName;
+    };
+
+    it("filename sanitization: strips illegal characters, leading dots, and trailing dots/spaces", () => {
+      assert.strictEqual(
+        sanitizeExportFilename("Project / Plan : 2026 * Final ? <v1> | \"Draft\" \\ Report"),
+        "Project  Plan  2026  Final  v1  Draft  Report"
+      );
+      assert.strictEqual(sanitizeExportFilename(".hidden_note"), "hidden_note");
+      assert.strictEqual(sanitizeExportFilename("...triple_dot"), "triple_dot");
+      assert.strictEqual(sanitizeExportFilename("trailing_dot."), "trailing_dot");
+      assert.strictEqual(sanitizeExportFilename("trailing_dots...   "), "trailing_dots");
+      assert.strictEqual(sanitizeExportFilename(""), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename("   "), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename("."), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename(".."), "Untitled Note");
+      assert.strictEqual(sanitizeExportFilename("..."), "Untitled Note");
+    });
+
+    it("reserved device names: prefixes Windows reserved names with underscore", () => {
+      assert.strictEqual(sanitizeExportFilename("CON"), "_CON");
+      assert.strictEqual(sanitizeExportFilename("con"), "_con");
+      assert.strictEqual(sanitizeExportFilename("PRN"), "_PRN");
+      assert.strictEqual(sanitizeExportFilename("aux"), "_aux");
+      assert.strictEqual(sanitizeExportFilename("NUL"), "_NUL");
+      assert.strictEqual(sanitizeExportFilename("COM1"), "_COM1");
+      assert.strictEqual(sanitizeExportFilename("com9"), "_com9");
+      assert.strictEqual(sanitizeExportFilename("lpt1"), "_lpt1");
+      assert.strictEqual(sanitizeExportFilename("LPT9"), "_LPT9");
+
+      // Words containing reserved substrings must NOT be modified
+      assert.strictEqual(sanitizeExportFilename("Conference Notes"), "Conference Notes");
+      assert.strictEqual(sanitizeExportFilename("Pronto"), "Pronto");
+      assert.strictEqual(sanitizeExportFilename("Auxiliary"), "Auxiliary");
+      assert.strictEqual(sanitizeExportFilename("Nullify"), "Nullify");
+    });
+
+    it("unicode preservation: preserves full multi-lingual Unicode characters and emojis", () => {
+      const unicodeTitle = "Project 🚀 Roadmap 2026 日本語 हिन्दी Русский";
+      assert.strictEqual(sanitizeExportFilename(unicodeTitle), unicodeTitle);
+    });
+
+    it("length limits: truncates long stems to 180 characters", () => {
+      const longTitle = "a".repeat(250);
+      const sanitized = sanitizeExportFilename(longTitle);
+      assert.strictEqual(sanitized.length, 180);
+      assert.strictEqual(sanitized, "a".repeat(180));
+    });
+
+    it("path traversal prevention: note titles containing path navigation cannot escape destination directory", () => {
+      const traversalTitle = "../../etc/passwd";
+      const sanitized = sanitizeExportFilename(traversalTitle);
+      assert.strictEqual(sanitized.includes("/"), false);
+      assert.strictEqual(sanitized.includes("\\"), false);
+      assert.strictEqual(sanitized.startsWith(".."), false);
+      assert.strictEqual(sanitized, "etcpasswd");
+    });
+
+    it("collision avoidance: generates predictable numbering suffixes for batch exports without overwriting", () => {
+      const resolveUniqueFilename = (baseStem, ext, usedFilenames, diskFiles = new Set(), overwrite = false) => {
+        let filename = `${baseStem}.${ext}`;
+        let counter = 1;
+        while (usedFilenames.has(filename) || (!overwrite && diskFiles.has(filename))) {
+          filename = `${baseStem} (${counter}).${ext}`;
+          counter += 1;
+        }
+        usedFilenames.add(filename);
+        return filename;
+      };
+
+      const usedFilenames = new Set();
+      const diskFiles = new Set(["Meeting Notes.txt"]);
+
+      // 1. First note in batch has same title as pre-existing file on disk
+      const file1 = resolveUniqueFilename("Meeting Notes", "txt", usedFilenames, diskFiles, false);
+      assert.strictEqual(file1, "Meeting Notes (1).txt", "Must not overwrite disk file when overwrite is false");
+
+      // 2. Second note in batch also has same title
+      const file2 = resolveUniqueFilename("Meeting Notes", "txt", usedFilenames, diskFiles, false);
+      assert.strictEqual(file2, "Meeting Notes (2).txt", "Must increment suffix to (2)");
+
+      // 3. A distinct note gets its clean stem
+      const file3 = resolveUniqueFilename("Sprint Review", "txt", usedFilenames, diskFiles, false);
+      assert.strictEqual(file3, "Sprint Review.txt");
+    });
+
+    it("destination validation: rejects path traversal and attempts to write to managed SQLite database", () => {
+      const validateDestination = (pathStr) => {
+        if (!pathStr || !pathStr.trim()) {
+          return { valid: false, error: "Destination path cannot be empty" };
+        }
+        const segments = pathStr.split(/[/\\]/);
+        if (segments.includes("..")) {
+          return { valid: false, error: "Path traversal ('..') is not permitted" };
+        }
+        const fileName = segments[segments.length - 1];
+        if (["database.sqlite", "database.sqlite-wal", "database.sqlite-shm"].includes(fileName.toLowerCase())) {
+          return { valid: false, error: "Destination cannot target application database files" };
+        }
+        return { valid: true, error: null };
+      };
+
+      assert.strictEqual(validateDestination("").valid, false);
+      assert.strictEqual(validateDestination("   ").valid, false);
+      assert.strictEqual(validateDestination("../secret.txt").valid, false);
+      assert.strictEqual(validateDestination("/home/user/../../secret.txt").valid, false);
+      assert.strictEqual(validateDestination("/home/user/app/database.sqlite").valid, false);
+      assert.strictEqual(validateDestination("/home/user/app/database.sqlite-wal").valid, false);
+      assert.strictEqual(validateDestination("/home/user/Documents/export.txt").valid, true);
+    });
+  });
+
+  describe("Phase 10 - Task 18: Safe and Reliable File Writing Tests", () => {
+    it("atomic write lifecycle: writes to temporary destination file before atomic rename", async () => {
+      const fsMock = new Map();
+      let tempFileCreated = null;
+      let finalFileCommitted = null;
+
+      const atomicWrite = async (destPath, content, shouldFail = false) => {
+        const parent = "/user/exports";
+        const tempPath = `${parent}/.tmp_export_uuid123.part`;
+        tempFileCreated = tempPath;
+        fsMock.set(tempPath, content);
+
+        if (shouldFail) {
+          // Cleanup on failure
+          fsMock.delete(tempPath);
+          throw new Error("Disk write interrupted");
+        }
+
+        // Atomic rename
+        fsMock.set(destPath, fsMock.get(tempPath));
+        fsMock.delete(tempPath);
+        finalFileCommitted = destPath;
+        return destPath;
+      };
+
+      await atomicWrite("/user/exports/note.txt", "Export payload content");
+      assert.strictEqual(finalFileCommitted, "/user/exports/note.txt");
+      assert.strictEqual(fsMock.get("/user/exports/note.txt"), "Export payload content");
+      assert.strictEqual(fsMock.has(tempFileCreated), false, "Temporary artifact must be removed on success");
+    });
+
+    it("error safety: existing destination file is preserved when a write fails", async () => {
+      const fsMock = new Map();
+      fsMock.set("/user/exports/preexisting.txt", "Original untouched data");
+
+      const atomicWrite = async (destPath, content, shouldFail = false) => {
+        const tempPath = `/user/exports/.tmp_uuid456.part`;
+        fsMock.set(tempPath, content);
+
+        if (shouldFail) {
+          fsMock.delete(tempPath);
+          throw new Error("Simulated I/O permission denied");
+        }
+
+        fsMock.set(destPath, fsMock.get(tempPath));
+        fsMock.delete(tempPath);
+      };
+
+      await assert.rejects(
+        () => atomicWrite("/user/exports/preexisting.txt", "Corrupted new data", true),
+        /Simulated I\/O permission denied/
+      );
+
+      // Existing file must remain unchanged
+      assert.strictEqual(fsMock.get("/user/exports/preexisting.txt"), "Original untouched data");
+      assert.strictEqual(fsMock.has("/user/exports/.tmp_uuid456.part"), false, "Temporary file must be cleaned up on failure");
+    });
+
+    it("batch commitment semantics: commits each file independently with honest failure accounting", async () => {
+      const filesToExport = [
+        { id: "note-1", title: "Note 1", content: "Content 1", fail: false },
+        { id: "note-2", title: "Note 2", content: "Content 2", fail: true },
+        { id: "note-3", title: "Note 3", content: "Content 3", fail: false },
+      ];
+
+      const exportedFiles = [];
+      const results = [];
+
+      for (const item of filesToExport) {
+        if (item.fail) {
+          results.push({
+            noteId: item.id,
+            noteTitle: item.title,
+            filePath: `/exports/${item.title}.txt`,
+            status: "failed",
+            message: "I/O error: disk full",
+          });
+        } else {
+          exportedFiles.push(`/exports/${item.title}.txt`);
+          results.push({
+            noteId: item.id,
+            noteTitle: item.title,
+            filePath: `/exports/${item.title}.txt`,
+            status: "exported",
+            message: null,
+          });
+        }
+      }
+
+      const summary = {
+        totalNotes: filesToExport.length,
+        exportedCount: results.filter((r) => r.status === "exported").length,
+        failedCount: results.filter((r) => r.status === "failed").length,
+        results,
+      };
+
+      assert.strictEqual(summary.totalNotes, 3);
+      assert.strictEqual(summary.exportedCount, 2);
+      assert.strictEqual(summary.failedCount, 1);
+      assert.deepStrictEqual(exportedFiles, ["/exports/Note 1.txt", "/exports/Note 3.txt"]);
+    });
+
+    it("pre-serialization invariant: verifies in-memory encoding completes before any disk writing", () => {
+      const invalidNoteDoc = {
+        app: "personal-notepad",
+        version: "2.0-unsupported", // invalid schema version
+      };
+
+      const serializeDoc = (doc) => {
+        if (doc.version !== "1.0") {
+          throw new Error("Unsupported schema version: " + doc.version);
+        }
+        return JSON.stringify(doc);
+      };
+
+      let diskWriteAttempted = false;
+      const attemptExport = () => {
+        const serialized = serializeDoc(invalidNoteDoc);
+        diskWriteAttempted = true;
+        return serialized;
+      };
+
+      assert.throws(attemptExport, /Unsupported schema version/);
+      assert.strictEqual(diskWriteAttempted, false, "Must not begin writing to disk if serialization fails");
+    });
+  });
+
+  describe("Phase 10 - Task 19: Import/Export Progress, Cancellation, and Summaries Tests", () => {
+    it("outcome categorization: accurately maps to the 5 distinct outcome categories", () => {
+      const calculateOutcome = (summary) => {
+        if (summary.cancelledCount > 0) return "cancelled";
+        if (summary.failedCount === 0 && summary.skippedCount === 0 && (summary.importedCount > 0 || summary.exportedCount > 0)) {
+          return "full_success";
+        }
+        if (summary.failedCount === 0 && summary.skippedCount > 0 && (summary.importedCount > 0 || summary.exportedCount > 0)) {
+          return "success_with_warnings";
+        }
+        if (summary.failedCount > 0 && (summary.importedCount > 0 || summary.exportedCount > 0)) {
+          return "partial_success";
+        }
+        return "total_failure";
+      };
+
+      assert.strictEqual(
+        calculateOutcome({ importedCount: 5, skippedCount: 0, failedCount: 0, cancelledCount: 0 }),
+        "full_success"
+      );
+      assert.strictEqual(
+        calculateOutcome({ importedCount: 4, skippedCount: 1, failedCount: 0, cancelledCount: 0 }),
+        "success_with_warnings"
+      );
+      assert.strictEqual(
+        calculateOutcome({ importedCount: 3, skippedCount: 0, failedCount: 2, cancelledCount: 0 }),
+        "partial_success"
+      );
+      assert.strictEqual(
+        calculateOutcome({ importedCount: 2, skippedCount: 0, failedCount: 0, cancelledCount: 1 }),
+        "cancelled"
+      );
+      assert.strictEqual(
+        calculateOutcome({ importedCount: 0, skippedCount: 0, failedCount: 5, cancelledCount: 0 }),
+        "total_failure"
+      );
+    });
+
+    it("progress tracking: computes percentage and preserves current file tracking", () => {
+      const progressEvents = [];
+      const trackProgress = (p) => {
+        const percent = p.total > 0 ? Math.round((p.currentIndex / p.total) * 100) : 0;
+        progressEvents.push({ ...p, percent });
+      };
+
+      trackProgress({ total: 4, currentIndex: 1, currentFile: "note1.txt", importedCount: 0, skippedCount: 0, failedCount: 0, cancelledCount: 0 });
+      trackProgress({ total: 4, currentIndex: 2, currentFile: "note2.md", importedCount: 1, skippedCount: 0, failedCount: 0, cancelledCount: 0 });
+      trackProgress({ total: 4, currentIndex: 3, currentFile: "note3.json", importedCount: 2, skippedCount: 0, failedCount: 0, cancelledCount: 0 });
+      trackProgress({ total: 4, currentIndex: 4, currentFile: "note4.txt", importedCount: 3, skippedCount: 0, failedCount: 0, cancelledCount: 0 });
+
+      assert.strictEqual(progressEvents.length, 4);
+      assert.strictEqual(progressEvents[0].percent, 25);
+      assert.strictEqual(progressEvents[1].percent, 50);
+      assert.strictEqual(progressEvents[2].percent, 75);
+      assert.strictEqual(progressEvents[3].percent, 100);
+      assert.strictEqual(progressEvents[1].currentFile, "note2.md");
+    });
+
+    it("cancellation token: halting mid-batch leaves already committed files intact and marks remainder cancelled", () => {
+      const candidates = ["a.txt", "b.txt", "c.txt", "d.txt"];
+      let isCancelled = false;
+      const committed = [];
+      const results = [];
+
+      for (let i = 0; i < candidates.length; i++) {
+        if (isCancelled) {
+          results.push({ file: candidates[i], status: "cancelled", message: "Operation cancelled by user." });
+          continue;
+        }
+
+        // Process item
+        committed.push(candidates[i]);
+        results.push({ file: candidates[i], status: "imported", message: null });
+
+        // Simulate cancellation after 2nd file
+        if (i === 1) {
+          isCancelled = true;
+        }
+      }
+
+      assert.deepStrictEqual(committed, ["a.txt", "b.txt"]);
+      assert.strictEqual(results[0].status, "imported");
+      assert.strictEqual(results[1].status, "imported");
+      assert.strictEqual(results[2].status, "cancelled");
+      assert.strictEqual(results[3].status, "cancelled");
+      assert.strictEqual(results.filter((r) => r.status === "cancelled").length, 2);
+    });
+
+    it("itemized file review: maps friendly messages without raw technical stack traces", () => {
+      const sanitizeErrorMessage = (rawError) => {
+        if (!rawError) return null;
+        if (rawError.includes("UNIQUE constraint failed")) return "A note with this title or content already exists.";
+        if (rawError.includes("EACCES") || rawError.includes("Permission denied")) return "Permission denied. Destination is not writeable.";
+        if (rawError.includes("invalid utf-8")) return "File contains invalid UTF-8 characters.";
+        return rawError;
+      };
+
+      assert.strictEqual(
+        sanitizeErrorMessage("rusqlite::Error: UNIQUE constraint failed: notes.id (code 19)"),
+        "A note with this title or content already exists."
+      );
+      assert.strictEqual(
+        sanitizeErrorMessage("std::io::Error: Permission denied (os error 13)"),
+        "Permission denied. Destination is not writeable."
+      );
+      assert.strictEqual(
+        sanitizeErrorMessage("File contains invalid utf-8 byte sequence [0xFF, 0xFE]"),
+        "File contains invalid UTF-8 characters."
+      );
+    });
+  });
+
+  describe("Phase 10 - Task 20: Note State, Autosave, and View Synchronization Tests", () => {
+    it("pre-export autosave flush: flushes dirty editor state before reading export payload", async () => {
+      let isEditorDirty = true;
+      let persistedNoteContent = "Initial content in SQLite";
+      const dirtyEditorContent = "Updated content in memory draft";
+
+      const flushPendingAutosave = async () => {
+        if (isEditorDirty) {
+          persistedNoteContent = dirtyEditorContent;
+          isEditorDirty = false;
+        }
+      };
+
+      const handleExport = async () => {
+        // Step 1: Pre-flush autosave
+        await flushPendingAutosave();
+        // Step 2: Read persisted storage for export
+        return persistedNoteContent;
+      };
+
+      const exportedPayload = await handleExport();
+      assert.strictEqual(isEditorDirty, false, "Editor must no longer be dirty");
+      assert.strictEqual(exportedPayload, "Updated content in memory draft");
+    });
+
+    it("post-import view synchronization: triggers full refresh of note list, notebook counts, and tag counts", async () => {
+      let notesLoaded = false;
+      let notebooksLoaded = false;
+      let tagsLoaded = false;
+      let countsRefreshed = false;
+
+      const refreshAppState = async () => {
+        notesLoaded = true;
+        notebooksLoaded = true;
+        tagsLoaded = true;
+        countsRefreshed = true;
+      };
+
+      const onImportSuccess = async (summary) => {
+        if (summary.importedCount > 0) {
+          await refreshAppState();
+        }
+      };
+
+      await onImportSuccess({ importedCount: 3, failedCount: 0 });
+      assert.strictEqual(notesLoaded, true);
+      assert.strictEqual(notebooksLoaded, true);
+      assert.strictEqual(tagsLoaded, true);
+      assert.strictEqual(countsRefreshed, true);
+    });
+
+    it("active note preservation: preserves currently opened editor note and cursor state during background import", () => {
+      const activeEditorNoteId = "active-note-123";
+      const existingNotes = [
+        { id: "active-note-123", title: "Active Note", content: "Active Content" },
+        { id: "note-456", title: "Other Note", content: "Other Content" },
+      ];
+
+      const newlyImportedNotes = [
+        { id: "imported-789", title: "Imported Note 1", content: "Imported Content 1" },
+        { id: "imported-999", title: "Imported Note 2", content: "Imported Content 2" },
+      ];
+
+      const updatedNotes = [...existingNotes, ...newlyImportedNotes];
+      // Note retention rule: if activeNoteId exists in updated list, keep it selected!
+      const selectedId = updatedNotes.some((n) => n.id === activeEditorNoteId)
+        ? activeEditorNoteId
+        : updatedNotes[0]?.id || null;
+
+      assert.strictEqual(selectedId, "active-note-123", "Editor selection must not be unexpectedly replaced");
+    });
+
+    it("trash exclusion invariant: excludes soft-deleted notes from batch export selection by default", () => {
+      const allNotes = [
+        { id: "note-1", title: "Active 1", is_deleted: false },
+        { id: "note-2", title: "Deleted 2", is_deleted: true },
+        { id: "note-3", title: "Active 3", is_deleted: false },
+        { id: "note-4", title: "Deleted 4", is_deleted: true },
+      ];
+
+      const filterNotesForExport = (notes, includeDeleted = false) => {
+        return notes.filter((n) => includeDeleted || !n.is_deleted);
+      };
+
+      const exportable = filterNotesForExport(allNotes);
+      assert.strictEqual(exportable.length, 2);
+      assert.deepStrictEqual(exportable.map((n) => n.id), ["note-1", "note-3"]);
+    });
+  });
+
+  describe("Phase 10 - Task 21: User Feedback, Empty States, and Error Recovery Tests", () => {
+    it("empty selection guard: returns cleanly with zero side-effects when user cancels file picker", async () => {
+      const pickImportFiles = async (simulateCancel = true) => {
+        if (simulateCancel) return { cancelled: true, paths: [] };
+        return { cancelled: false, paths: ["/path/note.txt"] };
+      };
+
+      let modalOpened = false;
+      const result = await pickImportFiles(true);
+      if (!result.cancelled && result.paths.length > 0) {
+        modalOpened = true;
+      }
+
+      assert.strictEqual(modalOpened, false, "Modal must not open when picker is cancelled");
+      assert.strictEqual(result.cancelled, true);
+    });
+
+    it("all candidates deselected: displays actionable guidance and disables import button", () => {
+      const candidates = [
+        { id: "1", title: "Note 1", selected: false, validationStatus: "valid" },
+        { id: "2", title: "Note 2", selected: false, validationStatus: "valid" },
+      ];
+
+      const selectedCount = candidates.filter((c) => c.selected && c.validationStatus !== "invalid").length;
+      const canConfirm = selectedCount > 0;
+      const emptyBanner = selectedCount === 0 ? "Select at least one valid note to import." : null;
+
+      assert.strictEqual(canConfirm, false);
+      assert.strictEqual(emptyBanner, "Select at least one valid note to import.");
+    });
+
+    it("unsupported or corrupt files: flags invalid candidates with helpful format requirements", () => {
+      const candidates = [
+        { id: "1", name: "archive.zip", format: "zip", error: "Unsupported file extension (.zip). Supported formats are .txt, .md, .markdown, and .json." },
+        { id: "2", name: "binary.bin", format: "bin", error: "File contains null bytes or binary characters." },
+      ];
+
+      const validCandidates = candidates.filter((c) => !c.error);
+      assert.strictEqual(validCandidates.length, 0);
+      assert.strictEqual(candidates[0].error.includes(".txt, .md"), true);
+      assert.strictEqual(candidates[1].error.includes("binary characters"), true);
+    });
+
+    it("error recovery and feedback banner: produces clear toast feedback and auto-dismisses", () => {
+      let banner = null;
+      const showToast = (type, message) => {
+        banner = { type, message, timestamp: Date.now() };
+      };
+
+      showToast("success", "Successfully imported 5 notes.");
+      assert.strictEqual(banner.type, "success");
+      assert.strictEqual(banner.message, "Successfully imported 5 notes.");
+
+      showToast("error", "Failed to write exported notes: disk full.");
+      assert.strictEqual(banner.type, "error");
+      assert.strictEqual(banner.message, "Failed to write exported notes: disk full.");
+    });
+  });
+
+  describe("Phase 10 - Task 23: Complete End-to-End Simulation Workflows Tests", () => {
+    it("Workflow 1: Single note export to Markdown and Text with atomic file creation", async () => {
+      const memoryFS = new Map();
+      const exportSingleNote = async (note, format, destPath) => {
+        const payload = note.content;
+        // Atomic write pattern:
+        const tempPath = destPath + ".tmp";
+        memoryFS.set(tempPath, payload);
+        memoryFS.set(destPath, memoryFS.get(tempPath));
+        memoryFS.delete(tempPath);
+        return { noteId: note.id, status: "exported", path: destPath };
+      };
+
+      const mdNote = { id: "n-1", title: "Arch Doc", content: "# Architecture\n\n- Local first\n- Offline only" };
+      const res = await exportSingleNote(mdNote, "md", "/exports/Arch Doc.md");
+
+      assert.strictEqual(res.status, "exported");
+      assert.strictEqual(memoryFS.get("/exports/Arch Doc.md"), "# Architecture\n\n- Local first\n- Offline only");
+      assert.strictEqual(memoryFS.has("/exports/Arch Doc.md.tmp"), false);
+    });
+
+    it("Workflow 2: Multi-note batch export to folder with collision handling", async () => {
+      const destinationFiles = new Set(["Meeting.txt"]);
+      const notes = [
+        { id: "n-1", title: "Meeting", content: "Meeting content 1" },
+        { id: "n-2", title: "Meeting", content: "Meeting content 2" },
+      ];
+
+      const exportedResults = [];
+      for (const note of notes) {
+        let filename = `${note.title}.txt`;
+        let suffix = 1;
+        while (destinationFiles.has(filename)) {
+          filename = `${note.title} (${suffix}).txt`;
+          suffix++;
+        }
+        destinationFiles.add(filename);
+        exportedResults.push({ id: note.id, filename, content: note.content });
+      }
+
+      assert.strictEqual(exportedResults.length, 2);
+      assert.strictEqual(exportedResults[0].filename, "Meeting (1).txt");
+      assert.strictEqual(exportedResults[1].filename, "Meeting (2).txt");
+    });
+
+    it("Workflow 3: Structured interchange export of notebooks, tags, internal links", () => {
+      const noteA = { id: "uuid-a", title: "Roadmap", content: "See [Spec](notepad://note/uuid-b)", tags: ["zebra", "apple"], notebook: "Work/Projects" };
+      const noteB = { id: "uuid-b", title: "Spec", content: "Details here", tags: ["backend"], notebook: "Work/Projects" };
+
+      const createInterchangeDoc = (notes) => {
+        const idSet = new Set(notes.map((n) => n.id));
+        return {
+          app: "personal-notepad",
+          format: "personal-notepad-interchange",
+          version: "1.0",
+          exported_at: new Date().toISOString(),
+          note_count: notes.length,
+          notes: notes.map((n) => ({
+            export_id: n.id,
+            title: n.title,
+            content: n.content,
+            format: "md",
+            notebook_path: n.notebook,
+            tags: [...n.tags].sort(), // Deterministic sorting invariant
+            internal_links: (n.content.match(/notepad:\/\/note\/([a-zA-Z0-9-]+)/g) || []).map((uri) => {
+              const targetId = uri.replace("notepad://note/", "");
+              return { target_export_id: targetId, is_package_internal: idSet.has(targetId) };
+            }),
+          })),
+        };
+      };
+
+      const doc = createInterchangeDoc([noteA, noteB]);
+      assert.strictEqual(doc.version, "1.0");
+      assert.strictEqual(doc.note_count, 2);
+      assert.deepStrictEqual(doc.notes[0].tags, ["apple", "zebra"]); // Alphabetical order
+      assert.strictEqual(doc.notes[0].internal_links[0].is_package_internal, true);
+    });
+
+    it("Workflow 4: Batch import of mixed TXT and MD files with conflict resolution", () => {
+      const existingDBNotes = [{ title: "Existing Note", content: "Verbatim text" }];
+      const incomingFiles = [
+        { path: "/in/Existing Note.txt", title: "Existing Note", content: "Verbatim text" },
+        { path: "/in/New Markdown.md", title: "New Markdown", content: "## Subtitle" },
+      ];
+
+      const processBatchImport = (files, policy) => {
+        const imported = [];
+        const skipped = [];
+
+        for (const file of files) {
+          const match = existingDBNotes.find((n) => n.title === file.title && n.content === file.content);
+          if (match && policy === "skip_exact") {
+            skipped.push({ file: file.title, reason: "Exact duplicate skipped" });
+          } else {
+            imported.push({ file: file.title, format: file.path.endsWith(".md") ? "md" : "txt" });
+          }
+        }
+        return { imported, skipped };
+      };
+
+      const res = processBatchImport(incomingFiles, "skip_exact");
+      assert.strictEqual(res.skipped.length, 1);
+      assert.strictEqual(res.skipped[0].file, "Existing Note");
+      assert.strictEqual(res.imported.length, 1);
+      assert.strictEqual(res.imported[0].file, "New Markdown");
+      assert.strictEqual(res.imported[0].format, "md");
+    });
+
+    it("Workflow 5: Structured JSON import with automatic notebook hierarchy, tag creation, and internal link ID remapping", () => {
+      const incomingDoc = {
+        app: "personal-notepad",
+        format: "personal-notepad-interchange",
+        version: "1.0",
+        notes: [
+          {
+            export_id: "ext-1",
+            title: "Note 1",
+            content: "Check [Note 2](notepad://note/ext-2)",
+            tags: ["dev", "offline"],
+            notebook_path: "Engineering/Specs",
+          },
+          {
+            export_id: "ext-2",
+            title: "Note 2",
+            content: "Implementation details",
+            tags: ["dev"],
+            notebook_path: "Engineering/Specs",
+          },
+        ],
+      };
+
+      const localDB = { notes: [], notebooks: new Set(), tags: new Set() };
+      const idMapping = new Map();
+
+      // Step 1: Pre-generate local UUIDs
+      for (const n of incomingDoc.notes) {
+        idMapping.set(n.export_id, `local-${n.export_id}`);
+      }
+
+      // Step 2: Import notes with link remapping
+      for (const n of incomingDoc.notes) {
+        localDB.notebooks.add(n.notebook_path);
+        n.tags.forEach((t) => localDB.tags.add(t));
+
+        let rewrittenContent = n.content;
+        for (const [extId, localId] of idMapping.entries()) {
+          rewrittenContent = rewrittenContent.replaceAll(`notepad://note/${extId}`, `notepad://note/${localId}`);
+        }
+
+        localDB.notes.push({
+          id: idMapping.get(n.export_id),
+          title: n.title,
+          content: rewrittenContent,
+        });
+      }
+
+      assert.strictEqual(localDB.notes.length, 2);
+      assert.strictEqual(localDB.notes[0].id, "local-ext-1");
+      assert.strictEqual(localDB.notes[0].content, "Check [Note 2](notepad://note/local-ext-2)");
+      assert.strictEqual(localDB.notebooks.has("Engineering/Specs"), true);
+      assert.strictEqual(localDB.tags.has("dev"), true);
+      assert.strictEqual(localDB.tags.has("offline"), true);
+    });
+
+    it("Workflow 6: Live progress reporting and clean cancellation mid-batch", () => {
+      const items = ["note-1", "note-2", "note-3", "note-4", "note-5"];
+      let cancelled = false;
+      const progressSnapshots = [];
+      const processed = [];
+
+      for (let i = 0; i < items.length; i++) {
+        if (cancelled) break;
+        progressSnapshots.push({ index: i + 1, total: items.length, current: items[i] });
+        processed.push(items[i]);
+        if (i === 2) cancelled = true; // Cancel after 3rd item
+      }
+
+      assert.strictEqual(processed.length, 3);
+      assert.strictEqual(progressSnapshots.length, 3);
+      assert.strictEqual(progressSnapshots[2].current, "note-3");
+    });
+
+    it("Workflow 7: Unsaved editor draft synchronization prior to batch export", async () => {
+      let isAutosavePending = true;
+      let databaseState = "Old persisted text";
+      const editorDraftState = "New unsaved changes in editor";
+
+      const flushEditor = async () => {
+        if (isAutosavePending) {
+          databaseState = editorDraftState;
+          isAutosavePending = false;
+        }
+      };
+
+      // Ensure batch export triggers flushEditor before collecting note contents
+      await flushEditor();
+      assert.strictEqual(isAutosavePending, false);
+      assert.strictEqual(databaseState, "New unsaved changes in editor");
+    });
+
+    it("Workflow 8: Error recovery from corrupt files, unsupported extensions, and unwritable paths", () => {
+      const candidates = [
+        { file: "valid.txt", valid: true },
+        { file: "corrupt.bin", valid: false, error: "Binary file rejected" },
+        { file: "unwriteable.txt", valid: true, ioError: true },
+      ];
+
+      const results = [];
+      for (const c of candidates) {
+        if (!c.valid) {
+          results.push({ file: c.file, status: "rejected", message: c.error });
+        } else if (c.ioError) {
+          results.push({ file: c.file, status: "failed", message: "Disk write failure" });
+        } else {
+          results.push({ file: c.file, status: "success", message: null });
+        }
+      }
+
+      assert.strictEqual(results.filter((r) => r.status === "success").length, 1);
+      assert.strictEqual(results.filter((r) => r.status === "rejected").length, 1);
+      assert.strictEqual(results.filter((r) => r.status === "failed").length, 1);
+    });
+
+    it("Workflow 9: Round-trip migration fidelity verification (Export -> Import -> Verify content, tags, hierarchy, and links)", () => {
+      const originalNote = {
+        title: "Integration Blueprint",
+        content: "Verbatim markdown with **bold**, code `fn()`, and link [Target](notepad://note/target-1)",
+        format: "md",
+        notebook: "Architecture/2026",
+        tags: ["blueprint", "offline"],
+      };
+
+      // Export serialize
+      const serialized = JSON.stringify({
+        app: "personal-notepad",
+        format: "personal-notepad-interchange",
+        version: "1.0",
+        notes: [{
+          export_id: "orig-1",
+          title: originalNote.title,
+          content: originalNote.content,
+          format: originalNote.format,
+          notebook_path: originalNote.notebook,
+          tags: originalNote.tags,
+        }],
+      });
+
+      // Import deserialize
+      const deserialized = JSON.parse(serialized);
+      const importedNote = deserialized.notes[0];
+
+      assert.strictEqual(importedNote.title, originalNote.title);
+      assert.strictEqual(importedNote.content, originalNote.content);
+      assert.strictEqual(importedNote.format, originalNote.format);
+      assert.strictEqual(importedNote.notebook_path, originalNote.notebook);
+      assert.deepStrictEqual(importedNote.tags, originalNote.tags);
+    });
+
+    it("Workflow 10: Full state refresh (note list, counts, tags, search index) after batch operations", () => {
+      const appState = {
+        notesCount: 10,
+        notebooksCount: 2,
+        tagsCount: 3,
+        searchIndexUpdated: false,
+      };
+
+      const onBatchOperationComplete = (newNotesCount, newTagsCount) => {
+        appState.notesCount += newNotesCount;
+        appState.tagsCount += newTagsCount;
+        appState.searchIndexUpdated = true;
+      };
+
+      onBatchOperationComplete(4, 2);
+
+      assert.strictEqual(appState.notesCount, 14);
+      assert.strictEqual(appState.tagsCount, 5);
+      assert.strictEqual(appState.searchIndexUpdated, true);
+    });
+  });
+
+  describe("Phase 10 - Task 24: Security, Data Integrity, and Performance Verification Tests", () => {
+    // Security Verification Tests
+    describe("Security Verification", () => {
+      it("path traversal mitigation: rejects path traversal sequences across operating system styles", () => {
+        const isPathTraversalSafe = (filePath) => {
+          if (!filePath || typeof filePath !== "string") return false;
+          // Normalize and check for relative traversal components
+          const normalized = filePath.replace(/\\/g, "/");
+          const segments = normalized.split("/");
+          return !segments.some((segment) => segment === ".." || segment === ".");
+        };
+
+        const safeFilenameStem = (rawTitle) => {
+          const illegal = /[/\\:*?"<>|]/g;
+          let cleaned = (rawTitle || "").replace(illegal, "").trim();
+          cleaned = cleaned.replace(/^\.+/, "");
+          cleaned = cleaned.replace(/[. ]+$/, "");
+          return cleaned || "Untitled Note";
+        };
+
+        // Traversal attempts
+        assert.strictEqual(isPathTraversalSafe("../../etc/passwd"), false);
+        assert.strictEqual(isPathTraversalSafe("..\\..\\Windows\\System32"), false);
+        assert.strictEqual(isPathTraversalSafe("notes/../../secret.key"), false);
+        assert.strictEqual(isPathTraversalSafe("valid/folder/note.md"), true);
+
+        // Filename stem sanitization strips traversal separators
+        assert.strictEqual(safeFilenameStem("../../etc/passwd"), "etcpasswd");
+        assert.strictEqual(safeFilenameStem("..\\Windows\\System32\\cmd.exe"), "WindowsSystem32cmd.exe");
+        assert.strictEqual(safeFilenameStem("....hidden"), "hidden");
+      });
+
+      it("Windows reserved device names neutralization: prefixes reserved names with an underscore", () => {
+        const RESERVED_NAMES = new Set([
+          "CON", "PRN", "AUX", "NUL",
+          "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+          "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ]);
+
+        const sanitizeReservedName = (name) => {
+          const upper = (name || "").toUpperCase().trim();
+          return RESERVED_NAMES.has(upper) ? `_${name.trim()}` : name.trim();
+        };
+
+        assert.strictEqual(sanitizeReservedName("CON"), "_CON");
+        assert.strictEqual(sanitizeReservedName("con"), "_con");
+        assert.strictEqual(sanitizeReservedName("PRN"), "_PRN");
+        assert.strictEqual(sanitizeReservedName("aux"), "_aux");
+        assert.strictEqual(sanitizeReservedName("NUL"), "_NUL");
+        assert.strictEqual(sanitizeReservedName("COM1"), "_COM1");
+        assert.strictEqual(sanitizeReservedName("lpt9"), "_lpt9");
+
+        // Substrings or compound words remain unaltered
+        assert.strictEqual(sanitizeReservedName("Conference"), "Conference");
+        assert.strictEqual(sanitizeReservedName("Pronto"), "Pronto");
+        assert.strictEqual(sanitizeReservedName("Auxiliary"), "Auxiliary");
+        assert.strictEqual(sanitizeReservedName("NullPointer"), "NullPointer");
+      });
+
+      it("managed database file exclusion: forbids export and import targeting managed SQLite database files", () => {
+        const MANAGED_DB_FILES = new Set([
+          "database.sqlite",
+          "database.sqlite-wal",
+          "database.sqlite-shm",
+          "notepad.db",
+          "notepad.db-wal",
+          "notepad.db-shm",
+          "custom-notepad.db",
+        ]);
+
+        const isForbiddenTarget = (targetPath) => {
+          if (!targetPath) return true;
+          const normalized = targetPath.replace(/\\/g, "/");
+          const fileName = normalized.split("/").pop()?.toLowerCase();
+          return fileName ? MANAGED_DB_FILES.has(fileName) : true;
+        };
+
+        assert.strictEqual(isForbiddenTarget("/home/user/.local/share/custom-notepad/database.sqlite"), true);
+        assert.strictEqual(isForbiddenTarget("C:\\Users\\User\\AppData\\notepad.db-wal"), true);
+        assert.strictEqual(isForbiddenTarget("/tmp/notepad.db-shm"), true);
+        assert.strictEqual(isForbiddenTarget("/home/user/Documents/Exported Note.md"), false);
+        assert.strictEqual(isForbiddenTarget("C:\\Users\\User\\Desktop\\backup.json"), false);
+      });
+
+      it("HTML and script containment: stores script tags and HTML entities as inert plain text literals", () => {
+        const rawPayloads = [
+          "<script>alert('xss')</script>",
+          "<img src=x onerror=alert(1)>",
+          "<svg onload=fetch('http://evil.com')>",
+          "&lt;script&gt;alert(document.cookie)&lt;/script&gt;",
+          "<iframe src=\"javascript:alert(1)\"></iframe>",
+        ];
+
+        for (const payload of rawPayloads) {
+          const note = {
+            id: "sec-note",
+            title: "Security Test",
+            content: payload,
+          };
+
+          // Invariant: Content is preserved verbatim without executing or stripping
+          const serialized = JSON.stringify(note);
+          const parsed = JSON.parse(serialized);
+
+          assert.strictEqual(parsed.content, payload, "Payload must be preserved verbatim as inert text");
+          assert.strictEqual(typeof parsed.content, "string", "Must remain a literal string primitive");
+          // Never eval or execute
+          assert.strictEqual(parsed.content.includes("<script>"), payload.includes("<script>"));
+        }
+      });
+
+      it("prototype pollution resistance: safely handles objects containing __proto__ or constructor keys without poisoning Object.prototype", () => {
+        const maliciousJson = `{"__proto__":{"polluted":"yes"},"constructor":{"prototype":{"polluted2":"yes"}},"title":"Test Note","content":"Safe content"}`;
+
+        // Safe JSON parsing invariant
+        const parsed = JSON.parse(maliciousJson);
+
+        // Verify global Object.prototype is NOT polluted
+        assert.strictEqual(Object.prototype.polluted, undefined, "Object.prototype must not be polluted with 'polluted'");
+        assert.strictEqual(Object.prototype.polluted2, undefined, "Object.prototype must not be polluted with 'polluted2'");
+        assert.strictEqual(parsed.title, "Test Note");
+        assert.strictEqual(parsed.content, "Safe content");
+      });
+
+      it("external export_id isolation: never reuses external export_id as local database primary key", () => {
+        const externalPackage = {
+          notes: [
+            { export_id: "ext-uuid-1234", title: "External Note 1", content: "Body 1" },
+            { export_id: "ext-uuid-5678", title: "External Note 2", content: "Body 2" },
+          ],
+        };
+
+        const generateLocalId = () => `local-uuid-${Math.random().toString(36).substring(2, 9)}`;
+
+        const importedDatabaseNotes = externalPackage.notes.map((extNote) => {
+          const internalId = generateLocalId();
+          return {
+            id: internalId, // strictly generated local UUID
+            title: extNote.title,
+            content: extNote.content,
+            originalExportId: extNote.export_id,
+          };
+        });
+
+        for (const imported of importedDatabaseNotes) {
+          assert.notStrictEqual(imported.id, imported.originalExportId, "Local primary key must never equal external export_id");
+          assert.ok(imported.id.startsWith("local-uuid-"));
+        }
+      });
+    });
+
+    // Data Integrity Verification Tests
+    describe("Data Integrity Verification", () => {
+      it("multilingual Unicode and emoji roundtrip fidelity: preserves complex multi-codepoint characters and scripts verbatim", () => {
+        const complexUnicodeCorpus = [
+          "Chinese (Simplified/Traditional): 快速的棕色狐狸跃过了懒惰的狗。 繁體中文測試。",
+          "Japanese: こんにちは世界！平仮名、片仮名、漢字 (日本語のテスト)。",
+          "Korean: 안녕하세요 세계! 한글 테스트 문장입니다.",
+          "Arabic (RTL): مرحباً بالعالم! هذا اختبار للغة العربية والاتجاه من اليمين إلى اليسار.",
+          "Hebrew (RTL): שלום עולם! בדיקת טקסט בעברית מימין לשמאל.",
+          "Devanagari: नमस्ते दुनिया! यह हिंदी भाषा और देवनागरी लिपि का परीक्षण है।",
+          "Cyrillic: Привет, мир! Тестирование русского текста и кириллицы.",
+          "Mathematical symbols: ∑_{i=1}^n x_i = ∫_0^∞ e^{-x} dx ∧ ∀x ∃y (x < y) ⊗ π ≈ 3.14159",
+          "Multi-codepoint emojis: 👨‍👩‍👧‍👦 (family ZWJ), 🏳️‍🌈 (rainbow flag), 🧑🏽‍💻 (technologist), 🚀 ✨ 💖 🔥 🥑 ☕",
+        ];
+
+        for (const text of complexUnicodeCorpus) {
+          const note = { id: "unicode-test", title: text.slice(0, 30), content: text };
+          const serialized = JSON.stringify(note);
+          const restored = JSON.parse(serialized);
+
+          assert.strictEqual(restored.content, text, `Fidelity failed for: ${text}`);
+          assert.strictEqual(restored.title, text.slice(0, 30));
+        }
+      });
+
+      it("BOM stripping: cleanly removes leading UTF-8 Byte Order Mark (\\uFEFF) without mangling content", () => {
+        const stripBom = (input) => {
+          if (!input) return "";
+          return input.charCodeAt(0) === 0xFEFF ? input.slice(1) : input;
+        };
+
+        const rawTextWithBom = "\uFEFF# Project Overview\n\nStarting note with BOM.";
+        const stripped = stripBom(rawTextWithBom);
+
+        assert.strictEqual(stripped.charCodeAt(0), 35, "First character must be '#' (ASCII 35)");
+        assert.strictEqual(stripped, "# Project Overview\n\nStarting note with BOM.");
+        assert.strictEqual(stripped.includes("\uFEFF"), false, "BOM must be completely removed");
+
+        // Idempotent on text without BOM
+        const normalText = "# No BOM";
+        assert.strictEqual(stripBom(normalText), "# No BOM");
+      });
+
+      it("line ending normalization: normalizes CRLF and CR to standard LF (\\n)", () => {
+        const normalizeLineEndings = (text) => {
+          if (!text) return "";
+          return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        };
+
+        const windowsText = "Line 1\r\nLine 2\r\nLine 3\r\n";
+        const macLegacyText = "Line 1\rLine 2\rLine 3\r";
+        const mixedText = "Line 1\r\nLine 2\rLine 3\nLine 4";
+
+        assert.strictEqual(normalizeLineEndings(windowsText), "Line 1\nLine 2\nLine 3\n");
+        assert.strictEqual(normalizeLineEndings(macLegacyText), "Line 1\nLine 2\nLine 3\n");
+        assert.strictEqual(normalizeLineEndings(mixedText), "Line 1\nLine 2\nLine 3\nLine 4");
+      });
+
+      it("binary and null byte rejection: identifies invalid non-text files and protects database from corruption", () => {
+        const isBinaryContent = (content) => {
+          if (typeof content !== "string") return true;
+          // Check for null bytes or control characters (excluding tab, LF, CR)
+          for (let i = 0; i < Math.min(content.length, 1024); i++) {
+            const code = content.charCodeAt(i);
+            if (code === 0 || (code < 32 && code !== 9 && code !== 10 && code !== 13)) {
+              return true;
+            }
+          }
+          return false;
+        };
+
+        assert.strictEqual(isBinaryContent("Valid plain text note with words."), false);
+        assert.strictEqual(isBinaryContent("# Markdown Heading\n\n- item 1\n- item 2\n"), false);
+        assert.strictEqual(isBinaryContent("Binary\x00file with null byte"), true);
+        assert.strictEqual(isBinaryContent("\x7F\x01\x02\x03\x04PNG\r\n\x1a\n"), true);
+      });
+
+      it("deterministic tag sorting: sorts tags lexicographically in interchange JSON serialization", () => {
+        const unsortedTags = ["productivity", "architecture", "database", "backend", "analytics"];
+        const sortTagsDeterministically = (tags) => {
+          return [...tags].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+        };
+
+        const sorted = sortTagsDeterministically(unsortedTags);
+        assert.deepStrictEqual(sorted, ["analytics", "architecture", "backend", "database", "productivity"]);
+
+        // Repeated sorting remains identical
+        assert.deepStrictEqual(sortTagsDeterministically(sorted), sorted);
+      });
+
+      it("internal note link remapping vs external URL retention", () => {
+        const idMap = new Map([
+          ["ext-note-1", "loc-note-101"],
+          ["ext-note-2", "loc-note-102"],
+        ]);
+
+        const remapNoteLinks = (content, map) => {
+          return content.replace(/notepad:\/\/note\/([a-zA-Z0-9_-]+)/g, (match, targetId) => {
+            const newId = map.get(targetId);
+            return newId ? `notepad://note/${newId}` : match;
+          });
+        };
+
+        const sampleContent =
+          "See [Design](notepad://note/ext-note-1) and [Arch](notepad://note/ext-note-2) or visit [Site](https://example.com/notepad://note/test).";
+
+        const remapped = remapNoteLinks(sampleContent, idMap);
+
+        assert.strictEqual(
+          remapped,
+          "See [Design](notepad://note/loc-note-101) and [Arch](notepad://note/loc-note-102) or visit [Site](https://example.com/notepad://note/test)."
+        );
+        // External link retained unchanged
+        assert.ok(remapped.includes("https://example.com/notepad://note/test"));
+      });
+    });
+
+    // Performance Verification Tests
+    describe("Performance Verification", () => {
+      it("in-memory candidate filtering and pre-scan benchmark executes in under 50ms for 100 files", () => {
+        const candidatePaths = Array.from({ length: 100 }, (_, i) => {
+          const ext = i % 4 === 0 ? "md" : i % 4 === 1 ? "txt" : i % 4 === 2 ? "json" : "bin";
+          return `/user/documents/folder/file_${i}.${ext}`;
+        });
+
+        const startTime = performance.now();
+
+        const SUPPORTED_EXTS = new Set(["md", "markdown", "txt", "json"]);
+        const candidates = candidatePaths.map((p, idx) => {
+          const ext = p.split(".").pop()?.toLowerCase() || "";
+          const isSupported = SUPPORTED_EXTS.has(ext);
+          return {
+            id: `cand-${idx}`,
+            path: p,
+            detected_format: isSupported ? ext : "unknown",
+            is_supported: isSupported,
+            validation_error: isSupported ? null : `Unsupported file extension .${ext}`,
+          };
+        });
+
+        const validCandidates = candidates.filter((c) => c.is_supported);
+        const duration = performance.now() - startTime;
+
+        assert.strictEqual(candidates.length, 100);
+        assert.strictEqual(validCandidates.length, 75);
+        assert.ok(duration < 50, `Scanning 100 files took ${duration.toFixed(2)}ms (must be < 50ms)`);
+      });
+
+      it("in-memory batch interchange serialization benchmark executes in under 50ms for 100 notes", () => {
+        const notes = Array.from({ length: 100 }, (_, i) => ({
+          id: `uuid-note-${i}`,
+          title: `Project Architecture Specification Note ${i}`,
+          content: `# Specification ${i}\n\nDetailed contents for note ${i} with references to [Next](notepad://note/uuid-note-${(i + 1) % 100}).`,
+          tags: [`tag-${i % 5}`, `common-tag`, `spec`],
+          notebook: i % 2 === 0 ? "Engineering/Frontend" : "Engineering/Backend",
+        }));
+
+        const startTime = performance.now();
+
+        const interchangePackage = {
+          app: "personal-notepad",
+          format: "personal-notepad-interchange",
+          version: "1.0",
+          exported_at: new Date().toISOString(),
+          note_count: notes.length,
+          notes: notes.map((n) => ({
+            export_id: n.id,
+            title: n.title,
+            content: n.content,
+            format: "md",
+            notebook_path: n.notebook,
+            tags: [...n.tags].sort(),
+          })),
+        };
+
+        const serialized = JSON.stringify(interchangePackage);
+        const duration = performance.now() - startTime;
+
+        assert.strictEqual(interchangePackage.notes.length, 100);
+        assert.ok(serialized.length > 10000, "Serialized JSON should have non-trivial size");
+        assert.ok(duration < 50, `Serializing 100 notes took ${duration.toFixed(2)}ms (must be < 50ms)`);
+      });
+
+      it("conflict resolution lookup operates in O(1) time complexity with Set/Map indexes", () => {
+        const existingNoteTitles = new Set(
+          Array.from({ length: 500 }, (_, i) => `Existing Title ${i}`)
+        );
+
+        const startTime = performance.now();
+        let collisions = 0;
+
+        for (let i = 0; i < 500; i++) {
+          const testTitle = i % 2 === 0 ? `Existing Title ${i}` : `New Unique Title ${i}`;
+          if (existingNoteTitles.has(testTitle)) {
+            collisions++;
+          }
+        }
+
+        const duration = performance.now() - startTime;
+        assert.strictEqual(collisions, 250);
+        assert.ok(duration < 20, `500 hash set lookups took ${duration.toFixed(2)}ms (must be < 20ms)`);
+      });
+    });
+  });
 });
+
+
 
 

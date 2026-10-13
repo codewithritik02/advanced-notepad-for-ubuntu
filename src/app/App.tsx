@@ -48,6 +48,12 @@ import { BrokenLinkDialog } from "../features/notes/components/Links";
 import { NotePickerModal } from "../features/notes/components/NotePicker";
 import { replaceInternalLinkTarget, removeInternalLink } from "../utils/linkParser";
 import { useNoteNavigationHistory } from "../hooks/useNoteNavigationHistory";
+import {
+  ExportBatchModal,
+  ImportPreviewModal,
+  pickImportFiles,
+} from "../features/importExport";
+import { ExportScope, ImportPreview, ImportRequest } from "../services/storage/types";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -93,6 +99,64 @@ export function App() {
   const [isResolvingLinkTarget, setIsResolvingLinkTarget] = useState<boolean>(false);
   const [repairingBrokenTargetId, setRepairingBrokenTargetId] = useState<string | null>(null);
   const [noteRefreshKey, setNoteRefreshKey] = useState<number>(0);
+  const [exportBatchState, setExportBatchState] = useState<{
+    isOpen: boolean;
+    scope: ExportScope;
+    notebookName?: string;
+  } | null>(null);
+
+  const [importModalState, setImportModalState] = useState<{
+    isOpen: boolean;
+    preview: ImportPreview | null;
+    isLoading: boolean;
+  }>({
+    isOpen: false,
+    preview: null,
+    isLoading: false,
+  });
+
+  const handleOpenExportNotebook = useCallback((notebook: Notebook) => {
+    setExportBatchState({
+      isOpen: true,
+      scope: {
+        type: "notebook",
+        notebook_id: notebook.id,
+        include_nested: true,
+      },
+      notebookName: notebook.name,
+    });
+  }, []);
+
+  const handleOpenImport = useCallback(async () => {
+    try {
+      const pickerResult = await pickImportFiles();
+      if (pickerResult.cancelled || pickerResult.paths.length === 0) {
+        return;
+      }
+      setImportModalState({
+        isOpen: true,
+        preview: null,
+        isLoading: true,
+      });
+      const preview = await storageService.importExport.scanImportFiles(pickerResult.paths);
+      setImportModalState({
+        isOpen: true,
+        preview,
+        isLoading: false,
+      });
+    } catch (err) {
+      logger.error("Failed to scan import files:", err);
+      setRestoreFeedback({
+        type: "error",
+        message: "Failed to read selected files for import.",
+      });
+      setImportModalState({
+        isOpen: false,
+        preview: null,
+        isLoading: false,
+      });
+    }
+  }, []);
 
   useEffect(() => {
     if (restoreFeedback) {
@@ -398,6 +462,44 @@ export function App() {
     }
   }, [isStorageReady, loadNotes, refreshNoteCounts]);
 
+  const handleConfirmImport = useCallback(
+    async (request: ImportRequest) => {
+      try {
+        const summary = await storageService.importExport.executeImport(request);
+        // Immediately refresh note views, notebooks, tags, and counts
+        await loadNotes(activeNavId, selectedNotebookId, selectedTagId);
+        await loadNotebooks();
+        await loadTags();
+        await refreshNoteCounts();
+
+        const successCount = summary.importedCount || 0;
+        if (successCount > 0) {
+          setRestoreFeedback({
+            type: "success",
+            message: `Successfully imported ${successCount} note${successCount === 1 ? "" : "s"}.`,
+          });
+        }
+        return summary;
+      } catch (err) {
+        logger.error("Failed to execute import:", err);
+        setRestoreFeedback({
+          type: "error",
+          message: "An error occurred while importing notes.",
+        });
+        throw err;
+      }
+    },
+    [
+      activeNavId,
+      selectedNotebookId,
+      selectedTagId,
+      loadNotes,
+      loadNotebooks,
+      loadTags,
+      refreshNoteCounts,
+    ]
+  );
+
   const isCreatingRef = useRef(false);
 
   // Persistent note creation (Task 18: Assign to selected notebook or unfiled; auto-tag if in tag view)
@@ -474,7 +576,7 @@ export function App() {
         const updated = await storageService.notes.update(id, {
           title,
           content,
-          format: format || "txt",
+          format: format || (existing?.format as NoteFormat) || "txt",
         });
         setNotes((prev) => prev.map((n) => (n.id === id ? updated : n)));
       } catch (err) {
@@ -1568,6 +1670,8 @@ export function App() {
             onCreateNotebook={handleOpenCreateNotebook}
             onRenameNotebook={setRenamingNotebook}
             onDeleteNotebook={setDeletingNotebook}
+            onExportNotebook={handleOpenExportNotebook}
+            onImportNotes={handleOpenImport}
             onDropNote={handleMoveNote}
             noteCounts={noteCounts}
             tags={tags}
@@ -1644,6 +1748,29 @@ export function App() {
               onRestoreNote={handleRestoreNote}
               onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
               onEmptyTrash={handleOpenEmptyTrash}
+              onExport={
+                activeNavId === "notebook" && selectedNotebookId
+                  ? () => {
+                      const nb = notebooks.find((n) => n.id === selectedNotebookId);
+                      if (nb) handleOpenExportNotebook(nb);
+                    }
+                  : activeNavId === "all-notes"
+                  ? () => {
+                      setExportBatchState({
+                        isOpen: true,
+                        scope: { type: "all_notes" },
+                      });
+                    }
+                  : undefined
+              }
+              exportLabel={
+                activeNavId === "notebook"
+                  ? "Export Notebook"
+                  : activeNavId === "all-notes"
+                  ? "Export All"
+                  : undefined
+              }
+              onImport={handleOpenImport}
             />
           </SearchErrorBoundary>
         }
@@ -1866,6 +1993,34 @@ export function App() {
             ✕
           </button>
         </div>
+      )}
+      {exportBatchState?.isOpen && (
+        <ExportBatchModal
+          isOpen={exportBatchState.isOpen}
+          onClose={() => setExportBatchState(null)}
+          scope={exportBatchState.scope}
+          notebookName={exportBatchState.notebookName}
+          onFlushSave={handleFlushPendingSave}
+          onSuccess={(summary) => {
+            setRestoreFeedback({
+              type: "success",
+              message: `Successfully exported ${summary.exportedCount} note${summary.exportedCount === 1 ? "" : "s"}.`,
+            });
+          }}
+        />
+      )}
+      {importModalState.isOpen && (
+        <ImportPreviewModal
+          isOpen={importModalState.isOpen}
+          onClose={() =>
+            setImportModalState({ isOpen: false, preview: null, isLoading: false })
+          }
+          preview={importModalState.preview}
+          isLoading={importModalState.isLoading}
+          onConfirmImport={handleConfirmImport}
+          notebooks={notebooks}
+          defaultNotebookId={selectedNotebookId}
+        />
       )}
     </>
   );

@@ -1,0 +1,260 @@
+.op-summary-container {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-height: 70vh;
+  overflow: hidden;
+}
+
+.op-live-progress-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 8px;
+}
+
+.op-progress-bar-wrap {
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-bg-tertiary, #e5e7eb);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.op-progress-bar-fill {
+  height: 100%;
+  background-color: var(--color-accent, #3b82f6);
+  border-radius: 9999px;
+  transition: width 0.2s ease;
+}
+
+.op-progress-meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--color-text-secondary, #6b7280);
+}
+
+.op-progress-percentage {
+  font-weight: 600;
+  color: var(--color-text-primary, #111827);
+}
+
+.op-progress-current-item {
+  font-size: 12px;
+  color: var(--color-text-muted, #9ca3af);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 6px 10px;
+  background-color: var(--color-bg-secondary, #f9fafb);
+  border-radius: 6px;
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.op-progress-current-item .op-item-name {
+  font-weight: 500;
+  color: var(--color-text-primary, #111827);
+}
+
+.op-finished-summary-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.op-outcome-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background-color: var(--color-bg-secondary, #f9fafb);
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #e5e7eb);
+}
+
+.op-outcome-badge {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  text-transform: capitalize;
+}
+
+.op-outcome-badge.outcome-full-success {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--color-success, #10b981);
+}
+
+.op-outcome-badge.outcome-warnings {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--color-warning, #f59e0b);
+}
+
+.op-outcome-badge.outcome-partial {
+  background-color: rgba(234, 88, 12, 0.15);
+  color: #ea580c;
+}
+
+.op-outcome-badge.outcome-cancelled {
+  background-color: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+}
+
+.op-outcome-badge.outcome-failure {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--color-danger, #ef4444);
+}
+
+.op-duration-pill {
+  font-size: 12px;
+  color: var(--color-text-muted, #9ca3af);
+  font-variant-numeric: tabular-nums;
+}
+
+.op-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+  gap: 8px;
+}
+
+.op-metrics-grid.mini {
+  margin-top: 6px;
+}
+
+.op-metric-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 6px;
+  background-color: var(--color-bg-secondary, #f9fafb);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+}
+
+.op-metric-num {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-text-primary, #111827);
+  line-height: 1.2;
+}
+
+.op-metric-label {
+  font-size: 11px;
+  color: var(--color-text-secondary, #6b7280);
+}
+
+.op-metric-chip.success .op-metric-num {
+  color: var(--color-success, #10b981);
+}
+
+.op-metric-chip.warning .op-metric-num {
+  color: var(--color-warning, #f59e0b);
+}
+
+.op-metric-chip.danger .op-metric-num {
+  color: var(--color-danger, #ef4444);
+}
+
+.op-metric-chip.cancelled .op-metric-num {
+  color: #6b7280;
+}
+
+.op-results-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.op-results-title {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--color-text-secondary, #4b5563);
+}
+
+.op-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 280px;
+  padding-right: 4px;
+}
+
+.op-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background-color: var(--color-bg-primary, #ffffff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.op-result-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.op-result-name {
+  font-weight: 500;
+  color: var(--color-text-primary, #111827);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.op-result-message {
+  font-size: 11px;
+  color: var(--color-text-secondary, #6b7280);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.op-result-status-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  text-transform: capitalize;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.op-result-status-pill.status-imported,
+.op-result-status-pill.status-exported {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: var(--color-success, #10b981);
+}
+
+.op-result-status-pill.status-skipped {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: var(--color-warning, #f59e0b);
+}
+
+.op-result-status-pill.status-cancelled {
+  background-color: rgba(107, 114, 128, 0.15);
+  color: #6b7280;
+}
+
+.op-result-status-pill.status-rejected,
+.op-result-status-pill.status-failed {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--color-danger, #ef4444);
+}
+
+.op-summary-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}

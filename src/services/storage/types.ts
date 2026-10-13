@@ -289,3 +289,210 @@ export interface InsertInternalLinkInput {
   customLabel?: string;
 }
 
+// ==========================================
+// Phase 10: Import & Export Contracts
+// ==========================================
+
+export type ImportFormat = "txt" | "md" | "json";
+export type ExportFormat = "txt" | "md" | "json";
+export type DuplicatePolicy = "import_as_new" | "skip_exact" | "ask";
+export type DuplicateMatch =
+  | { type: "exactMatch"; existingId: string; existingTitle: string }
+  | { type: "contentMatch"; existingId: string; existingTitle: string }
+  | { type: "titleCollisionOnly"; existingId: string; existingTitle: string }
+  | { type: "none" };
+export type OperationOutcome =
+  | "full_success"
+  | "success_with_warnings"
+  | "partial_success"
+  | "cancelled"
+  | "total_failure";
+
+export type ValidationStatus = "valid" | "warning" | "invalid";
+export type ImportCandidateStatus = ValidationStatus;
+export type ImportItemStatus = "imported" | "skipped" | "rejected" | "cancelled" | "failed";
+export type ExportItemStatus = "exported" | "skipped" | "cancelled" | "failed";
+
+export interface ImportProgress {
+  operationId?: string | null;
+  total: number;
+  currentIndex: number;
+  currentFile: string;
+  importedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+}
+
+export interface ExportProgress {
+  operationId?: string | null;
+  total: number;
+  currentIndex: number;
+  currentTitle: string;
+  exportedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+}
+
+export interface ImportCandidate {
+  id: string;
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  detectedFormat: ImportFormat;
+  proposedTitle: string;
+  validationStatus: ValidationStatus;
+  warnings: string[];
+  errorMessage?: string | null;
+  isDuplicate: boolean;
+  duplicateNoteId?: string | null;
+  duplicateNoteTitle?: string | null;
+  selected: boolean;
+}
+
+export interface ImportPreview {
+  candidates: ImportCandidate[];
+  totalFiles: number;
+  validFiles: number;
+  invalidFiles: number;
+  duplicateFiles: number;
+  totalSizeBytes: number;
+}
+
+export interface ImportOptions {
+  targetNotebookId?: string | null;
+  duplicatePolicy: DuplicatePolicy;
+}
+
+export interface ImportCandidateOverride {
+  id: string;
+  filePath: string;
+  selected: boolean;
+  customTitle?: string | null;
+}
+
+export interface ImportRequest {
+  operationId?: string;
+  candidates: ImportCandidateOverride[];
+  options: ImportOptions;
+}
+
+export interface ImportFileResult {
+  candidateId: string;
+  fileName: string;
+  status: ImportItemStatus;
+  createdNoteId?: string | null;
+  message?: string | null;
+}
+
+export interface ImportSummary {
+  totalProcessed: number;
+  importedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  outcome?: OperationOutcome;
+  results: ImportFileResult[];
+  durationMs: number;
+}
+
+export interface ExportSingleNoteRequest {
+  noteId: string;
+  format: ExportFormat;
+  destinationPath: string;
+  overwrite?: boolean;
+}
+
+export type ExportScope =
+  | { type: "single_note"; note_id: string }
+  | { type: "selected_notes"; note_ids: string[] }
+  | { type: "notebook"; notebook_id: string; include_nested: boolean }
+  | { type: "all_notes" };
+
+export interface ExportNoteMetadataItem {
+  id: string;
+  title: string;
+  format: string;
+  notebookId?: string | null;
+  notebookPath?: string | null;
+  isFavorite: boolean;
+  isPinned: boolean;
+  tagCount: number;
+  contentLengthBytes: number;
+  modifiedAt: string;
+}
+
+export interface ExportSelectionPreview {
+  totalRequested: number;
+  totalIncluded: number;
+  skippedTrashedCount: number;
+  skippedMissingCount: number;
+  notes: ExportNoteMetadataItem[];
+  includedNotebookCount: number;
+}
+
+export interface ExportBatchRequest {
+  operationId?: string;
+  scope?: ExportScope;
+  noteIds?: string[];
+  format: ExportFormat;
+  destinationDir?: string;
+  destinationFile?: string | null;
+  includeMetadata?: boolean;
+  overwrite?: boolean;
+}
+
+export interface ExportFileResult {
+  noteId: string;
+  noteTitle: string;
+  filePath: string;
+  status: ExportItemStatus;
+  message?: string | null;
+}
+
+export interface ExportSummary {
+  totalNotes: number;
+  exportedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  outcome?: OperationOutcome;
+  results: ExportFileResult[];
+  durationMs: number;
+}
+
+export interface InterchangeInternalLink {
+  label: string;
+  target_export_id: string;
+  is_package_internal: boolean;
+}
+
+export interface InterchangeNote {
+  export_id: string;
+  title: string;
+  content: string;
+  format: string;
+  notebook_path?: string | null;
+  tags?: string[];
+  is_favorite?: boolean;
+  is_pinned?: boolean;
+  created_at?: string | null;
+  modified_at?: string | null;
+  attachments_omitted_count?: number;
+  internal_links?: InterchangeInternalLink[];
+}
+
+export interface InterchangeDocument {
+  $schema?: string;
+  app: string;
+  format?: string;
+  version: string;
+  exported_at: string;
+  note_count: number;
+  internal_link_policy?: string;
+  attachment_policy?: string;
+  notes: InterchangeNote[];
+}
+
+

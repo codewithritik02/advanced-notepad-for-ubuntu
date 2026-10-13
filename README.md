@@ -6,9 +6,9 @@ Personal Notepad is a fast, offline-first desktop note-taking application design
 
 ## Current Status
 
-**Phase 8 — Trash & Recovery System (Completed)**
+**Phase 10 — Offline-First Import & Export Engine (Completed)**
 
-The Trash & Recovery subsystem is fully operational across the SQLite engine and React desktop UI. Users can safely soft-delete active notes with zero data loss, preview trashed notes in read-only mode, restore notes (with automatic defensive unfiling if notebooks were removed), permanently delete individual notes via confirmation dialogs, and empty the entire Trash with honest batch and partial-failure reporting.
+The Import & Export subsystem is fully operational across the SQLite backend engine and React desktop UI. Users can safely import raw text (`.txt`), Markdown (`.md`), and portable multi-note JSON interchange documents (`.json`) with interactive candidate pre-scanning, title derivation, and duplicate conflict handling (`skip_exact`, `keep_both`, `overwrite`). Notes can be exported individually or in multi-note/notebook batches with atomic file creation, destination collision avoidance, and link remapping.
 
 See also:
 - [Storage Architecture Documentation](docs/storage-architecture.md)
@@ -17,6 +17,8 @@ See also:
 - [Full-Text Search Architecture (Phase 6)](docs/search-architecture.md)
 - [Attachments & Files Architecture (Phase 7)](docs/attachments-architecture.md)
 - [Trash & Recovery Architecture (Phase 8)](docs/trash-and-recovery-architecture.md)
+- [Internal Links Architecture (Phase 9)](docs/internal-links-architecture.md)
+- [Import & Export Architecture (Phase 10)](docs/import-export-architecture.md)
 
 ---
 
@@ -255,8 +257,11 @@ npm install
 ### Verification & Test Commands
 
 ```bash
-# 1. Run all unit and integration tests (19 tests)
+# 1. Run all unit and integration tests (256 Rust tests)
 cargo test --manifest-path src-tauri/Cargo.toml
+
+# 2. Run frontend test suite (635 tests across 190 suites)
+npm test
 
 # 2. Check Rust lints with clippy
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets

@@ -40,6 +40,9 @@ pub enum StorageError {
 
     #[error("Internal link error: {0}")]
     InternalLink(String),
+
+    #[error("Import/Export error: {0}")]
+    ImportExport(String),
 }
 
 #[derive(Debug, Error)]
@@ -248,6 +251,93 @@ impl From<InternalLinkError> for StorageError {
     }
 }
 
+/// Explicit errors occurring during Phase 10 Import/Export operations
+#[derive(Debug, Error)]
+pub enum ImportExportError {
+    #[error("Operation cancelled by user.")]
+    Cancelled,
+
+    #[error("Unsupported file format: {0}")]
+    UnsupportedFormat(String),
+
+    #[error("Invalid character encoding: {0}")]
+    InvalidEncoding(String),
+
+    #[error("File exceeds maximum allowed size ({size_bytes} bytes > {max_bytes} bytes).")]
+    FileTooLarge { size_bytes: u64, max_bytes: u64 },
+
+    #[error("Cannot read file: {0}")]
+    CannotReadFile(String),
+
+    #[error("Destination directory is not writable: {0}")]
+    DestinationNotWritable(String),
+
+    #[error("Destination file collision: {0}")]
+    DestinationCollision(String),
+
+    #[error("Database error during import/export: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Serialization failed: {0}")]
+    Serialization(String),
+
+    #[error("Validation failed: {0}")]
+    Validation(String),
+
+    #[error("Partial failure during batch operation: {0}")]
+    PartialFailure(String),
+
+    #[error("Filesystem IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl ImportExportError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            ImportExportError::Cancelled => "Operation was cancelled.".to_string(),
+            ImportExportError::UnsupportedFormat(ext) => {
+                format!("Unsupported file format '{ext}'. Choose a TXT, Markdown, or JSON file.")
+            }
+            ImportExportError::InvalidEncoding(_) => {
+                "This file contains invalid UTF-8 encoding and cannot be imported safely.".to_string()
+            }
+            ImportExportError::FileTooLarge { .. } => {
+                "The selected file exceeds the maximum allowed size limit.".to_string()
+            }
+            ImportExportError::CannotReadFile(_) => {
+                "This file could not be read. Please check that it exists and you have read permission.".to_string()
+            }
+            ImportExportError::DestinationNotWritable(_) => {
+                "The export destination is not writable. Please choose another location.".to_string()
+            }
+            ImportExportError::DestinationCollision(f) => {
+                format!("A file named '{f}' already exists in the destination folder.")
+            }
+            ImportExportError::Database(_) => {
+                "A database error occurred while importing or exporting notes.".to_string()
+            }
+            ImportExportError::Serialization(msg) => {
+                format!("Failed to format export content: {msg}")
+            }
+            ImportExportError::Validation(msg) => msg.clone(),
+            ImportExportError::PartialFailure(msg) => msg.clone(),
+            ImportExportError::Io(err) => match err.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    "Permission denied when accessing file or directory.".to_string()
+                }
+                std::io::ErrorKind::NotFound => "The specified file was not found.".to_string(),
+                _ => "A filesystem error occurred.".to_string(),
+            },
+        }
+    }
+}
+
+impl From<ImportExportError> for StorageError {
+    fn from(err: ImportExportError) -> Self {
+        StorageError::ImportExport(err.user_friendly_message())
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
@@ -256,6 +346,7 @@ impl StorageError {
             StorageError::SearchError(_) => "Unable to search notes.".to_string(),
             StorageError::AttachmentError(msg) => msg.clone(),
             StorageError::InternalLink(msg) => msg.clone(),
+            StorageError::ImportExport(msg) => msg.clone(),
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => {
                 match err.code {
                     rusqlite::ErrorCode::ConstraintViolation => {
@@ -366,6 +457,30 @@ mod tests {
 
         let converted: StorageError = target_not_found.into();
         assert_eq!(converted.user_friendly_message(), "The linked note could not be found.");
+    }
+
+    #[test]
+    fn test_import_export_error_user_friendly_messages() {
+        let cancel = ImportExportError::Cancelled;
+        assert_eq!(cancel.user_friendly_message(), "Operation was cancelled.");
+
+        let unsupp = ImportExportError::UnsupportedFormat("docx".to_string());
+        assert!(unsupp.user_friendly_message().contains("Unsupported file format 'docx'"));
+
+        let encoding = ImportExportError::InvalidEncoding("bad bytes".to_string());
+        assert!(encoding.user_friendly_message().contains("invalid UTF-8 encoding"));
+
+        let too_large = ImportExportError::FileTooLarge {
+            size_bytes: 20 * 1024 * 1024,
+            max_bytes: 10 * 1024 * 1024,
+        };
+        assert!(too_large.user_friendly_message().contains("size limit"));
+
+        let collision = ImportExportError::DestinationCollision("Roadmap.md".to_string());
+        assert!(collision.user_friendly_message().contains("Roadmap.md"));
+
+        let converted: StorageError = unsupp.into();
+        assert!(converted.user_friendly_message().contains("Unsupported file format"));
     }
 }
 

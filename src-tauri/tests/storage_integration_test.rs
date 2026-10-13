@@ -8292,7 +8292,629 @@ fn test_phase9_task_24_security_reliability_and_performance_verification() {
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
+#[test]
+fn test_phase10_task_22_txt_and_md_import_export_lifecycle() {
+    use personal_notepad_lib::storage::models::*;
+    use personal_notepad_lib::storage::services::{ImportExportService, SearchService};
 
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let export_dir = env.dir.join("exports");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    // 1. Create a TXT note and a Markdown note in SQLite
+    let txt_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Standard Meeting Notes".to_string()),
+            content: Some("First line\nSecond line with unicode: 🚀\nThird line".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    let md_content = "# Project Architecture\n\n- [x] Feature 1\n- [ ] Feature 2\n\n```rust\nfn main() {}\n```";
+    let md_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Project Architecture".to_string()),
+            content: Some(md_content.to_string()),
+            format: Some("md".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // 2. Export single TXT note
+    let txt_export_dest = export_dir.join("Meeting.txt");
+    let res_txt = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: txt_note.id.clone(),
+            destination_path: txt_export_dest.to_string_lossy().to_string(),
+            format: ExportFormat::Txt,
+            overwrite: true,
+        },
+    ).unwrap();
+    assert_eq!(res_txt.note_id, txt_note.id);
+    assert!(txt_export_dest.exists());
+    let txt_disk = std::fs::read_to_string(&txt_export_dest).unwrap();
+    assert_eq!(txt_disk, "First line\nSecond line with unicode: 🚀\nThird line");
+
+    // 3. Export single Markdown note
+    let md_export_dest = export_dir.join("Architecture.md");
+    let res_md = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: md_note.id.clone(),
+            destination_path: md_export_dest.to_string_lossy().to_string(),
+            format: ExportFormat::Md,
+            overwrite: true,
+        },
+    ).unwrap();
+    assert_eq!(res_md.note_id, md_note.id);
+    assert!(md_export_dest.exists());
+    let md_disk = std::fs::read_to_string(&md_export_dest).unwrap();
+    assert_eq!(md_disk, md_content);
+
+    // 4. Scan files for import
+    let preview = ImportExportService::scan_candidates(
+        &conn,
+        &[
+            txt_export_dest.to_string_lossy().to_string(),
+            md_export_dest.to_string_lossy().to_string(),
+        ],
+    ).unwrap();
+    assert_eq!(preview.total_files, 2);
+    assert_eq!(preview.valid_files, 2);
+    assert_eq!(preview.invalid_files, 0);
+
+    // 5. Execute import into a user notebook
+    let target_nb = NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Imported Files".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let candidate_overrides: Vec<ImportCandidateOverride> = preview.candidates.iter().map(|c| {
+        ImportCandidateOverride {
+            id: c.id.clone(),
+            file_path: c.file_path.clone(),
+            selected: true,
+            custom_title: Some(format!("Imported - {}", c.proposed_title)),
+        }
+    }).collect();
+
+    let import_summary = ImportExportService::execute_import(
+        &mut conn,
+        ImportRequest {
+            operation_id: Some("op-test-import".to_string()),
+            candidates: candidate_overrides,
+            options: ImportOptions {
+                target_notebook_id: Some(target_nb.id.clone()),
+                duplicate_policy: DuplicatePolicy::ImportAsNew,
+            },
+        },
+    ).unwrap();
+
+    assert_eq!(import_summary.total_processed, 2);
+    assert_eq!(import_summary.imported_count, 2);
+    assert_eq!(import_summary.failed_count, 0);
+    assert_eq!(import_summary.outcome, Some(OperationOutcome::FullSuccess));
+
+    // Verify imported notes in DB
+    let imported_notes = NoteRepository::list_by_notebook(&conn, &target_nb.id).unwrap();
+    assert_eq!(imported_notes.len(), 2);
+    assert!(imported_notes.iter().any(|n| n.title == "Imported - Meeting" && n.format == "txt"));
+    assert!(imported_notes.iter().any(|n| n.title == "Imported - Architecture" && n.format == "md"));
+
+    // Verify search index immediately picks up imported content
+    let search_res = SearchService::search(&conn, "Feature", Some(10)).unwrap();
+    assert!(!search_res.is_empty(), "FTS search index must match imported note");
+}
+
+#[test]
+fn test_phase10_task_22_structured_json_roundtrip_with_internal_links_and_hierarchy() {
+    use personal_notepad_lib::storage::models::*;
+    use personal_notepad_lib::storage::services::ImportExportService;
+
+    let env_source = TestEnv::new();
+    let mut conn_source = init_connection(&env_source.paths.database_file).unwrap();
+    run_migrations(&mut conn_source).unwrap();
+
+    let export_dir = env_source.dir.join("json_exports");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    // 1. Create hierarchy: "Engineering" -> "Specs"
+    let nb_parent = NotebookRepository::create(
+        &conn_source,
+        CreateNotebookDto {
+            name: "Engineering".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+    let nb_child = NotebookRepository::create(
+        &conn_source,
+        CreateNotebookDto {
+            name: "Specs".to_string(),
+            parent_id: Some(nb_parent.id.clone()),
+        },
+    ).unwrap();
+
+    // 2. Create Tag: "sqlite"
+    let tag = TagRepository::create(&conn_source, "sqlite").unwrap();
+
+    // 3. Create Note 1 (Target)
+    let note1 = NoteRepository::create(
+        &conn_source,
+        CreateNoteDto {
+            title: Some("Core Database Engine".to_string()),
+            content: Some("Details of SQLite WAL mode engine.".to_string()),
+            format: Some("md".to_string()),
+            notebook_id: Some(nb_child.id.clone()),
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+    TagRepository::add_tag_to_note(&conn_source, &note1.id, &tag.id).unwrap();
+
+    // 4. Create Note 2 linking to Note 1
+    let note2 = NoteRepository::create(
+        &conn_source,
+        CreateNoteDto {
+            title: Some("Storage Architecture Spec".to_string()),
+            content: Some(format!("Check out [Core Database](notepad://note/{}) for internals.", note1.id)),
+            format: Some("md".to_string()),
+            notebook_id: Some(nb_child.id.clone()),
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // 5. Batch export as JSON
+    let json_dest = export_dir.join("specs_backup.json");
+    let export_summary = ImportExportService::export_notes_batch(
+        &conn_source,
+        ExportBatchRequest {
+            operation_id: Some("op-json-batch".to_string()),
+            scope: Some(ExportScope::AllNotes),
+            note_ids: vec![],
+            format: ExportFormat::Json,
+            destination_dir: export_dir.to_string_lossy().to_string(),
+            destination_file: Some(json_dest.to_string_lossy().to_string()),
+            include_metadata: true,
+            overwrite: true,
+        },
+    ).unwrap();
+
+    assert_eq!(export_summary.exported_count, 2); // 2 notes exported
+    assert_eq!(export_summary.outcome, Some(OperationOutcome::FullSuccess));
+    assert!(json_dest.exists());
+
+    let json_raw = std::fs::read_to_string(&json_dest).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json_raw).unwrap();
+    assert_eq!(parsed["version"], "1.0");
+    assert_eq!(parsed["format"], "personal-notepad-interchange");
+    assert_eq!(parsed["note_count"], 2);
+
+    // 6. Import into fresh, completely independent test database
+    let env_dest = TestEnv::new();
+    let mut conn_dest = init_connection(&env_dest.paths.database_file).unwrap();
+    run_migrations(&mut conn_dest).unwrap();
+
+    let scan_res = ImportExportService::scan_candidates(
+        &conn_dest,
+        &[json_dest.to_string_lossy().to_string()],
+    ).unwrap();
+    assert_eq!(scan_res.total_files, 1);
+    assert_eq!(scan_res.candidates[0].detected_format, ImportFormat::Json);
+
+    let import_summary = ImportExportService::execute_import(
+        &mut conn_dest,
+        ImportRequest {
+            operation_id: Some("op-import-fresh".to_string()),
+            candidates: vec![
+                ImportCandidateOverride {
+                    id: scan_res.candidates[0].id.clone(),
+                    file_path: scan_res.candidates[0].file_path.clone(),
+                    selected: true,
+                    custom_title: Some(scan_res.candidates[0].proposed_title.clone()),
+                }
+            ],
+            options: ImportOptions {
+                target_notebook_id: None, // Respect JSON document's hierarchy path!
+                duplicate_policy: DuplicatePolicy::ImportAsNew,
+            },
+        },
+    ).unwrap();
+
+    assert_eq!(import_summary.imported_count, 1); // 1 JSON file candidate successfully processed
+    assert_eq!(import_summary.outcome, Some(OperationOutcome::FullSuccess));
+
+    // Verify recreated notes in fresh database (contains 2 notes from the package)
+    let fresh_notes = NoteRepository::list(&conn_dest, false).unwrap();
+    assert_eq!(fresh_notes.len(), 2);
+
+    let fresh_note1 = fresh_notes.iter().find(|n| n.title == "Core Database Engine").unwrap();
+    let fresh_note2 = fresh_notes.iter().find(|n| n.title == "Storage Architecture Spec").unwrap();
+
+    // Verify IDs are newly generated local UUIDs (never reusing original IDs)
+    assert_ne!(fresh_note1.id, note1.id);
+    assert_ne!(fresh_note2.id, note2.id);
+
+    // Verify internal link in fresh_note2 was remapped to fresh_note1.id!
+    let expected_link = format!("notepad://note/{}", fresh_note1.id);
+    assert!(
+        fresh_note2.content.contains(&expected_link),
+        "Internal link must be rewritten to match new local UUID: content is: {}",
+        fresh_note2.content
+    );
+
+    // Verify recreated notebook hierarchy
+    let all_notebooks = NotebookRepository::list(&conn_dest).unwrap();
+    assert!(all_notebooks.iter().any(|nb| nb.name == "Engineering"));
+    assert!(all_notebooks.iter().any(|nb| nb.name == "Specs"));
+
+    // Verify recreated tag
+    let note1_tags = TagRepository::get_tags_for_note(&conn_dest, &fresh_note1.id).unwrap();
+    assert_eq!(note1_tags.len(), 1);
+    assert_eq!(note1_tags[0].name, "sqlite");
+}
+
+#[test]
+fn test_phase10_task_22_collision_and_cancellation_invariants() {
+    use personal_notepad_lib::storage::models::*;
+    use personal_notepad_lib::storage::services::ImportExportService;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let export_dir = env.dir.join("collisions");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    // 1. Pre-create a file on disk
+    let existing_file = export_dir.join("Meeting Notes.txt");
+    std::fs::write(&existing_file, "Original untouched content").unwrap();
+
+    // Create note with same title
+    let note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Meeting Notes".to_string()),
+            content: Some("New exported content".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // Batch export: collision resolution should produce Meeting Notes (1).txt
+    let summary = ImportExportService::export_notes_batch(
+        &conn,
+        ExportBatchRequest {
+            operation_id: Some("op-collision-test".to_string()),
+            scope: Some(ExportScope::SingleNote { note_id: note.id.clone() }),
+            note_ids: vec![],
+            format: ExportFormat::Txt,
+            destination_dir: export_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: false,
+        },
+    ).unwrap();
+
+    assert_eq!(summary.exported_count, 1);
+    assert_eq!(summary.outcome, Some(OperationOutcome::FullSuccess));
+
+    // Verify original file remained intact
+    assert_eq!(std::fs::read_to_string(&existing_file).unwrap(), "Original untouched content");
+
+    // Verify collision file was created
+    let collision_file = export_dir.join("Meeting Notes (1).txt");
+    assert!(collision_file.exists());
+    assert_eq!(std::fs::read_to_string(&collision_file).unwrap(), "New exported content");
+
+    // 2. Cancellation Test
+    let note_b = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Note B".to_string()),
+            content: Some("Content B".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+    let note_c = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Note C".to_string()),
+            content: Some("Content C".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    let op_cancel_id = "op-cancel-test".to_string();
+    let op_cancel_clone = op_cancel_id.clone();
+
+    let cancel_summary = ImportExportService::export_notes_batch_with_progress(
+        &conn,
+        ExportBatchRequest {
+            operation_id: Some(op_cancel_id.clone()),
+            scope: Some(ExportScope::SelectedNotes {
+                note_ids: vec![note.id.clone(), note_b.id.clone(), note_c.id.clone()],
+            }),
+            note_ids: vec![],
+            format: ExportFormat::Txt,
+            destination_dir: export_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: false,
+        },
+        move |prog| {
+            if prog.current_index == 1 {
+                ImportExportService::cancel_operation(&op_cancel_clone);
+            }
+        },
+    ).unwrap();
+
+    assert_eq!(cancel_summary.outcome, Some(OperationOutcome::Cancelled));
+    assert_eq!(cancel_summary.exported_count, 1);
+    assert_eq!(cancel_summary.cancelled_count, 2);
+}
+
+#[test]
+fn test_phase10_task_24_security_data_integrity_and_performance_verification() {
+    use personal_notepad_lib::storage::models::*;
+    use personal_notepad_lib::storage::services::ImportExportService;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).unwrap();
+    run_migrations(&mut conn).unwrap();
+
+    let export_dir = env.dir.join("sec_verification");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    // =========================================================================
+    // 1. Security Verification Suite
+    // =========================================================================
+
+    // A. Database Immutability during Export
+    let initial_content = "# Secret Roadmap\n\nConfidential system details with Unicode: 🔐✨";
+    let original_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Security Roadmap".to_string()),
+            content: Some(initial_content.to_string()),
+            format: Some("md".to_string()),
+            notebook_id: None,
+            is_favorite: Some(true),
+            is_pinned: Some(true),
+        },
+    ).unwrap();
+
+    let dest_file = export_dir.join("Security Roadmap.md");
+    let export_res = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: original_note.id.clone(),
+            destination_path: dest_file.to_string_lossy().to_string(),
+            format: ExportFormat::Md,
+            overwrite: true,
+        },
+    ).unwrap();
+    assert_eq!(export_res.note_id, original_note.id);
+
+    // Verify database record is 100% untouched
+    let rechecked_note = NoteRepository::get_by_id(&conn, &original_note.id).unwrap().unwrap();
+    assert_eq!(rechecked_note.title, original_note.title);
+    assert_eq!(rechecked_note.content, initial_content);
+    assert_eq!(rechecked_note.format, original_note.format);
+    assert_eq!(rechecked_note.created_at, original_note.created_at);
+    assert_eq!(rechecked_note.modified_at, original_note.modified_at);
+    assert_eq!(rechecked_note.is_favorite, true);
+    assert_eq!(rechecked_note.is_pinned, true);
+
+    // B. Rejection of Path Traversal & Managed Storage Escaping
+    let traversal_dest = env.paths.database_file.to_string_lossy().to_string();
+    let traversal_res = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: original_note.id.clone(),
+            destination_path: traversal_dest,
+            format: ExportFormat::Md,
+            overwrite: true,
+        },
+    );
+    assert!(
+        traversal_res.is_err(),
+        "Must reject exporting to managed database file"
+    );
+
+    // C. External ID Isolation Invariant
+    let malicious_json = format!(
+        r#"{{
+            "app": "personal-notepad",
+            "format": "personal-notepad-interchange",
+            "version": "1.0",
+            "exported_at": "2026-10-12T10:00:00Z",
+            "note_count": 1,
+            "notes": [{{
+                "export_id": "malicious-foreign-primary-key-12345",
+                "title": "Untrusted Note",
+                "content": "<script>alert('pwn')</script>",
+                "format": "txt"
+            }}]
+        }}"#
+    );
+    let untrusted_json_path = export_dir.join("untrusted.json");
+    std::fs::write(&untrusted_json_path, malicious_json).unwrap();
+
+    let scan_untrusted = ImportExportService::scan_candidates(
+        &conn,
+        &[untrusted_json_path.to_string_lossy().to_string()],
+    ).unwrap();
+    assert_eq!(scan_untrusted.valid_files, 1);
+
+    let import_untrusted = ImportExportService::execute_import(
+        &mut conn,
+        ImportRequest {
+            operation_id: Some("op-untrusted".to_string()),
+            candidates: vec![
+                ImportCandidateOverride {
+                    id: scan_untrusted.candidates[0].id.clone(),
+                    file_path: scan_untrusted.candidates[0].file_path.clone(),
+                    selected: true,
+                    custom_title: None,
+                }
+            ],
+            options: ImportOptions {
+                target_notebook_id: None,
+                duplicate_policy: DuplicatePolicy::ImportAsNew,
+            },
+        },
+    ).unwrap();
+    assert_eq!(import_untrusted.imported_count, 1);
+
+    // Verify external export_id was NEVER inserted into SQLite as primary key
+    let foreign_note_lookup = NoteRepository::get_by_id(&conn, "malicious-foreign-primary-key-12345").unwrap();
+    assert!(
+        foreign_note_lookup.is_none(),
+        "External export_id must never become SQLite primary key"
+    );
+
+    // Verify script tags are stored as literal inert text
+    let created_note_id = import_untrusted.results[0].created_note_id.as_ref().unwrap();
+    let imported_untrusted_note = NoteRepository::get_by_id(&conn, created_note_id).unwrap().unwrap();
+    assert_eq!(imported_untrusted_note.content, "<script>alert('pwn')</script>");
+
+    // =========================================================================
+    // 2. Data Integrity Verification Suite
+    // =========================================================================
+
+    // A. BOM Stripping and CRLF Normalization
+    let mut bom_crlf_content = vec![0xEF, 0xBB, 0xBF];
+    bom_crlf_content.extend_from_slice("Heading Line\r\nSecond Line with Hindi: नमस्ते\r\n\r\nEnd Line\r\n".as_bytes());
+    let bom_file_path = export_dir.join("bom_note.txt");
+    std::fs::write(&bom_file_path, bom_crlf_content).unwrap();
+
+    let scan_bom = ImportExportService::scan_candidates(
+        &conn,
+        &[bom_file_path.to_string_lossy().to_string()],
+    ).unwrap();
+    assert_eq!(scan_bom.valid_files, 1);
+
+    let import_bom = ImportExportService::execute_import(
+        &mut conn,
+        ImportRequest {
+            operation_id: Some("op-bom-import".to_string()),
+            candidates: vec![
+                ImportCandidateOverride {
+                    id: scan_bom.candidates[0].id.clone(),
+                    file_path: scan_bom.candidates[0].file_path.clone(),
+                    selected: true,
+                    custom_title: None,
+                }
+            ],
+            options: ImportOptions {
+                target_notebook_id: None,
+                duplicate_policy: DuplicatePolicy::ImportAsNew,
+            },
+        },
+    ).unwrap();
+    assert_eq!(import_bom.imported_count, 1);
+
+    let bom_note_id = import_bom.results[0].created_note_id.as_ref().unwrap();
+    let bom_note = NoteRepository::get_by_id(&conn, bom_note_id).unwrap().unwrap();
+    // BOM must be removed
+    assert!(!bom_note.content.starts_with('\u{FEFF}'));
+    // CRLF normalized to standard LF
+    assert!(!bom_note.content.contains('\r'));
+    assert_eq!(bom_note.content, "Heading Line\nSecond Line with Hindi: नमस्ते\n\nEnd Line\n");
+
+    // B. Binary and Corrupt UTF-8 Rejection
+    let binary_bytes = vec![b'H', b'e', b'l', b'l', b'o', 0x00, b'W', b'o', b'r', b'l', b'd'];
+    let binary_path = export_dir.join("corrupt.txt");
+    std::fs::write(&binary_path, binary_bytes).unwrap();
+
+    let scan_binary = ImportExportService::scan_candidates(
+        &conn,
+        &[binary_path.to_string_lossy().to_string()],
+    ).unwrap();
+    assert_eq!(scan_binary.invalid_files, 1);
+    assert_eq!(scan_binary.candidates[0].validation_status, ValidationStatus::Invalid);
+
+    // =========================================================================
+    // 3. Performance Verification Suite
+    // =========================================================================
+
+    // Rapid batch creation and export of 30 notes
+    let perf_notes_dir = export_dir.join("perf_exports");
+    std::fs::create_dir_all(&perf_notes_dir).unwrap();
+
+    let mut perf_note_ids = Vec::new();
+    for i in 0..30 {
+        let n = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some(format!("Perf Benchmark Note {:02}", i)),
+                content: Some(format!("High-speed benchmark note body content line {:02} with words.", i)),
+                format: Some("txt".to_string()),
+                notebook_id: None,
+                is_favorite: Some(false),
+                is_pinned: Some(false),
+            },
+        ).unwrap();
+        perf_note_ids.push(n.id);
+    }
+
+    let start_export = std::time::Instant::now();
+    let perf_export_summary = ImportExportService::export_notes_batch(
+        &conn,
+        ExportBatchRequest {
+            operation_id: Some("op-perf-test".to_string()),
+            scope: Some(ExportScope::SelectedNotes { note_ids: perf_note_ids }),
+            note_ids: vec![],
+            format: ExportFormat::Txt,
+            destination_dir: perf_notes_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: true,
+        },
+    ).unwrap();
+    let export_duration = start_export.elapsed();
+
+    assert_eq!(perf_export_summary.exported_count, 30);
+    assert_eq!(perf_export_summary.outcome, Some(OperationOutcome::FullSuccess));
+    assert!(export_duration.as_millis() < 500, "30 notes batch export must execute in < 500ms");
+
+    // Rapid candidate scanning of the 30 exported files
+    let mut files_to_scan = Vec::new();
+    for i in 0..30 {
+        files_to_scan.push(perf_notes_dir.join(format!("Perf Benchmark Note {:02}.txt", i)).to_string_lossy().to_string());
+    }
+
+    let start_scan = std::time::Instant::now();
+    let scan_perf = ImportExportService::scan_candidates(&conn, &files_to_scan).unwrap();
+    let scan_duration = start_scan.elapsed();
+
+    assert_eq!(scan_perf.total_files, 30);
+    assert_eq!(scan_perf.valid_files, 30);
+    assert!(scan_duration.as_millis() < 500, "30 files pre-scan must execute in < 500ms");
+}
 
 
 

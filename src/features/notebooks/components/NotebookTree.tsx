@@ -17,6 +17,7 @@ export interface NotebookTreeProps {
   onCreateNotebook?: (parentId?: string | null) => void;
   onRenameNotebook?: (notebook: Notebook) => void;
   onDeleteNotebook?: (notebook: Notebook) => void;
+  onExportNotebook?: (notebook: Notebook) => void;
   onDropNote?: (noteId: string, destinationNotebookId: string | null) => void;
   onRetry?: () => void;
   noteCounts?: Record<string, number>;
@@ -34,6 +35,7 @@ export const NotebookTree: React.FC<NotebookTreeProps> = ({
   onCreateNotebook,
   onRenameNotebook,
   onDeleteNotebook,
+  onExportNotebook,
   onDropNote,
   onRetry,
   noteCounts,
@@ -131,6 +133,7 @@ export const NotebookTree: React.FC<NotebookTreeProps> = ({
           onNewChild={(nb) => onCreateNotebook?.(nb.id)}
           onRename={(nb) => onRenameNotebook?.(nb)}
           onDelete={(nb) => onDeleteNotebook?.(nb)}
+          onExport={onExportNotebook}
         />
       )}
     </>

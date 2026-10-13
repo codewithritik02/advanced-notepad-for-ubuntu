@@ -46,6 +46,43 @@
   color: var(--color-text-secondary);
 }
 
+.notes-list-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.notes-list-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 3px 8px;
+  font-size: var(--font-size-xs, 12px);
+  font-weight: var(--font-weight-medium, 500);
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.12));
+  background-color: var(--color-bg-secondary, rgba(0, 0, 0, 0.04));
+  color: var(--color-text-secondary, #64748b);
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.notes-list-action-btn:hover {
+  background-color: var(--color-bg-hover, rgba(0, 0, 0, 0.08));
+  color: var(--color-text-primary, #0f172a);
+  border-color: var(--color-accent, #2563eb);
+}
+
+.notes-list-export-btn {
+  /* Inherits from .notes-list-action-btn */
+}
+
+.notes-list-import-btn {
+  /* Inherits from .notes-list-action-btn */
+}
+
 .notes-list-empty-trash-btn {
   display: inline-flex;
   align-items: center;
