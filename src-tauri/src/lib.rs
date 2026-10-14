@@ -16,6 +16,9 @@ pub fn run() {
                 .ensure_directories()
                 .map_err(|e| e.to_string())?;
 
+            // Recover from any interrupted restore before opening active database (Phase 11, Task 19)
+            let _ = storage::services::RestoreService::recover_if_interrupted(&storage_paths);
+
             let mut conn =
                 init_connection(&storage_paths.database_file).map_err(|e| e.to_string())?;
 
@@ -80,6 +83,26 @@ pub fn run() {
             commands::export_single_note,
             commands::preview_export_selection,
             commands::export_notes_batch,
+            commands::create_backup,
+            commands::get_backup_settings,
+            commands::update_backup_settings,
+            commands::check_and_run_automatic_backup,
+            commands::get_backup_scheduler_state,
+            commands::list_backups,
+            commands::delete_managed_backup,
+            commands::validate_backup,
+            commands::preview_restore,
+            commands::create_recovery_checkpoint,
+            commands::list_recovery_checkpoints,
+            commands::get_latest_recovery_checkpoint,
+            commands::stage_restore_archive,
+            commands::migrate_staged_database,
+            commands::cleanup_staged_restore,
+            commands::execute_restore,
+            commands::cancel_restore_operation,
+            commands::check_and_recover_interrupted_restore,
+            commands::validate_post_restore_state,
+            commands::get_backup_health_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

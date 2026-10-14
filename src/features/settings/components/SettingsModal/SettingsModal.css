@@ -23,6 +23,12 @@
   gap: var(--spacing-sm);
 }
 
+.settings-backup-action-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
 .settings-info-grid {
   display: flex;
   flex-direction: column;

@@ -8916,6 +8916,1626 @@ fn test_phase10_task_24_security_data_integrity_and_performance_verification() {
     assert!(scan_duration.as_millis() < 500, "30 files pre-scan must execute in < 500ms");
 }
 
+#[test]
+fn test_phase11_task_13_backup_listing_and_metadata_suite() {
+    use personal_notepad_lib::storage::{
+        models::{BackupCreateRequest, BackupType},
+        services::{BackupListService, BackupService},
+    };
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Initial listing is empty
+    let initial_list = BackupListService::list_backups(&conn, &env.paths).unwrap();
+    assert!(initial_list.is_empty(), "Initial backups listing must be empty");
+
+    // 2. Populate notes
+    let _n1 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Listing Test Note 1".to_string()),
+            content: Some("First note content for listing".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+    let _n2 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Listing Test Note 2".to_string()),
+            content: Some("Second note content".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(true),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // 3. Create a legitimate manual backup
+    let backup_res = BackupService::create_backup(
+        &conn,
+        &env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+
+    assert_eq!(backup_res.note_count, 2);
+    assert!(std::path::Path::new(&backup_res.file_path).exists());
+
+    // 4. List backups and verify discovered metadata
+    let list1 = BackupListService::list_backups(&conn, &env.paths).unwrap();
+    assert_eq!(list1.len(), 1);
+
+    let item1 = &list1[0];
+    assert_eq!(item1.file_name, backup_res.file_name);
+    assert_eq!(item1.file_path, backup_res.file_path);
+    assert_eq!(item1.backup_type, BackupType::Manual);
+    assert_eq!(item1.note_count, Some(2));
+    assert!(item1.file_size > 0);
+    assert!(item1.is_valid, "Legitimate archive must be flagged as valid");
+    assert!(!item1.is_verified, "Discovered archive must be unverified by default");
+    assert!(item1.issue_summary.is_none());
+
+    // 5. Place a damaged/corrupt file in backups directory
+    let corrupt_path = env.paths.backups_dir.join("damaged-archive.pnbackup");
+    std::fs::write(&corrupt_path, b"Not a valid zip archive file").unwrap();
+
+    // Re-list: must include both files without crashing or throwing
+    let list2 = BackupListService::list_backups(&conn, &env.paths).unwrap();
+    assert_eq!(list2.len(), 2);
+
+    let corrupt_item = list2.iter().find(|i| i.file_name == "damaged-archive.pnbackup").unwrap();
+    assert!(!corrupt_item.is_valid, "Corrupt file must have is_valid = false");
+    assert!(!corrupt_item.is_verified);
+    assert!(corrupt_item.issue_summary.is_some(), "Corrupt item must have an issue summary");
+
+    // 6. Test protected deletion guards
+    let active_db_str = env.paths.database_file.to_string_lossy().to_string();
+    let db_del_err = BackupListService::delete_managed_backup(&conn, &env.paths, &active_db_str);
+    assert!(db_del_err.is_err(), "Must reject deletion of active database");
+
+    // 7. Legitimate deletion of managed backup
+    let delete_ok = BackupListService::delete_managed_backup(&conn, &env.paths, &backup_res.file_path).unwrap();
+    assert!(delete_ok);
+    assert!(!std::path::Path::new(&backup_res.file_path).exists(), "File must be removed from disk");
+
+    // Re-list reflects deletion
+    let list3 = BackupListService::list_backups(&conn, &env.paths).unwrap();
+    assert_eq!(list3.len(), 1);
+    assert_eq!(list3[0].file_name, "damaged-archive.pnbackup");
+}
+
+#[test]
+fn test_phase11_task_14_backup_validation_suite() {
+    use personal_notepad_lib::storage::{
+        models::{
+            BackupCompatibilityStatus, BackupCreateRequest, BackupType,
+            BackupValidationIssueSeverity, CreateNoteDto,
+        },
+        services::{BackupService, BackupValidationService},
+    };
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Populate notes and attachments in test environment
+    let n1 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Val Test Note 1".to_string()),
+            content: Some("First note content for validation".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    let _n2 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Val Test Note 2".to_string()),
+            content: Some("Second note content".to_string()),
+            format: Some("md".to_string()),
+            notebook_id: None,
+            is_favorite: Some(true),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // Attach a real managed file
+    let att_subpath = format!("{}/test_file.txt", n1.id);
+    let disk_file = env.paths.attachments_dir.join(&att_subpath);
+    std::fs::create_dir_all(disk_file.parent().unwrap()).unwrap();
+    std::fs::write(&disk_file, b"Sample attachment text for validation").unwrap();
+
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            "val-att-1",
+            n1.id,
+            "test_file.txt",
+            att_subpath,
+            "text/plain",
+            37,
+            chrono::Utc::now().to_rfc3339(),
+            chrono::Utc::now().to_rfc3339()
+        ],
+    ).unwrap();
+
+    // 2. Create legitimate manual backup
+    let backup_res = BackupService::create_backup(
+        &conn,
+        &env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+
+    let archive_path = std::path::Path::new(&backup_res.file_path);
+    assert!(archive_path.exists());
+
+    // 3. Deep validate the backup before restore
+    let val_res = BackupValidationService::validate_backup(archive_path, &env.paths).unwrap();
+    assert!(val_res.is_valid, "Valid backup must pass deep validation");
+    assert_eq!(val_res.compatibility, BackupCompatibilityStatus::Compatible);
+    assert!(!val_res.issues.iter().any(|i| i.severity == BackupValidationIssueSeverity::Error));
+
+    let manifest = val_res.manifest.expect("Manifest must be present");
+    assert_eq!(manifest.database.note_count, 2);
+    assert_eq!(manifest.attachments_summary.total_files, 1);
+
+    // 4. Invariant: Live database was not modified by validation
+    let live_notes_count: i64 = conn
+        .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(live_notes_count, 2, "Live database notes must remain unchanged");
+
+    // 5. Test validation of damaged archive
+    let damaged_archive = env.paths.backups_dir.join("damaged.pnbackup");
+    std::fs::write(&damaged_archive, b"Not valid zip data").unwrap();
+
+    let damaged_val = BackupValidationService::validate_backup(&damaged_archive, &env.paths).unwrap();
+    assert!(!damaged_val.is_valid, "Damaged archive must be invalid");
+    assert_eq!(damaged_val.compatibility, BackupCompatibilityStatus::Corrupted);
+    assert!(damaged_val.issues.iter().any(|i| i.code == "ARCHIVE_READ_FAILED"));
+
+    // 6. Test guard against validating live database directly
+    let live_val_err = BackupValidationService::validate_backup(&env.paths.database_file, &env.paths);
+    assert!(live_val_err.is_err(), "Must reject live database file");
+}
+
+#[test]
+fn test_phase11_task_15_restore_preview_and_confirmation_suite() {
+    use personal_notepad_lib::storage::{
+        models::{
+            BackupCompatibilityStatus, BackupCreateRequest, BackupType, CreateNoteDto,
+        },
+        services::{BackupService, RestoreService},
+    };
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Populate database
+    let _n1 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Restore Target Note 1".to_string()),
+            content: Some("First note content".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    let _n2 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Restore Target Note 2".to_string()),
+            content: Some("Second note content".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            is_favorite: Some(true),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    // 2. Create valid manual backup
+    let backup_res = BackupService::create_backup(
+        &conn,
+        &env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+
+    let archive_path = std::path::Path::new(&backup_res.file_path);
+
+    // 3. Generate preview of restore
+    let preview = RestoreService::preview_restore(archive_path, &env.paths).unwrap();
+
+    assert!(preview.can_restore, "Legitimate backup must permit restore");
+    assert_eq!(preview.note_count, 2);
+    assert_eq!(preview.file_name, backup_res.file_name);
+    assert_eq!(preview.compatibility, BackupCompatibilityStatus::Compatible);
+    assert!(preview.warnings.is_empty(), "Healthy backup preview has no warnings");
+
+    // 4. Invariant: Preview leaves live application database completely untouched
+    let live_count: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(live_count, 2, "Live database notes must remain unchanged");
+
+    // 5. Corrupted archive preview blocks restoration
+    let corrupted_file = env.paths.backups_dir.join("broken_preview.pnbackup");
+    std::fs::write(&corrupted_file, b"corrupted non-zip content").unwrap();
+
+    let corrupt_preview = RestoreService::preview_restore(&corrupted_file, &env.paths).unwrap();
+    assert!(!corrupt_preview.can_restore, "Corrupt backup must NOT permit restore");
+    assert_eq!(corrupt_preview.compatibility, BackupCompatibilityStatus::Corrupted);
+    assert!(!corrupt_preview.warnings.is_empty(), "Corrupt backup must list errors in warnings");
+}
+
+#[test]
+fn test_phase11_task_16_recovery_checkpoint_suite() {
+    use personal_notepad_lib::storage::{
+        models::{
+            BackupCompatibilityStatus, BackupType, CreateNoteDto, CreateNotebookDto,
+        },
+        repositories::{NotebookRepository, TagRepository},
+        services::{BackupListService, BackupValidationService, RestoreService},
+    };
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Create a notebook
+    let nb = NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Work Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    // 2. Create active note & trashed note
+    let n1 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Active Note Before Restore".to_string()),
+            content: Some("Active note body with vital information".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: Some(nb.id.clone()),
+            is_favorite: Some(true),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+
+    let n2 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Trashed Note Before Restore".to_string()),
+            content: Some("Trash content that must be preserved".to_string()),
+            format: Some("md".to_string()),
+            notebook_id: None,
+            is_favorite: Some(false),
+            is_pinned: Some(false),
+        },
+    ).unwrap();
+    NoteRepository::soft_delete(&conn, &n2.id).unwrap();
+
+    // 3. Create a tag and assign it
+    let tag = TagRepository::create(&conn, "urgent").unwrap();
+    TagRepository::add_tag_to_note(&conn, &n1.id, &tag.id).unwrap();
+
+    // 4. Create an attachment for active note
+    let att_dir = env.paths.get_note_attachments_dir(&n1.id).unwrap();
+    let att_file_name = format!("{}.txt", uuid::Uuid::new_v4());
+    let att_disk_path = att_dir.join(&att_file_name);
+    std::fs::write(&att_disk_path, b"Sample attachment text data").unwrap();
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            n1.id,
+            "sample.txt",
+            format!("{}/{}", n1.id, att_file_name),
+            "text/plain",
+            27i64,
+            now_str,
+            now_str,
+        ],
+    ).unwrap();
+
+    // 5. Create Pre-Restore Recovery Checkpoint
+    let checkpoint = RestoreService::create_recovery_checkpoint(&conn, &env.paths).unwrap();
+
+    assert!(checkpoint.is_verified, "Checkpoint must be marked verified");
+    assert_eq!(checkpoint.note_count, 1, "Must capture 1 active note");
+    assert_eq!(checkpoint.trash_count, 1, "Must capture 1 trashed note");
+    assert_eq!(checkpoint.notebook_count, 1, "Must capture 1 notebook");
+    assert_eq!(checkpoint.tag_count, 1, "Must capture 1 tag");
+    assert_eq!(checkpoint.attachment_count, 1, "Must capture 1 attachment");
+    assert_eq!(checkpoint.schema_version, 4, "Current schema is v4");
+    assert!(checkpoint.file_size > 0);
+    assert!(std::path::Path::new(&checkpoint.file_path).exists(), "Checkpoint file must exist on disk");
+    assert!(checkpoint.file_path.contains("checkpoints"), "Must reside in checkpoints directory");
+
+    // 6. Independent validation of checkpoint
+    let val_res = BackupValidationService::validate_backup(std::path::Path::new(&checkpoint.file_path), &env.paths).unwrap();
+    assert!(val_res.is_valid, "Recovery checkpoint must pass deep validation");
+    assert_eq!(val_res.compatibility, BackupCompatibilityStatus::Compatible);
+    let manifest = val_res.manifest.unwrap();
+    assert_eq!(manifest.backup_type, BackupType::Checkpoint, "Manifest must declare backup_type as Checkpoint");
+    assert_eq!(manifest.attachments_summary.total_files, 1);
+
+    // 7. Invariant: Live working database was left completely untouched
+    let live_notes: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(live_notes, 2, "Live database must remain unchanged");
+
+    // 8. Test listing & latest checkpoint retrieval
+    let chk_list = RestoreService::list_recovery_checkpoints(&env.paths).unwrap();
+    assert_eq!(chk_list.len(), 1);
+    assert_eq!(chk_list[0].checkpoint_id, checkpoint.checkpoint_id);
+
+    let latest_chk = RestoreService::get_latest_recovery_checkpoint(&env.paths).unwrap();
+    assert!(latest_chk.is_some());
+    assert_eq!(latest_chk.unwrap().file_path, checkpoint.file_path);
+
+    // 9. Verify BackupListService discovers checkpoints with Checkpoint type
+    let backups_listing = BackupListService::list_backups(&conn, &env.paths).unwrap();
+    assert!(
+        backups_listing.iter().any(|b| b.file_path == checkpoint.file_path && b.backup_type == BackupType::Checkpoint),
+        "BackupListService must include recovery checkpoint"
+    );
+
+    // 10. Immutability and collision safety: creating another checkpoint does NOT overwrite previous one
+    let chk2 = RestoreService::create_recovery_checkpoint(&conn, &env.paths).unwrap();
+    assert!(std::path::Path::new(&checkpoint.file_path).exists(), "Original checkpoint must still exist");
+    assert!(std::path::Path::new(&chk2.file_path).exists(), "Second checkpoint must exist");
+
+    let updated_list = RestoreService::list_recovery_checkpoints(&env.paths).unwrap();
+    assert_eq!(updated_list.len(), 2, "Both checkpoints must exist independently");
+}
+
+#[test]
+fn test_phase11_tasks_17_and_18_staged_restore_and_migration() {
+    use personal_notepad_lib::storage::{
+        init_connection, run_migrations, run_migrations_custom, MIGRATIONS,
+        models::{BackupCreateRequest, BackupType, CreateNoteDto, CreateNotebookDto},
+        repositories::{NotebookRepository, NoteRepository, TagRepository},
+        services::{BackupService, RestoreService},
+    };
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Seed live data: notebook, note, tag, attachment
+    let notebook = NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Staging Tests Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Staged Note Title".to_string()),
+            content: Some("Live content for staging test".to_string()),
+            notebook_id: Some(notebook.id.clone()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let tag = TagRepository::create(&conn, "staged-tag").unwrap();
+    TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
+
+    let att_dir = env.paths.get_note_attachments_dir(&note.id).unwrap();
+    let att_file_name = format!("{}.pdf", uuid::Uuid::new_v4());
+    let att_disk_path = att_dir.join(&att_file_name);
+    std::fs::write(&att_disk_path, b"%PDF-1.4 test staged restore attachment").unwrap();
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            note.id,
+            "sample.pdf",
+            format!("{}/{}", note.id, att_file_name),
+            "application/pdf",
+            39i64,
+            now_str,
+            now_str,
+        ],
+    ).unwrap();
+
+    // 2. Create backup archive
+    let backup_res = BackupService::create_backup(
+        &conn,
+        &env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+
+    let archive_path = std::path::Path::new(&backup_res.file_path);
+
+    // 3. Stage the candidate archive (Task 17)
+    let staged = RestoreService::stage_restore_archive(archive_path, &env.paths).unwrap();
+    assert!(staged.is_valid);
+    assert!(staged.manifest_present);
+    assert_eq!(staged.note_count, 1);
+    assert_eq!(staged.notebook_count, 1);
+    assert_eq!(staged.tag_count, 1);
+    assert_eq!(staged.attachment_count, 1);
+    assert_eq!(staged.initial_schema_version, 4);
+    assert!(std::path::Path::new(&staged.staging_dir).exists());
+    assert!(std::path::Path::new(&staged.database_path).exists());
+
+    let staging_path = std::path::PathBuf::from(&staged.staging_dir);
+
+    // 4. Test Task 18 migration on staged database (already v4 -> no-op)
+    let mig_res = RestoreService::migrate_staged_database(&staging_path, &env.paths).unwrap();
+    assert_eq!(mig_res.previous_schema_version, 4);
+    assert_eq!(mig_res.migrated_schema_version, 4);
+    assert_eq!(mig_res.migrations_applied, 0);
+    assert!(mig_res.is_verified);
+    assert_eq!(mig_res.note_count, 1);
+    assert_eq!(mig_res.attachment_count, 1);
+
+    // 5. Clean up staging directory
+    let cleaned = RestoreService::cleanup_staged_restore(&staging_path, &env.paths).unwrap();
+    assert!(cleaned);
+    assert!(!staging_path.exists(), "Staging folder must be deleted after cleanup");
+
+    // 6. Test Task 18 legacy schema v1 staged restore & migration
+    let legacy_db_dir = env.paths.root.join("legacy_test");
+    std::fs::create_dir_all(&legacy_db_dir).unwrap();
+    let legacy_db_path = legacy_db_dir.join("database.sqlite");
+
+    let mut v1_conn = init_connection(&legacy_db_path).unwrap();
+    run_migrations_custom(&mut v1_conn, &MIGRATIONS[..1]).unwrap();
+
+    let legacy_note_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    v1_conn.execute(
+        "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_deleted)
+         VALUES (?1, 'Legacy Integration Note', 'Migrated from v1', 'txt', ?2, ?2, 0)",
+        [&legacy_note_id, &now],
+    ).unwrap();
+    drop(v1_conn);
+
+    let legacy_archive_path = env.paths.backups_dir.join("legacy_v1_archive.pnbackup");
+    {
+        let file = std::fs::File::create(&legacy_archive_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("database.sqlite", options).unwrap();
+        let db_bytes = std::fs::read(&legacy_db_path).unwrap();
+        std::io::Write::write_all(&mut zip, &db_bytes).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let legacy_staged = RestoreService::stage_restore_archive(&legacy_archive_path, &env.paths).unwrap();
+    assert_eq!(legacy_staged.initial_schema_version, 1);
+
+    let legacy_staging_path = std::path::PathBuf::from(&legacy_staged.staging_dir);
+    let legacy_mig = RestoreService::migrate_staged_database(&legacy_staging_path, &env.paths).unwrap();
+    assert_eq!(legacy_mig.previous_schema_version, 1);
+    assert_eq!(legacy_mig.migrated_schema_version, 4);
+    assert_eq!(legacy_mig.migrations_applied, 3);
+    assert_eq!(legacy_mig.note_count, 1);
+    assert!(legacy_mig.is_verified);
+
+    RestoreService::cleanup_staged_restore(&legacy_staging_path, &env.paths).unwrap();
+
+    // 7. Verify invariant: Live database remains 100% intact and unaffected
+    let live_notes: i64 = conn.query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get(0)).unwrap();
+    assert_eq!(live_notes, 1, "Live database must remain completely untouched");
+}
+
+#[test]
+fn test_phase11_task_19_restore_activation_and_rollback() {
+    use personal_notepad_lib::storage::{
+        init_connection, run_migrations,
+        models::{
+            BackupCreateRequest, BackupProgressEvent, BackupProgressStage, BackupRestoreRequest,
+            BackupType, CreateNoteDto, CreateNotebookDto, RestoreActivationMarker,
+            RestoreActivationPhase,
+        },
+        repositories::{NotebookRepository, NoteRepository, TagRepository},
+        services::{BackupService, RestoreService},
+    };
+    use std::sync::{Arc, Mutex};
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Seed live data (this is the live active data prior to restore)
+    let live_nb = NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Live Pre-Restore Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let live_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Live Note Before Restore".to_string()),
+            content: Some("Live content that should be backed up in recovery checkpoint".to_string()),
+            notebook_id: Some(live_nb.id.clone()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let live_att_dir = env.paths.get_note_attachments_dir(&live_note.id).unwrap();
+    let live_att_file = format!("{}.txt", uuid::Uuid::new_v4());
+    std::fs::write(live_att_dir.join(&live_att_file), b"live note attachment data").unwrap();
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            live_note.id,
+            "live.txt",
+            format!("{}/{}", live_note.id, live_att_file),
+            "text/plain",
+            26i64,
+            now_str,
+            now_str,
+        ],
+    ).unwrap();
+
+    // 2. Prepare a candidate backup in a distinct environment
+    let cand_env = TestEnv::new();
+    let mut cand_conn = init_connection(&cand_env.paths.database_file).expect("Candidate conn failed");
+    run_migrations(&mut cand_conn).expect("Candidate migrations failed");
+
+    let cand_nb = NotebookRepository::create(
+        &cand_conn,
+        CreateNotebookDto {
+            name: "Candidate Archive Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let cand_note = NoteRepository::create(
+        &cand_conn,
+        CreateNoteDto {
+            title: Some("Candidate Restored Note".to_string()),
+            content: Some("Candidate restored note body with keyword quantum".to_string()),
+            notebook_id: Some(cand_nb.id.clone()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let cand_tag = TagRepository::create(&cand_conn, "restored-quantum-tag").unwrap();
+    TagRepository::add_tag_to_note(&cand_conn, &cand_note.id, &cand_tag.id).unwrap();
+
+    let cand_att_dir = cand_env.paths.get_note_attachments_dir(&cand_note.id).unwrap();
+    let cand_att_file = format!("{}.pdf", uuid::Uuid::new_v4());
+    std::fs::write(cand_att_dir.join(&cand_att_file), b"%PDF-1.4 candidate restored attachment content").unwrap();
+
+    let cand_now = chrono::Utc::now().to_rfc3339();
+    cand_conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            cand_note.id,
+            "quantum.pdf",
+            format!("{}/{}", cand_note.id, cand_att_file),
+            "application/pdf",
+            48i64,
+            cand_now,
+            cand_now,
+        ],
+    ).unwrap();
+
+    let candidate_backup = BackupService::create_backup(
+        &cand_conn,
+        &cand_env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+    drop(cand_conn);
+
+    let archive_path = std::path::PathBuf::from(&candidate_backup.file_path);
+    assert!(archive_path.exists());
+
+    // 3. Execute controlled restore with progress recording
+    let stages_captured = Arc::new(Mutex::new(Vec::new()));
+    let stages_clone = Arc::clone(&stages_captured);
+
+    let restore_res = RestoreService::execute_restore(
+        &mut conn,
+        &env.paths,
+        BackupRestoreRequest {
+            file_path: archive_path.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        Some(move |ev: BackupProgressEvent| {
+            stages_clone.lock().unwrap().push(ev.stage);
+        }),
+    ).unwrap();
+
+    // 4. Validate restore result summary
+    assert!(restore_res.success);
+    assert_eq!(restore_res.note_count, 1);
+    assert_eq!(restore_res.notebook_count, 1);
+    assert_eq!(restore_res.tag_count, 1);
+    assert_eq!(restore_res.attachment_count, 1);
+    assert_eq!(restore_res.trash_count, 0);
+
+    // Verify progress events occurred across lifecycle
+    let stages = stages_captured.lock().unwrap().clone();
+    assert!(stages.contains(&BackupProgressStage::Starting));
+    assert!(stages.contains(&BackupProgressStage::ExtractingStaging));
+    assert!(stages.contains(&BackupProgressStage::RebuildingSearchIndex));
+    assert!(stages.contains(&BackupProgressStage::Completed));
+
+    // 5. Pre-restore recovery checkpoint must exist and be verified
+    let chk_path = std::path::Path::new(&restore_res.checkpoint_path);
+    assert!(chk_path.exists(), "Pre-restore checkpoint must be preserved on disk");
+    let chk_val = RestoreService::validate_recovery_checkpoint(chk_path, &env.paths).unwrap();
+    assert!(chk_val.is_valid);
+    assert_eq!(chk_val.manifest.unwrap().database.note_count, 1, "Checkpoint captured pre-restore state");
+
+    // 6. Verify live database now holds candidate data and NOT old data
+    let current_titles: Vec<String> = conn
+        .prepare("SELECT title FROM notes WHERE is_deleted = 0")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(current_titles, vec!["Candidate Restored Note"]);
+
+    // Verify restored attachment exists on disk
+    let restored_att_on_disk = env.paths.attachments_dir.join(&cand_note.id).join(&cand_att_file);
+    assert!(restored_att_on_disk.exists(), "Restored attachment file must exist on disk");
+
+    // Verify Search index works on restored content
+    let fts_count: i64 = conn
+        .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'quantum*'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fts_count, 1, "FTS5 search index must find restored note");
+
+    // 7. Verify staging directory and marker are cleaned up on success
+    assert!(!env.paths.restore_marker_file().exists(), "Marker must be cleared on success");
+    let remaining_staging = std::fs::read_dir(&env.paths.backups_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with(".restore_staging_"))
+        .count();
+    assert_eq!(remaining_staging, 0, "All staging directories must be cleaned up");
+
+    // 8. Test crash recovery / interrupted marker handling
+    let op_id = uuid::Uuid::new_v4().to_string();
+    let sim_db_backup = env.paths.root.join(format!(".db_pre_restore_{op_id}.sqlite"));
+    let sim_att_backup = env.paths.root.join(format!(".att_pre_restore_{op_id}"));
+
+    // Copy live database as swap backup
+    std::fs::copy(&env.paths.database_file, &sim_db_backup).unwrap();
+    std::fs::create_dir_all(&sim_att_backup).unwrap();
+
+    let marker = RestoreActivationMarker {
+        operation_id: op_id,
+        started_at: chrono::Utc::now().to_rfc3339(),
+        candidate_archive_path: archive_path.to_string_lossy().to_string(),
+        staging_dir: env.paths.backups_dir.join(".restore_staging_test_crash").to_string_lossy().to_string(),
+        checkpoint_path: restore_res.checkpoint_path.clone(),
+        live_db_backup_path: sim_db_backup.to_string_lossy().to_string(),
+        live_attachments_backup_path: sim_att_backup.to_string_lossy().to_string(),
+        phase: RestoreActivationPhase::FilesSwapped,
+    };
+    RestoreService::write_activation_marker(&marker, &env.paths).unwrap();
+    assert!(env.paths.restore_marker_file().exists());
+
+    // Call recover_if_interrupted
+    let recovered = RestoreService::recover_if_interrupted(&env.paths).unwrap();
+    assert!(recovered.is_some(), "Interrupted marker must trigger crash recovery");
+    assert!(!env.paths.restore_marker_file().exists(), "Marker must be purged after crash recovery");
+    assert!(!sim_db_backup.exists(), "Swap backup file must be restored/removed");
+}
+
+#[test]
+fn test_phase11_task_20_post_restore_validation_and_restart() {
+    use personal_notepad_lib::storage::{
+        init_connection, run_migrations,
+        models::{
+            BackupCreateRequest, BackupRestoreRequest, BackupType, CreateNoteDto, CreateNotebookDto,
+        },
+        repositories::{NotebookRepository, NoteRepository, TagRepository},
+        services::{BackupService, RestoreService},
+    };
+
+    // 1. Live environment
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    let old_nb = NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Old Pre-Restore Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let _old_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Old Note to be Overwritten".to_string()),
+            content: Some("Old content".to_string()),
+            notebook_id: Some(old_nb.id),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // 2. Candidate environment
+    let cand_env = TestEnv::new();
+    let mut cand_conn = init_connection(&cand_env.paths.database_file).expect("Cand connection failed");
+    run_migrations(&mut cand_conn).expect("Cand migration failed");
+
+    let restored_nb = NotebookRepository::create(
+        &cand_conn,
+        CreateNotebookDto {
+            name: "Restored Astrophysics Notebook".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let target_ref_id = uuid::Uuid::new_v4().to_string();
+    let restored_note = NoteRepository::create(
+        &cand_conn,
+        CreateNoteDto {
+            title: Some("Pulsar Radiations".to_string()),
+            content: Some(format!("Observational data with [Target Note](notepad://note/{target_ref_id}) and keyword interstellar.")),
+            notebook_id: Some(restored_nb.id.clone()),
+            is_favorite: Some(true),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let restored_tag = TagRepository::create(&cand_conn, "astronomy-tag").unwrap();
+    TagRepository::add_tag_to_note(&cand_conn, &restored_note.id, &restored_tag.id).unwrap();
+
+    // Attach file
+    let att_dir = cand_env.paths.get_note_attachments_dir(&restored_note.id).unwrap();
+    let att_filename = format!("{}.dat", uuid::Uuid::new_v4());
+    std::fs::write(att_dir.join(&att_filename), b"binary pulsar spectra data").unwrap();
+
+    let cand_now = chrono::Utc::now().to_rfc3339();
+    cand_conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            restored_note.id,
+            "pulsar.dat",
+            format!("{}/{}", restored_note.id, att_filename),
+            "application/octet-stream",
+            26i64,
+            cand_now,
+            cand_now,
+        ],
+    ).unwrap();
+
+    // Setting
+    cand_conn.execute(
+        "INSERT OR REPLACE INTO settings (key, value) VALUES ('theme', 'dark')",
+        [],
+    ).unwrap();
+
+    // Create candidate backup
+    let candidate_backup = BackupService::create_backup(
+        &cand_conn,
+        &cand_env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).unwrap();
+    drop(cand_conn);
+
+    // 3. Execute restore
+    let restore_result = RestoreService::execute_restore(
+        &mut conn,
+        &env.paths,
+        BackupRestoreRequest {
+            file_path: candidate_backup.file_path.clone(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    ).unwrap();
+
+    assert!(restore_result.success);
+    let val_report = restore_result.validation_report.expect("PostRestoreValidationReport must be present");
+    assert!(val_report.is_valid);
+    assert!(val_report.integrity_check_passed);
+    assert!(val_report.foreign_key_check_passed);
+    assert_eq!(val_report.schema_version, 4);
+    assert_eq!(val_report.note_count, 1);
+    assert_eq!(val_report.notebook_count, 1);
+    assert_eq!(val_report.tag_count, 1);
+    assert_eq!(val_report.attachment_count, 1);
+    assert!(val_report.attachments_verified_on_disk);
+    assert!(val_report.fts_rebuilt_and_queryable);
+    assert!(val_report.internal_links_verified);
+    assert!(val_report.settings_verified);
+
+    // 4. Standalone verification check via verify_and_reinitialize_activated_state
+    let standalone_report = RestoreService::verify_and_reinitialize_activated_state(&conn, &env.paths).unwrap();
+    assert_eq!(val_report, standalone_report);
+
+    // 5. Verify live active state
+    let note_titles: Vec<String> = conn
+        .prepare("SELECT title FROM notes WHERE is_deleted = 0")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(note_titles, vec!["Pulsar Radiations"]);
+
+    let theme_setting: String = conn
+        .query_row("SELECT value FROM settings WHERE key = 'theme'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(theme_setting, "dark");
+
+    // FTS5 test
+    let fts_count: i64 = conn
+        .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'interstellar*'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(fts_count, 1);
+
+    // 6. Simulate complete application exit and restart lifecycle
+    drop(conn);
+
+    let recovery_check = RestoreService::recover_if_interrupted(&env.paths).unwrap();
+    assert!(recovery_check.is_none(), "No recovery marker should remain after clean restore");
+
+    let mut restarted_conn = init_connection(&env.paths.database_file).expect("Reopening after restart failed");
+    run_migrations(&mut restarted_conn).expect("Migrations check on restart failed");
+
+    // 7. Verify all restored state persists across restart
+    let restarted_titles: Vec<String> = restarted_conn
+        .prepare("SELECT title FROM notes WHERE is_deleted = 0")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(restarted_titles, vec!["Pulsar Radiations"]);
+
+    let restarted_fts: i64 = restarted_conn
+        .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'interstellar*'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(restarted_fts, 1);
+
+    let att_disk_path = env.paths.attachments_dir.join(&restored_note.id).join(&att_filename);
+    assert!(att_disk_path.exists(), "Attachment must remain on disk after restart");
+}
+
+#[test]
+fn test_phase11_task_21_restore_progress_cancellation_and_feedback() {
+    use personal_notepad_lib::storage::{
+        init_connection, run_migrations,
+        models::{
+            BackupCreateRequest, BackupProgressEvent, BackupProgressStage, BackupRestoreRequest,
+            BackupType, CreateNoteDto,
+        },
+        repositories::NoteRepository,
+        services::{BackupService, RestoreService},
+    };
+    use uuid::Uuid;
+    use std::sync::{Arc, Mutex};
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Setup candidate backup archive
+    let cand_env = TestEnv::new();
+    let mut cand_conn = init_connection(&cand_env.paths.database_file).expect("Cand connection failed");
+    run_migrations(&mut cand_conn).expect("Cand migration failed");
+    let cand_note = NoteRepository::create(
+        &cand_conn,
+        CreateNoteDto {
+            title: Some("Galactic Astronomy".to_string()),
+            content: Some("Observational astronomy notes.".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            ..Default::default()
+        },
+    ).unwrap();
+    let cand_backup = BackupService::create_backup(
+        &cand_conn,
+        &cand_env.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(BackupProgressEvent)>,
+    ).unwrap();
+
+    // 2. Setup live database with initial working note
+    let _live_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Initial Live Note".to_string()),
+            content: Some("Initial content that should survive until confirmed restore".to_string()),
+            format: Some("txt".to_string()),
+            notebook_id: None,
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // 3. Test Full Progression and Cancellable Flags during restore
+    let op_id = format!("op-prog-{}", Uuid::new_v4());
+    let events = Arc::new(Mutex::new(Vec::<BackupProgressEvent>::new()));
+    let events_clone = Arc::clone(&events);
+
+    let res = RestoreService::execute_restore(
+        &mut conn,
+        &env.paths,
+        BackupRestoreRequest {
+            file_path: cand_backup.file_path.clone(),
+            operation_id: Some(op_id.clone()),
+        },
+        Some(move |evt: BackupProgressEvent| {
+            events_clone.lock().unwrap().push(evt);
+        }),
+    ).unwrap();
+
+    assert!(res.success);
+    let captured = events.lock().unwrap().clone();
+
+    // Verify all explicit measured stages are present
+    let stages: Vec<BackupProgressStage> = captured.iter().map(|e| e.stage).collect();
+    assert!(stages.contains(&BackupProgressStage::Starting));
+    assert!(stages.contains(&BackupProgressStage::ValidatingBackup));
+    assert!(stages.contains(&BackupProgressStage::PreparingStagingData));
+    assert!(stages.contains(&BackupProgressStage::CheckingDatabaseIntegrity));
+    assert!(stages.contains(&BackupProgressStage::CheckingAttachments));
+    assert!(stages.contains(&BackupProgressStage::CreatingCheckpoint));
+    assert!(stages.contains(&BackupProgressStage::PreparingActivation));
+    assert!(stages.contains(&BackupProgressStage::ActivatingRestoredData));
+    assert!(stages.contains(&BackupProgressStage::VerifyingRestoredState));
+    assert!(stages.contains(&BackupProgressStage::Completed));
+
+    // Verify preparation stages allow cancellation
+    for evt in captured.iter() {
+        match evt.stage {
+            BackupProgressStage::Starting
+            | BackupProgressStage::ValidatingBackup
+            | BackupProgressStage::PreparingStagingData
+            | BackupProgressStage::ExtractingStaging
+            | BackupProgressStage::CheckingDatabaseIntegrity
+            | BackupProgressStage::ValidatingStagedData
+            | BackupProgressStage::CheckingAttachments
+            | BackupProgressStage::CreatingCheckpoint => {
+                assert!(evt.cancellable, "Stage {:?} must be cancellable", evt.stage);
+            }
+            BackupProgressStage::PreparingActivation
+            | BackupProgressStage::ActivatingRestoredData
+            | BackupProgressStage::VerifyingRestoredState
+            | BackupProgressStage::RebuildingSearchIndex
+            | BackupProgressStage::Completed => {
+                assert!(!evt.cancellable, "Stage {:?} must NOT be casually cancellable", evt.stage);
+            }
+            _ => {}
+        }
+        assert_eq!(evt.operation_id, Some(op_id.clone()));
+    }
+
+    // 4. Test In-flight Cancellation Before Activation
+    let op_cancel_id = format!("op-cancel-{}", Uuid::new_v4());
+    let op_cancel_clone = op_cancel_id.clone();
+    let cancel_events = Arc::new(Mutex::new(Vec::<BackupProgressEvent>::new()));
+    let cancel_events_clone = Arc::clone(&cancel_events);
+
+    let cancel_res = RestoreService::execute_restore(
+        &mut conn,
+        &env.paths,
+        BackupRestoreRequest {
+            file_path: cand_backup.file_path.clone(),
+            operation_id: Some(op_cancel_id.clone()),
+        },
+        Some(move |evt: BackupProgressEvent| {
+            if evt.stage == BackupProgressStage::CheckingAttachments {
+                RestoreService::request_cancellation(&op_cancel_clone);
+            }
+            cancel_events_clone.lock().unwrap().push(evt);
+        }),
+    );
+
+    assert!(cancel_res.is_err());
+    let captured_cancel = cancel_events.lock().unwrap().clone();
+    let final_evt = captured_cancel.last().expect("Must have emitted cancel event");
+    assert_eq!(final_evt.stage, BackupProgressStage::Cancelled);
+    assert!(!final_evt.cancellable);
+    assert!(final_evt.message.contains("cancelled"));
+
+    // Verify live data survived untouched
+    let note = NoteRepository::get_by_id(&conn, &cand_note.id).unwrap().unwrap();
+    assert_eq!(note.title, "Galactic Astronomy");
+}
+
+#[test]
+fn test_phase11_task_22_backup_health_and_failure_notifications() {
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Initial State: Auto-backup enabled by default, 0 backups -> Warning level with NO_VERIFIED_BACKUP
+    let health1 = personal_notepad_lib::storage::services::BackupHealthService::get_health_status(&conn, &env.paths)
+        .expect("Get health failed");
+    assert!(health1.auto_backup_enabled);
+    assert!(health1.destination_available);
+    assert_eq!(health1.managed_backup_count, 0);
+    assert!(!health1.has_verified_backup);
+    assert_eq!(health1.health_level, personal_notepad_lib::storage::models::BackupHealthLevel::Warning);
+    assert!(health1.warnings.iter().any(|w| w.code == "NO_VERIFIED_BACKUP"));
+    assert!(health1.warnings.iter().any(|w| w.code == "SAME_PHYSICAL_DISK"));
+
+    // 2. Perform a successful backup
+    let _note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Mission Critical Note".to_string()),
+            content: Some("Safety first".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note failed");
+
+    let req = personal_notepad_lib::storage::models::BackupCreateRequest {
+        destination_path: None,
+        backup_type: Some(personal_notepad_lib::storage::models::BackupType::Automatic),
+        allow_overwrite: Some(false),
+    };
+    let bk_res = personal_notepad_lib::storage::services::BackupService::create_backup(
+        &conn,
+        &env.paths,
+        req,
+        None::<fn(personal_notepad_lib::storage::models::BackupProgressEvent)>,
+    ).expect("Create backup failed");
+    assert!(bk_res.verified);
+
+    // Update scheduler state to reflect successful run
+    let mut sched_state = personal_notepad_lib::storage::services::BackupSchedulerService::get_state(&conn).unwrap();
+    sched_state.last_successful_at = Some(chrono::Utc::now().to_rfc3339());
+    sched_state.failure_count = 0;
+    personal_notepad_lib::storage::services::BackupSchedulerService::save_state(&conn, &sched_state).unwrap();
+
+    let health2 = personal_notepad_lib::storage::services::BackupHealthService::get_health_status(&conn, &env.paths)
+        .expect("Get health failed");
+    assert!(health2.auto_backup_enabled);
+    assert!(health2.has_verified_backup);
+    assert!(health2.latest_backup_verified);
+    assert_eq!(health2.managed_backup_count, 1);
+    assert_eq!(health2.health_level, personal_notepad_lib::storage::models::BackupHealthLevel::Healthy);
+
+    // 3. Unavailable Destination Simulation
+    let mut custom_settings = personal_notepad_lib::storage::services::BackupSettingsService::get_settings(&conn).unwrap();
+    let bad_dest_file = env.dir.join("not_a_dir.txt");
+    std::fs::write(&bad_dest_file, b"blocking file").unwrap();
+    let unwritable_dest = bad_dest_file.join("subfolder_impossible");
+    custom_settings.backup_destination_dir = Some(unwritable_dest.to_string_lossy().to_string());
+    let serialized_settings = serde_json::to_string(&custom_settings).unwrap();
+    SettingsRepository::set(&conn, "backup_settings", &serialized_settings).unwrap();
+
+    let health3 = personal_notepad_lib::storage::services::BackupHealthService::get_health_status(&conn, &env.paths)
+        .expect("Get health failed");
+    assert!(!health3.destination_available);
+    assert_eq!(health3.health_level, personal_notepad_lib::storage::models::BackupHealthLevel::Critical);
+    assert!(health3.warnings.iter().any(|w| w.code == "DESTINATION_UNAVAILABLE"));
+
+    // Reset settings
+    custom_settings.backup_destination_dir = None;
+    let serialized_settings = serde_json::to_string(&custom_settings).unwrap();
+    SettingsRepository::set(&conn, "backup_settings", &serialized_settings).unwrap();
+
+    // 4. Consecutive Failures & Category Persistence
+    sched_state.failure_count = 4;
+    sched_state.last_error_message = Some("Write failed: storage medium full.".to_string());
+    sched_state.last_failure_category = Some("InsufficientDiskSpace".to_string());
+    personal_notepad_lib::storage::services::BackupSchedulerService::save_state(&conn, &sched_state).unwrap();
+
+    let health4 = personal_notepad_lib::storage::services::BackupHealthService::get_health_status(&conn, &env.paths)
+        .expect("Get health failed");
+    assert_eq!(health4.health_level, personal_notepad_lib::storage::models::BackupHealthLevel::Critical);
+    assert_eq!(health4.last_failure_category.as_deref(), Some("InsufficientDiskSpace"));
+    assert!(health4.warnings.iter().any(|w| w.code == "LAST_BACKUP_FAILED"));
+
+    // 5. Disabled State
+    custom_settings.auto_backup_enabled = false;
+    let serialized_settings = serde_json::to_string(&custom_settings).unwrap();
+    SettingsRepository::set(&conn, "backup_settings", &serialized_settings).unwrap();
+
+    // Reset failure count so it tests disabled precedence
+    sched_state.failure_count = 0;
+    sched_state.last_error_message = None;
+    personal_notepad_lib::storage::services::BackupSchedulerService::save_state(&conn, &sched_state).unwrap();
+
+    let health5 = personal_notepad_lib::storage::services::BackupHealthService::get_health_status(&conn, &env.paths)
+        .expect("Get health failed");
+    assert!(!health5.auto_backup_enabled);
+    assert_eq!(health5.health_level, personal_notepad_lib::storage::models::BackupHealthLevel::Disabled);
+    assert!(health5.warnings.iter().any(|w| w.code == "AUTO_BACKUP_DISABLED"));
+}
+
+#[test]
+fn test_phase11_task_24_end_to_end_and_data_loss_simulations() {
+    use personal_notepad_lib::storage::{
+        init_connection, run_migrations,
+        models::{
+            BackupCompatibilityStatus, BackupCreateRequest, BackupHealthLevel, BackupProgressEvent,
+            BackupRestoreRequest, BackupType, CreateNoteDto, CreateNotebookDto,
+            RestoreActivationMarker, RestoreActivationPhase,
+        },
+        repositories::{NotebookRepository, NoteRepository, TagRepository},
+        services::{
+            backup_retention::BackupRetentionManager, BackupHealthService, BackupSchedulerService,
+            BackupService, BackupSettingsService, BackupValidationService, RestoreService,
+        },
+    };
+
+    // -------------------------------------------------------------
+    // SCENARIO A — Normal Recovery
+    // 1. Create several notes.
+    // 2. Create notebooks and tags.
+    // 3. Add favorites.
+    // 4. Attach a file.
+    // 5. Move a note to Trash.
+    // 6. Create and validate a backup.
+    // 7. Make additional changes.
+    // 8. Restore the backup in a controlled test environment.
+    // 9. Verify the restored state matches the backup.
+    // 10. Restart the application and verify persistence.
+    // -------------------------------------------------------------
+    let env_a = TestEnv::new();
+    let mut conn_a = init_connection(&env_a.paths.database_file).expect("Conn A initialization failed");
+    run_migrations(&mut conn_a).expect("Migration A failed");
+
+    // 1-3. Notes, Notebooks, Tags, Favorites
+    let nb_research = NotebookRepository::create(
+        &conn_a,
+        CreateNotebookDto {
+            name: "Quantum Gravity".to_string(),
+            parent_id: None,
+        },
+    ).unwrap();
+
+    let note_active_1 = NoteRepository::create(
+        &conn_a,
+        CreateNoteDto {
+            title: Some("AdS/CFT Duality".to_string()),
+            content: Some("Holographic principle calculations".to_string()),
+            notebook_id: Some(nb_research.id.clone()),
+            is_favorite: Some(true),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let _note_active_2 = NoteRepository::create(
+        &conn_a,
+        CreateNoteDto {
+            title: Some("Spin Networks".to_string()),
+            content: Some("Loop quantum gravity area operators".to_string()),
+            notebook_id: Some(nb_research.id.clone()),
+            is_favorite: Some(false),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    let tag_theoretical = TagRepository::create(&conn_a, "theoretical-physics").unwrap();
+    TagRepository::add_tag_to_note(&conn_a, &note_active_1.id, &tag_theoretical.id).unwrap();
+
+    // 4. Attach a file
+    let att_dir_1 = env_a.paths.get_note_attachments_dir(&note_active_1.id).unwrap();
+    let att_filename_1 = format!("{}.pdf", uuid::Uuid::new_v4());
+    let att_bytes_1 = b"%PDF-1.4 Holographic calculation matrix proof";
+    std::fs::write(att_dir_1.join(&att_filename_1), att_bytes_1).unwrap();
+
+    let now_str_a = chrono::Utc::now().to_rfc3339();
+    conn_a.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            note_active_1.id,
+            "proof.pdf",
+            format!("{}/{}", note_active_1.id, att_filename_1),
+            "application/pdf",
+            att_bytes_1.len() as i64,
+            now_str_a,
+            now_str_a,
+        ],
+    ).unwrap();
+
+    // 5. Move a note to Trash
+    let note_trashed = NoteRepository::create(
+        &conn_a,
+        CreateNoteDto {
+            title: Some("Deprecated Calculations".to_string()),
+            content: Some("Obsolete notes moved to trash".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+    NoteRepository::soft_delete(&conn_a, &note_trashed.id).unwrap();
+
+    // Flush WAL writes to SQLite disk file before snapshotting
+    conn_a.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+
+    // 6. Create and validate a backup
+    let backup_req_a = BackupCreateRequest {
+        destination_path: None,
+        backup_type: Some(BackupType::Manual),
+        allow_overwrite: Some(false),
+    };
+    let backup_res_a = BackupService::create_backup(
+        &conn_a,
+        &env_a.paths,
+        backup_req_a,
+        None::<fn(BackupProgressEvent)>,
+    ).expect("Scenario A backup creation failed");
+
+    assert!(backup_res_a.verified);
+    assert_eq!(backup_res_a.note_count, 3); // 2 active + 1 trash
+    assert_eq!(backup_res_a.attachment_count, 1);
+
+    let backup_archive_path = std::path::Path::new(&backup_res_a.file_path);
+    assert!(backup_archive_path.exists());
+
+    // Validate the created archive independently
+    let val_scenario_a = BackupValidationService::validate_backup(backup_archive_path, &env_a.paths).unwrap();
+    assert!(val_scenario_a.is_valid);
+    assert_eq!(val_scenario_a.compatibility, BackupCompatibilityStatus::Compatible);
+
+    // 7. Make additional live modifications (simulate user doing intervening work)
+    let _note_intervening = NoteRepository::create(
+        &conn_a,
+        CreateNoteDto {
+            title: Some("Temporary Post-Backup Note".to_string()),
+            content: Some("This note was created after the backup and should be replaced by restore".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // Mutate existing active note content
+    conn_a.execute(
+        "UPDATE notes SET content = 'Corrupted intervening edit' WHERE id = ?1",
+        rusqlite::params![note_active_1.id],
+    ).unwrap();
+
+    // Intervening change: delete attachment from live DB and disk
+    conn_a.execute(
+        "DELETE FROM attachments WHERE note_id = ?1",
+        rusqlite::params![note_active_1.id],
+    ).unwrap();
+    let _ = std::fs::remove_file(att_dir_1.join(&att_filename_1));
+
+    // Confirm live state before restore has 4 notes and 0 attachments
+    let count_before_restore: i64 = conn_a.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(count_before_restore, 4);
+    let att_count_before: i64 = conn_a.query_row("SELECT COUNT(1) FROM attachments", [], |r| r.get(0)).unwrap();
+    assert_eq!(att_count_before, 0);
+
+    // 8. Restore the backup in controlled environment
+    let restore_req_a = BackupRestoreRequest {
+        file_path: backup_res_a.file_path.clone(),
+        operation_id: Some(format!("restore-scenario-a-{}", uuid::Uuid::new_v4())),
+    };
+    let restore_res_a = RestoreService::execute_restore(
+        &mut conn_a,
+        &env_a.paths,
+        restore_req_a,
+        None::<fn(BackupProgressEvent)>,
+    ).expect("Scenario A restore execution failed");
+
+    assert!(restore_res_a.success);
+    assert_eq!(restore_res_a.note_count, 2); // 2 active notes
+    assert_eq!(restore_res_a.trash_count, 1); // 1 trashed note
+    assert_eq!(restore_res_a.notebook_count, 1);
+    assert_eq!(restore_res_a.tag_count, 1);
+    assert_eq!(restore_res_a.attachment_count, 1);
+
+    // 9. Verify restored state matches the backup exactly
+    let note1_restored = NoteRepository::get_by_id(&conn_a, &note_active_1.id).unwrap().unwrap();
+    assert_eq!(note1_restored.title, "AdS/CFT Duality");
+    assert_eq!(note1_restored.content, "Holographic principle calculations");
+    assert!(note1_restored.is_favorite);
+    assert!(note1_restored.deleted_at.is_none());
+
+    let trashed_restored = NoteRepository::get_by_id(&conn_a, &note_trashed.id).unwrap().unwrap();
+    assert_eq!(trashed_restored.title, "Deprecated Calculations");
+    assert!(trashed_restored.deleted_at.is_some(), "Trash status must be preserved");
+
+    // Intervening post-backup note must be completely gone
+    let intervening_check: i64 = conn_a.query_row(
+        "SELECT COUNT(1) FROM notes WHERE title = 'Temporary Post-Backup Note'",
+        [],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(intervening_check, 0, "Post-backup note must be removed by restore");
+
+    // Attachment file must be restored on disk with exact bytes
+    let restored_att_file = att_dir_1.join(&att_filename_1);
+    assert!(restored_att_file.exists(), "Attachment file must be restored on disk");
+    let restored_att_bytes = std::fs::read(&restored_att_file).unwrap();
+    assert_eq!(restored_att_bytes, att_bytes_1, "Attachment bytes must match original");
+
+    // Pre-restore checkpoint must exist in checkpoints directory
+    let checkpoint_file = std::path::Path::new(&restore_res_a.checkpoint_path);
+    assert!(checkpoint_file.exists(), "Pre-restore checkpoint must be preserved");
+    let chk_val = RestoreService::validate_recovery_checkpoint(checkpoint_file, &env_a.paths).unwrap();
+    let chk_manifest = chk_val.manifest.unwrap();
+    assert_eq!(chk_manifest.database.note_count, 3, "Checkpoint captured the 3 pre-restore active notes");
+    assert_eq!(chk_manifest.database.trash_count, 1, "Checkpoint captured the 1 pre-restore trashed note");
+
+    // 10. Simulate cold restart: drop conn_a and reopen from disk
+    drop(conn_a);
+    let conn_a_restarted = init_connection(&env_a.paths.database_file).expect("Reopened connection failed");
+    let total_restarted_notes: i64 = conn_a_restarted.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(total_restarted_notes, 3, "Notes persisted across restart");
+    let restarted_nb_count: i64 = conn_a_restarted.query_row("SELECT COUNT(1) FROM notebooks", [], |r| r.get(0)).unwrap();
+    assert_eq!(restarted_nb_count, 1, "Notebooks persisted across restart");
+
+    // -------------------------------------------------------------
+    // SCENARIO B — Corrupt Backup
+    // 1. Create a valid test backup.
+    // 2. Corrupt one required archive entry or checksum.
+    // 3. Attempt validation.
+    // 4. Confirm restoration is blocked.
+    // 5. Confirm current application data remains unchanged.
+    // -------------------------------------------------------------
+    let env_b = TestEnv::new();
+    let mut conn_b = init_connection(&env_b.paths.database_file).expect("Conn B init failed");
+    run_migrations(&mut conn_b).expect("Migration B failed");
+
+    let live_note_b = NoteRepository::create(
+        &conn_b,
+        CreateNoteDto {
+            title: Some("Live Inviolable Note".to_string()),
+            content: Some("This data must never be overwritten by a corrupt archive".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // Create a corrupt archive file
+    let corrupt_archive = env_b.paths.backups_dir.join("corrupt_test_archive.pnbackup");
+    std::fs::write(&corrupt_archive, b"PK\x03\x04corrupted zip payload").unwrap();
+
+    // 3. Attempt validation
+    let val_b = BackupValidationService::validate_backup(&corrupt_archive, &env_b.paths).unwrap();
+    // 4. Confirm restoration is blocked
+    assert!(!val_b.is_valid, "Corrupt backup validation must fail");
+    assert_eq!(val_b.compatibility, BackupCompatibilityStatus::Corrupted);
+
+    // Attempt restore with corrupt archive
+    let restore_req_b = BackupRestoreRequest {
+        file_path: corrupt_archive.to_string_lossy().to_string(),
+        operation_id: Some("corrupt-restore-attempt".to_string()),
+    };
+    let restore_res_b = RestoreService::execute_restore(
+        &mut conn_b,
+        &env_b.paths,
+        restore_req_b,
+        None::<fn(BackupProgressEvent)>,
+    );
+    assert!(restore_res_b.is_err(), "Restoration of corrupt archive must be blocked");
+
+    // 5. Confirm current application data remains 100% unchanged
+    let live_note_b_after = NoteRepository::get_by_id(&conn_b, &live_note_b.id).unwrap().unwrap();
+    assert_eq!(live_note_b_after.title, "Live Inviolable Note");
+    assert_eq!(live_note_b_after.content, "This data must never be overwritten by a corrupt archive");
+
+    // -------------------------------------------------------------
+    // SCENARIO C — Interrupted Restore
+    // 1. Create a valid backup and recovery checkpoint.
+    // 2. Simulate a controlled failure during staging or activation.
+    // 3. Run the documented recovery procedure.
+    // 4. Confirm the database and attachment state are consistent.
+    // 5. Confirm the application does not silently open a mixed or incomplete state.
+    // -------------------------------------------------------------
+    let env_c = TestEnv::new();
+    let mut conn_c = init_connection(&env_c.paths.database_file).expect("Conn C init failed");
+    run_migrations(&mut conn_c).expect("Migration C failed");
+
+    let live_note_c = NoteRepository::create(
+        &conn_c,
+        CreateNoteDto {
+            title: Some("Active Work Before Interrupted Restore".to_string()),
+            content: Some("Critical research notes".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // Simulate crash in FilesSwapped phase with active marker and backup copy
+    let op_id_c = uuid::Uuid::new_v4().to_string();
+    let sim_db_bak_c = env_c.paths.root.join(format!(".db_pre_restore_{op_id_c}.sqlite"));
+    let sim_att_bak_c = env_c.paths.root.join(format!(".att_pre_restore_{op_id_c}"));
+
+    std::fs::copy(&env_c.paths.database_file, &sim_db_bak_c).unwrap();
+    std::fs::create_dir_all(&sim_att_bak_c).unwrap();
+
+    let marker_c = RestoreActivationMarker {
+        operation_id: op_id_c,
+        started_at: chrono::Utc::now().to_rfc3339(),
+        candidate_archive_path: corrupt_archive.to_string_lossy().to_string(),
+        staging_dir: env_c.paths.backups_dir.join(".staged_sim_c").to_string_lossy().to_string(),
+        checkpoint_path: env_c.paths.checkpoints_dir().join("sim_checkpoint.pnbackup").to_string_lossy().to_string(),
+        live_db_backup_path: sim_db_bak_c.to_string_lossy().to_string(),
+        live_attachments_backup_path: sim_att_bak_c.to_string_lossy().to_string(),
+        phase: RestoreActivationPhase::FilesSwapped,
+    };
+    RestoreService::write_activation_marker(&marker_c, &env_c.paths).unwrap();
+    assert!(env_c.paths.restore_marker_file().exists(), "Marker must exist during simulation");
+
+    // 3. Run documented crash recovery procedure
+    let recovered_c = RestoreService::recover_if_interrupted(&env_c.paths).unwrap();
+    assert!(recovered_c.is_some(), "Crash recovery must detect interrupted marker");
+
+    // 4-5. Confirm consistency, absence of mixed state, and marker cleanup
+    assert!(!env_c.paths.restore_marker_file().exists(), "Marker must be cleared after recovery");
+    let live_note_c_verified = NoteRepository::get_by_id(&conn_c, &live_note_c.id).unwrap().unwrap();
+    assert_eq!(live_note_c_verified.title, "Active Work Before Interrupted Restore");
+
+    // -------------------------------------------------------------
+    // SCENARIO D — Automatic Backup
+    // 1. Enable automatic backups.
+    // 2. Trigger the configured backup condition.
+    // 3. Confirm a backup is created.
+    // 4. Restart the application.
+    // 5. Verify scheduling state and retention behavior.
+    // 6. Simulate an inaccessible destination.
+    // 7. Confirm a visible failure status appears.
+    // -------------------------------------------------------------
+    let env_d = TestEnv::new();
+    let mut conn_d = init_connection(&env_d.paths.database_file).expect("Conn D init failed");
+    run_migrations(&mut conn_d).expect("Migration D failed");
+
+    let _note_d = NoteRepository::create(
+        &conn_d,
+        CreateNoteDto {
+            title: Some("Auto-Backup Test Note".to_string()),
+            content: Some("Testing automated background snapshots".to_string()),
+            ..Default::default()
+        },
+    ).unwrap();
+
+    // 1. Enable automatic backups in settings
+    let mut settings_d = BackupSettingsService::get_settings(&conn_d).unwrap();
+    settings_d.auto_backup_enabled = true;
+    settings_d.backup_on_startup = true;
+    settings_d.retention_count = 2; // retain only 2
+    BackupSettingsService::save_settings(&conn_d, &env_d.paths, settings_d).unwrap();
+
+    // 2. Trigger the configured backup condition (startup trigger)
+    let auto_backup_res = BackupSchedulerService::check_and_run_backup(
+        &conn_d,
+        &env_d.paths,
+        true, // is_startup
+        None::<fn(BackupProgressEvent)>,
+    ).expect("Automatic backup check failed");
+
+    // 3. Confirm a backup is created
+    assert!(auto_backup_res.is_some(), "Automatic backup must have executed");
+    let auto_backup_item = auto_backup_res.unwrap();
+    assert!(auto_backup_item.verified);
+    assert_eq!(auto_backup_item.backup_type, BackupType::Automatic);
+
+    let state_d = BackupSchedulerService::get_state(&conn_d).unwrap();
+    assert!(state_d.last_successful_at.is_some());
+    assert_eq!(state_d.failure_count, 0);
+
+    // 4. Restart the application (simulate cold reboot)
+    drop(conn_d);
+    let conn_d_restarted = init_connection(&env_d.paths.database_file).expect("Restarted conn D failed");
+    let restarted_state = BackupSchedulerService::get_state(&conn_d_restarted).unwrap();
+    assert!(restarted_state.last_successful_at.is_some(), "Scheduler state survived restart");
+
+    // 5. Verify retention behavior:
+    // Create 3 more automatic backups with distinct timestamps
+    for _ in 1..=3 {
+        // Delay slightly to ensure distinct file timestamps
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let req = BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Automatic),
+            allow_overwrite: Some(false),
+        };
+        let res = BackupService::create_backup(
+            &conn_d_restarted,
+            &env_d.paths,
+            req,
+            None::<fn(BackupProgressEvent)>,
+        ).unwrap();
+        assert!(res.verified);
+
+        let newly_path = std::path::Path::new(&res.file_path);
+        let ret_res = BackupRetentionManager::apply_retention(&env_d.paths.backups_dir, 2, Some(newly_path));
+        assert_eq!(ret_res.kept_count, 2, "Retention must keep at most 2 automatic archives");
+    }
+
+    // 6. Simulate an inaccessible destination
+    let mut broken_settings = BackupSettingsService::get_settings(&conn_d_restarted).unwrap();
+    broken_settings.backup_destination_dir = Some("/nonexistent/forbidden/path".to_string());
+    let save_err = BackupSettingsService::save_settings(&conn_d_restarted, &env_d.paths, broken_settings);
+    assert!(save_err.is_err(), "Saving an unwritable destination must be rejected");
+
+    // Next, simulate a destination drive that was configured and then became inaccessible
+    let blocked_dir = env_d.paths.root.join("blocked_drive");
+    std::fs::create_dir_all(&blocked_dir).unwrap();
+    let mut valid_settings = BackupSettingsService::get_settings(&conn_d_restarted).unwrap();
+    valid_settings.backup_destination_dir = Some(blocked_dir.to_string_lossy().to_string());
+    BackupSettingsService::save_settings(&conn_d_restarted, &env_d.paths, valid_settings).unwrap();
+
+    // Remove the directory and replace with a regular file to make it inaccessible as a directory
+    std::fs::remove_dir_all(&blocked_dir).unwrap();
+    std::fs::write(&blocked_dir, b"blocked file payload").unwrap();
+
+    // 7. Confirm visible failure status appears in health check
+    let health_d = BackupHealthService::get_health_status(&conn_d_restarted, &env_d.paths).unwrap();
+    assert!(!health_d.destination_available, "Non-directory destination must report unavailable");
+    assert!(
+        health_d.health_level == BackupHealthLevel::Warning || health_d.health_level == BackupHealthLevel::Critical,
+        "Health level must flag failure warning"
+    );
+    assert!(health_d.warnings.iter().any(|w| w.code == "DESTINATION_UNAVAILABLE"));
+}
+
+
+
+
+
+
+
+
+
 
 
 

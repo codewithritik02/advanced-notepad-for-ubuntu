@@ -1,6 +1,7 @@
 import React from "react";
 import { Modal, Button, Badge, Divider } from "../../../../components/ui";
 import { ThemeMode } from "../../../../types";
+import { BackupSettingsPanel } from "../../../backup";
 import "./SettingsModal.css";
 
 export interface SettingsModalProps {
@@ -8,6 +9,8 @@ export interface SettingsModalProps {
   onClose: () => void;
   currentTheme: ThemeMode;
   onSelectTheme: (theme: ThemeMode) => void;
+  onCreateBackup?: () => void;
+  onViewBackups?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -15,13 +18,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   currentTheme,
   onSelectTheme,
+  onCreateBackup,
+  onViewBackups,
 }) => {
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title="Settings & Application Info"
-      maxWidth="480px"
+      maxWidth="540px"
       footer={
         <Button variant="secondary" size="sm" onClick={onClose}>
           Done
@@ -58,6 +63,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               System Default
             </Button>
           </div>
+        </div>
+
+        <Divider spacing="md" />
+
+        {/* Backup & Data Safety Section */}
+        <div className="settings-section">
+          <h4 className="settings-section-title">Backup & Data Safety</h4>
+          <p className="settings-section-desc">
+            Configure automatic scheduled snapshots and create on-demand manual archives.
+          </p>
+          <BackupSettingsPanel
+            onCreateManualBackup={onCreateBackup}
+            onViewBackups={onViewBackups}
+          />
         </div>
 
         <Divider spacing="md" />

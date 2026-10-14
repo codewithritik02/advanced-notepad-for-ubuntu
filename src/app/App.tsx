@@ -53,7 +53,18 @@ import {
   ImportPreviewModal,
   pickImportFiles,
 } from "../features/importExport";
-import { ExportScope, ImportPreview, ImportRequest } from "../services/storage/types";
+import {
+  CreateBackupModal,
+  BackupListModal,
+  RestorePreviewModal,
+} from "../features/backup";
+import { backupStorage } from "../services/storage/backup";
+import {
+  BackupProgressEvent,
+  ExportScope,
+  ImportPreview,
+  ImportRequest,
+} from "../services/storage/types";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -81,6 +92,10 @@ export function App() {
     onBeforeSearch: handleFlushPendingSave,
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isCreateBackupOpen, setIsCreateBackupOpen] = useState(false);
+  const [isBackupListOpen, setIsBackupListOpen] = useState(false);
+  const [restorePreviewCandidate, setRestorePreviewCandidate] = useState<string | null>(null);
+  const [isRestoringBackup, setIsRestoringBackup] = useState<boolean>(false);
   const [notes, setNotes] = useState<Note[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const navigationHistory = useNoteNavigationHistory(selectedNoteId);
@@ -92,9 +107,30 @@ export function App() {
   const [noteTagsMap, setNoteTagsMap] = useState<Record<string, string[]>>({});
   const [isManageTagsOpen, setIsManageTagsOpen] = useState(false);
   const [restoreFeedback, setRestoreFeedback] = useState<{
-    type: "success" | "error";
+    type: "success" | "error" | "info" | "warning";
     message: string;
   } | null>(null);
+  const [backupAlert, setBackupAlert] = useState<{
+    type: "warning" | "error" | "critical" | "info";
+    message: string;
+    code?: string;
+    title?: string;
+  } | null>(null);
+  const [dismissedBackupCodes, setDismissedBackupCodes] = useState<Set<string>>(new Set());
+  const [restoreProgress, setRestoreProgress] = useState<BackupProgressEvent | null>(null);
+  const [restoreOperationId, setRestoreOperationId] = useState<string | null>(null);
+  const [isCancellingRestore, setIsCancellingRestore] = useState<boolean>(false);
+
+  const handleCancelRestore = useCallback(async () => {
+    if (restoreOperationId) {
+      setIsCancellingRestore(true);
+      try {
+        await backupStorage.cancelRestore(restoreOperationId);
+      } catch (err) {
+        logger.error("Failed to cancel restore", err);
+      }
+    }
+  }, [restoreOperationId]);
   const [linkNavigationTarget, setLinkNavigationTarget] = useState<ResolvedLinkTarget | null>(null);
   const [isResolvingLinkTarget, setIsResolvingLinkTarget] = useState<boolean>(false);
   const [repairingBrokenTargetId, setRepairingBrokenTargetId] = useState<string | null>(null);
@@ -166,6 +202,18 @@ export function App() {
       return () => clearTimeout(timer);
     }
   }, [restoreFeedback]);
+
+  useEffect(() => {
+    if (backupAlert) {
+      const timer = setTimeout(() => {
+        if (backupAlert.code) {
+          setDismissedBackupCodes((prev) => new Set(prev).add(backupAlert.code!));
+        }
+        setBackupAlert(null);
+      }, 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [backupAlert]);
 
   // Real SQLite tags managed through dedicated feature hook
   const {
@@ -306,6 +354,66 @@ export function App() {
   useEffect(() => {
     initStorage();
   }, [initStorage]);
+
+  // Automatic backup lifecycle: evaluate on startup and on routine interval (Phase 11, Task 11 & Task 22)
+  useEffect(() => {
+    if (!isStorageReady) return;
+
+    const evaluateBackupHealthAndRun = async (isStartup: boolean) => {
+      try {
+        await backupStorage.checkAndRunAutomaticBackup(isStartup);
+      } catch (err: unknown) {
+        const errorMsg =
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+            ? err
+            : "Automatic backup failed.";
+        logger.warn("Automatic backup check failed:", { error: errorMsg });
+        setBackupAlert({
+          type: "error",
+          title: "Automatic Backup Failed",
+          message: errorMsg,
+          code: "AUTOMATIC_BACKUP_EXECUTION_FAILED",
+        });
+      }
+
+      // Check overall backup health and notify about discoverable issues without repetitive spam
+      try {
+        const health = await backupStorage.getHealthStatus();
+        if (health.warnings.length > 0) {
+          // Find first un-dismissed warning that is warning or critical
+          const actionableWarn = health.warnings.find(
+            (w) =>
+              (w.level === "warning" || w.level === "critical") &&
+              !dismissedBackupCodes.has(w.code)
+          );
+          if (actionableWarn) {
+            setBackupAlert({
+              type: actionableWarn.level === "critical" ? "error" : "warning",
+              title: "Backup Warning",
+              message: `${actionableWarn.message} ${actionableWarn.detail || ""}`.trim(),
+              code: actionableWarn.code,
+            });
+          }
+        }
+      } catch (healthErr) {
+        logger.warn("Failed to check backup health status:", { error: String(healthErr) });
+      }
+    };
+
+    // 1. Startup check: evaluates if backup is due on launch (honoring rapid restart protection)
+    evaluateBackupHealthAndRun(true);
+
+    // 2. Periodic background interval check every 60 seconds while application remains open
+    const intervalId = window.setInterval(() => {
+      evaluateBackupHealthAndRun(false);
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isStorageReady, dismissedBackupCodes]);
 
   // Load global notebook, section, and tag note counts
   const refreshNoteCounts = useCallback(async () => {
@@ -1820,6 +1928,14 @@ export function App() {
         onClose={() => setIsSettingsOpen(false)}
         currentTheme={theme}
         onSelectTheme={setTheme}
+        onCreateBackup={() => {
+          setIsSettingsOpen(false);
+          setIsCreateBackupOpen(true);
+        }}
+        onViewBackups={() => {
+          setIsSettingsOpen(false);
+          setIsBackupListOpen(true);
+        }}
       />
 
       <CreateNotebookDialog
@@ -1956,7 +2072,7 @@ export function App() {
           aria-live="polite"
         >
           <span className="restore-feedback-icon" aria-hidden="true">
-            {restoreFeedback.type === "success" ? "✓" : "⚠"}
+            {restoreFeedback.type === "success" ? "✓" : restoreFeedback.type === "info" ? "ℹ" : "⚠"}
           </span>
           <span className="restore-feedback-message">{restoreFeedback.message}</span>
           <button
@@ -1994,6 +2110,40 @@ export function App() {
           </button>
         </div>
       )}
+
+      {backupAlert && (
+        <div
+          className={`backup-alert-toast backup-alert-toast--${backupAlert.type}`}
+          role="alert"
+          aria-live="polite"
+          data-testid="backup-alert-toast"
+        >
+          <span className="backup-alert-icon" aria-hidden="true">
+            {backupAlert.type === "error" || backupAlert.type === "critical"
+              ? "✕"
+              : backupAlert.type === "warning"
+              ? "⚠"
+              : "ℹ"}
+          </span>
+          <div className="backup-alert-content">
+            {backupAlert.title && <strong className="backup-alert-title">{backupAlert.title}: </strong>}
+            <span className="backup-alert-message">{backupAlert.message}</span>
+          </div>
+          <button
+            type="button"
+            className="backup-alert-close"
+            onClick={() => {
+              if (backupAlert.code) {
+                setDismissedBackupCodes((prev) => new Set(prev).add(backupAlert.code!));
+              }
+              setBackupAlert(null);
+            }}
+            aria-label="Dismiss notification"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {exportBatchState?.isOpen && (
         <ExportBatchModal
           isOpen={exportBatchState.isOpen}
@@ -2020,6 +2170,151 @@ export function App() {
           onConfirmImport={handleConfirmImport}
           notebooks={notebooks}
           defaultNotebookId={selectedNotebookId}
+        />
+      )}
+      {isCreateBackupOpen && (
+        <CreateBackupModal
+          isOpen={isCreateBackupOpen}
+          onClose={() => setIsCreateBackupOpen(false)}
+          onFlushSave={handleFlushPendingSave}
+          onSuccess={(backupRes) => {
+            setRestoreFeedback({
+              type: "success",
+              message: `Backup created and verified (${backupRes.noteCount} notes, ${backupRes.attachmentCount} attachments).`,
+            });
+          }}
+        />
+      )}
+      {isBackupListOpen && (
+        <BackupListModal
+          isOpen={isBackupListOpen}
+          onClose={() => setIsBackupListOpen(false)}
+          onCreateNewBackup={() => {
+            setIsBackupListOpen(false);
+            setIsCreateBackupOpen(true);
+          }}
+          onSelectForRestore={(backup) => {
+            setIsBackupListOpen(false);
+            setRestorePreviewCandidate(backup.filePath);
+          }}
+        />
+      )}
+      {restorePreviewCandidate && (
+        <RestorePreviewModal
+          isOpen={Boolean(restorePreviewCandidate)}
+          backupFilePath={restorePreviewCandidate}
+          onClose={() => !isRestoringBackup && setRestorePreviewCandidate(null)}
+          isRestoring={isRestoringBackup}
+          restoreProgress={restoreProgress}
+          onCancelRestore={handleCancelRestore}
+          isCancelling={isCancellingRestore}
+          onConfirmRestore={async (preview) => {
+            logger.info(`Restore preview confirmed for ${preview.filePath}`);
+            const opId =
+              typeof crypto !== "undefined" && crypto.randomUUID
+                ? crypto.randomUUID()
+                : `restore-${Date.now()}`;
+            setRestoreOperationId(opId);
+            setIsRestoringBackup(true);
+            setIsCancellingRestore(false);
+            setRestoreProgress({
+              stage: "starting",
+              message: "Initiating controlled restore...",
+              percentage: 5,
+              cancellable: true,
+              operationId: opId,
+            });
+
+            // Task 20: Pre-emptively disable in-flight saves from the old state
+            // to ensure pending writes from the pre-restore database cannot overwrite restored data
+            editorSaveRef.current = null;
+
+            try {
+              const result = await backupStorage.executeRestore(
+                { filePath: preview.filePath, operationId: opId },
+                (prog) => {
+                  setRestoreProgress(prog);
+                }
+              );
+              logger.info(`Restore successful: ${result.noteCount} notes, ${result.attachmentCount} attachments`);
+              setRestorePreviewCandidate(null);
+              if (result.warningMessage) {
+                setRestoreFeedback({
+                  type: "warning",
+                  message: `Restore completed with warnings: ${result.warningMessage}`,
+                });
+              } else {
+                setRestoreFeedback({
+                  type: "success",
+                  message: `Successfully restored backup (${result.noteCount} notes, ${result.notebookCount} notebooks). Pre-restore checkpoint preserved.`,
+                });
+              }
+
+              // Task 20: Full application state reinitialization
+              // 1. Clear stale in-memory editor caches by unmounting/remounting NoteEditor and clearing selection
+              setNoteRefreshKey((prev) => prev + 1);
+              setSelectedNoteId(null);
+
+              // 2. Clear any active search query and cancel pending debounce
+              cancelPendingDebounce();
+              clearSearch();
+
+              // 3. Reset navigation to all-notes view
+              setActiveNavId("all-notes");
+              selectAllNotes();
+
+              // 4. Reload all domain data from the newly restored database
+              await Promise.all([
+                loadNotes("all-notes", null, null),
+                loadNotebooks(),
+                loadTags(),
+                refreshNoteCounts(),
+              ]);
+
+              // 5. Refresh application settings (e.g. theme) from restored database
+              try {
+                const sqliteTheme = await storageService.settings.get("theme");
+                if (sqliteTheme === "light" || sqliteTheme === "dark" || sqliteTheme === "system") {
+                  setTheme(sqliteTheme);
+                }
+              } catch (e) {
+                logger.error("Failed to refresh theme after restore", e);
+              }
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.error(`Restore failed: ${msg}`);
+              setRestorePreviewCandidate(null);
+
+              const isCancelled = msg.toLowerCase().includes("cancel");
+              setRestoreFeedback({
+                type: isCancelled ? "info" : "error",
+                message: isCancelled
+                  ? "Restore operation was cancelled before activation. Your live data remains untouched."
+                  : `Restore failed: ${msg}. Previous data was safely preserved.`,
+              });
+
+              // Reinitialize state against rolled-back pre-restore data
+              editorSaveRef.current = null;
+              setNoteRefreshKey((prev) => prev + 1);
+              setSelectedNoteId(null);
+              cancelPendingDebounce();
+              clearSearch();
+              setActiveNavId("all-notes");
+              selectAllNotes();
+
+              await Promise.all([
+                loadNotes("all-notes", null, null),
+                loadNotebooks(),
+                loadTags(),
+                refreshNoteCounts(),
+              ]);
+            } finally {
+              setIsRestoringBackup(false);
+              setIsCancellingRestore(false);
+              setRestoreProgress(null);
+              setRestoreOperationId(null);
+            }
+          }}
         />
       )}
     </>

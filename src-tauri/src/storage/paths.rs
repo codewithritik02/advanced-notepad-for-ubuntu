@@ -39,8 +39,19 @@ impl StoragePaths {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.attachments_dir)?;
         std::fs::create_dir_all(&self.backups_dir)?;
+        std::fs::create_dir_all(self.checkpoints_dir())?;
         std::fs::create_dir_all(&self.config_dir)?;
         Ok(())
+    }
+
+    /// Dedicated directory for pre-restore recovery checkpoints (Phase 11, Task 16).
+    pub fn checkpoints_dir(&self) -> PathBuf {
+        self.backups_dir.join("checkpoints")
+    }
+
+    /// Path to marker file tracking in-progress multi-component restore activation (Phase 11, Task 19).
+    pub fn restore_marker_file(&self) -> PathBuf {
+        self.root.join(".restore_in_progress.json")
     }
 
     /// Resolves and ensures the attachments directory for a specific note (`attachments/<note_id>/`).
@@ -122,6 +133,7 @@ mod tests {
         assert!(paths.root.is_dir());
         assert!(paths.attachments_dir.is_dir());
         assert!(paths.backups_dir.is_dir());
+        assert!(paths.checkpoints_dir().is_dir());
         assert!(paths.config_dir.is_dir());
 
         // 2. Idempotent re-run

@@ -1,0 +1,294 @@
+/* Personal Notepad — Restore Preview and Confirmation Modal Styles (Phase 11, Task 15) */
+
+.restore-preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.restore-preview-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  gap: 12px;
+  color: var(--color-text-secondary, #64748b);
+  font-size: 0.88rem;
+}
+
+.restore-preview-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--color-border-subtle, rgba(0, 0, 0, 0.1));
+  border-top-color: var(--color-primary, #3b82f6);
+  border-radius: 50%;
+  animation: restore-spin 0.8s linear infinite;
+}
+
+@keyframes restore-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.restore-preview-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.restore-preview-filename {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+  word-break: break-all;
+}
+
+.restore-preview-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #64748b);
+  flex-wrap: wrap;
+}
+
+/* Metadata summary statistics grid */
+.restore-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 580px) {
+  .restore-preview-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.restore-preview-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+  padding: 10px 12px;
+}
+
+.restore-preview-stat-label {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-weight: 500;
+}
+
+.restore-preview-stat-value {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--color-text-primary, #0f172a);
+}
+
+/* Warnings and issues container */
+.restore-preview-warnings-box {
+  padding: 12px;
+  border-radius: 8px;
+  background-color: var(--color-warning-subtle, rgba(234, 179, 8, 0.1));
+  border: 1px solid var(--color-warning, #eab308);
+  color: var(--color-warning-text, #854d0e);
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.restore-preview-warnings-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.restore-preview-warning-item {
+  margin: 0;
+  padding-left: 14px;
+  line-height: 1.4;
+}
+
+/* Destructive alert notice */
+.restore-preview-danger-banner {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.08));
+  border: 1px solid var(--color-danger, #ef4444);
+  color: var(--color-danger-text, #991b1b);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.restore-preview-danger-title {
+  font-weight: 700;
+  font-size: 0.88rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.restore-preview-danger-desc {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+/* Confirmation Checkbox */
+.restore-preview-confirm-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.restore-preview-checkbox {
+  margin-top: 3px;
+  cursor: pointer;
+  accent-color: var(--color-danger, #ef4444);
+  width: 16px;
+  height: 16px;
+}
+
+.restore-preview-confirm-label {
+  font-size: 0.84rem;
+  color: var(--color-text-primary, #0f172a);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  line-height: 1.4;
+}
+
+/* Real-time restore progress and cancellation styles (Phase 11, Task 21) */
+.restore-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.1));
+  border-radius: 8px;
+}
+
+.restore-progress-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.restore-progress-badge-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.restore-progress-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.restore-progress-status-text {
+  font-size: 0.84rem;
+  color: var(--color-text-secondary, #64748b);
+  line-height: 1.4;
+}
+
+.restore-progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-bg-tertiary, #e2e8f0);
+  border-radius: 9999px;
+  overflow: hidden;
+  position: relative;
+}
+
+.restore-progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary, #3b82f6), #60a5fa);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.restore-progress-percentage-label {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--color-text-secondary, #64748b);
+  align-self: flex-end;
+}
+
+.restore-cancellation-section {
+  margin-top: 4px;
+}
+
+.restore-cancellable-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: var(--color-success-subtle, rgba(34, 197, 94, 0.08));
+  border: 1px solid var(--color-success, #22c55e);
+}
+
+.restore-cancellable-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.restore-cancellable-indicator {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-success-text, #15803d);
+}
+
+.restore-cancellable-desc {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary, #475569);
+  margin: 0;
+  line-height: 1.35;
+}
+
+.restore-lockout-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background-color: var(--color-warning-subtle, rgba(234, 179, 8, 0.08));
+  border: 1px solid var(--color-warning, #eab308);
+}
+
+.restore-lockout-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-warning-text, #854d0e);
+}
+
+.restore-lockout-desc {
+  font-size: 0.75rem;
+  color: var(--color-warning-text, #854d0e);
+  margin: 0;
+  line-height: 1.35;
+}

@@ -1,0 +1,388 @@
+/* Personal Notepad — Automatic Backup Settings Panel Styling */
+
+.backup-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-settings-loading {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary, #64748b);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+.backup-settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+}
+
+.backup-settings-toggle-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-settings-toggle-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-settings-toggle-desc {
+  font-size: 0.76rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 0;
+}
+
+.backup-settings-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.backup-settings-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.backup-settings-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--color-border-strong, #cbd5e1);
+  transition: 0.2s ease;
+  border-radius: 9999px;
+}
+
+.backup-settings-slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.2s ease;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.backup-settings-switch input:checked + .backup-settings-slider {
+  background-color: var(--color-accent, #0284c7);
+}
+
+.backup-settings-switch input:checked + .backup-settings-slider:before {
+  transform: translateX(18px);
+}
+
+/* Config Grid */
+.backup-config-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+}
+
+.backup-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup-config-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.backup-config-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-config-desc {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 0;
+}
+
+.backup-select {
+  padding: 5px 10px;
+  font-size: 0.82rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
+  background-color: var(--color-bg-primary, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+  cursor: pointer;
+}
+
+.backup-number-input {
+  width: 60px;
+  padding: 4px 8px;
+  font-size: 0.82rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
+  background-color: var(--color-bg-primary, #ffffff);
+  color: var(--color-text-primary, #0f172a);
+  text-align: center;
+}
+
+/* Destination Folder Box */
+.backup-folder-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+}
+
+.backup-folder-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.backup-folder-path {
+  font-family: monospace;
+  font-size: 0.78rem;
+  color: var(--color-text-primary, #0f172a);
+  background-color: var(--color-bg-primary, #ffffff);
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-folder-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Feedback & alerts */
+.backup-settings-feedback {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm, 6px);
+}
+
+.backup-settings-feedback.is-saved {
+  background-color: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.backup-settings-feedback.is-error {
+  background-color: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+/* Backup Health & Status Indicator Card (Phase 11, Task 22) */
+.backup-health-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-md, 8px);
+}
+
+.backup-health-card--healthy {
+  border-left: 4px solid #10b981;
+}
+
+.backup-health-card--warning {
+  border-left: 4px solid #f59e0b;
+}
+
+.backup-health-card--critical {
+  border-left: 4px solid #ef4444;
+}
+
+.backup-health-card--disabled {
+  border-left: 4px solid #94a3b8;
+}
+
+.backup-health-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.backup-health-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.backup-health-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-health-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  letter-spacing: 0.02em;
+}
+
+.backup-health-badge--healthy {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.backup-health-badge--warning {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.backup-health-badge--critical {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.backup-health-badge--disabled {
+  background-color: #f1f5f9;
+  color: #475569;
+}
+
+.backup-health-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 14px;
+  background-color: var(--color-bg-primary, #ffffff);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+}
+
+.backup-health-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-health-stat--wide {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  padding-top: 6px;
+}
+
+.backup-health-stat-label {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary, #64748b);
+  font-weight: 500;
+}
+
+.backup-health-stat-value {
+  font-size: 0.8rem;
+  color: var(--color-text-primary, #0f172a);
+  font-weight: 500;
+}
+
+.backup-health-stat-value.is-available,
+.backup-health-stat-value.is-verified {
+  color: #059669;
+}
+
+.backup-health-stat-value.is-unavailable {
+  color: #dc2626;
+}
+
+.backup-health-stat-value.is-unverified {
+  color: #d97706;
+}
+
+.backup-health-failure-tag {
+  color: #dc2626;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+/* Warnings List */
+.backup-health-warnings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backup-health-warning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.backup-health-warning-item--critical {
+  background-color: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.backup-health-warning-item--warning {
+  background-color: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+
+.backup-health-warning-item--info {
+  background-color: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.backup-health-warning-icon {
+  font-weight: bold;
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  margin-top: 1px;
+}
+
+.backup-health-warning-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-health-warning-msg {
+  font-weight: 600;
+}
+
+.backup-health-warning-detail {
+  margin: 0;
+  font-size: 0.72rem;
+  opacity: 0.9;
+}
+

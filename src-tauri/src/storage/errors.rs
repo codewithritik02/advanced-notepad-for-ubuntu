@@ -43,6 +43,9 @@ pub enum StorageError {
 
     #[error("Import/Export error: {0}")]
     ImportExport(String),
+
+    #[error("Backup error: {0}")]
+    Backup(String),
 }
 
 #[derive(Debug, Error)]
@@ -338,6 +341,161 @@ impl From<ImportExportError> for StorageError {
     }
 }
 
+/// Strongly-typed backup and data safety operation errors (Phase 11, Task 4)
+#[derive(Debug, Error)]
+pub enum BackupError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+
+    #[error("Filesystem IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Destination unavailable: {0}")]
+    DestinationUnavailable(String),
+
+    #[error("Permission denied: {0}")]
+    PermissionDenied(String),
+
+    #[error("Insufficient disk space")]
+    InsufficientDiskSpace,
+
+    #[error("Database snapshot failed: {0}")]
+    DatabaseSnapshotFailed(String),
+
+    #[error("Archive write failed: {0}")]
+    ArchiveWriteFailed(String),
+
+    #[error("Archive read failed: {0}")]
+    ArchiveReadFailed(String),
+
+    #[error("Backup validation failed: {0}")]
+    ValidationFailed(String),
+
+    #[error("Manifest invalid: {0}")]
+    ManifestInvalid(String),
+
+    #[error("Checksum mismatch for {entry}: expected {expected}, actual {actual}")]
+    ChecksumMismatch {
+        entry: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("Required attachment missing: {0}")]
+    RequiredAttachmentMissing(String),
+
+    #[error("Unsupported backup version: {version} (maximum supported is {max_supported})")]
+    UnsupportedVersion {
+        version: u32,
+        max_supported: u32,
+    },
+
+    #[error("Database schema incompatible: backup schema {backup_schema} exceeds current application schema {current_schema}")]
+    IncompatibleSchema {
+        backup_schema: i32,
+        current_schema: i32,
+    },
+
+    #[error("Restore checkpoint failed: {0}")]
+    RestoreCheckpointFailed(String),
+
+    #[error("Restore operation failed: {0}")]
+    RestoreFailed(String),
+
+    #[error("Rollback failed after restore error: {0}")]
+    RollbackFailed(String),
+
+    #[error("Post-restore validation failed: {0}")]
+    PostRestoreValidationFailed(String),
+
+    #[error("Operation cancelled")]
+    Cancelled,
+
+    #[error("Partial cleanup warning: {0}")]
+    PartialCleanupWarning(String),
+
+    #[error("Concurrent operation error: {0}")]
+    ConcurrentOperation(String),
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
+}
+
+impl BackupError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            BackupError::ConcurrentOperation(msg) => format!("Cannot proceed: {msg}"),
+            BackupError::DestinationUnavailable(msg) => format!("Backup destination is unavailable: {msg}"),
+            BackupError::PermissionDenied(msg) => format!("Permission denied accessing backup location: {msg}"),
+            BackupError::InsufficientDiskSpace => "Insufficient disk space to complete backup operation.".to_string(),
+            BackupError::DatabaseSnapshotFailed(msg) => format!("Failed to create consistent database snapshot: {msg}"),
+            BackupError::ArchiveWriteFailed(msg) => format!("Failed to write backup archive: {msg}"),
+            BackupError::ArchiveReadFailed(msg) => format!("Failed to read backup archive: {msg}"),
+            BackupError::ValidationFailed(msg) => format!("Backup validation failed: {msg}"),
+            BackupError::ManifestInvalid(msg) => format!("Backup manifest is invalid: {msg}"),
+            BackupError::ChecksumMismatch { entry, .. } => format!("Integrity check failed: checksum mismatch for '{entry}'."),
+            BackupError::RequiredAttachmentMissing(name) => format!("Backup is incomplete: required attachment '{name}' is missing."),
+            BackupError::UnsupportedVersion { version, max_supported } => {
+                format!("Unsupported backup version {version}. This application supports up to version {max_supported}.")
+            }
+            BackupError::IncompatibleSchema { backup_schema, current_schema } => {
+                format!("Backup database schema (v{backup_schema}) is newer than supported by this application (v{current_schema}). Please update Personal Notepad.")
+            }
+            BackupError::RestoreCheckpointFailed(msg) => format!("Safety checkpoint could not be created before restore: {msg}. Restore aborted to protect current data."),
+            BackupError::RestoreFailed(msg) => format!("Restore operation failed: {msg}"),
+            BackupError::RollbackFailed(msg) => format!("Restore failed and automatic rollback encountered an issue: {msg}"),
+            BackupError::PostRestoreValidationFailed(msg) => format!("Post-restore verification failed: {msg}"),
+            BackupError::Cancelled => "Backup or restore operation was cancelled.".to_string(),
+            BackupError::PartialCleanupWarning(msg) => format!("Warning during cleanup: {msg}"),
+            BackupError::InvalidRequest(msg) => msg.clone(),
+            BackupError::Database(_) => "A database error occurred during backup or restore.".to_string(),
+            BackupError::Io(err) => match err.kind() {
+                std::io::ErrorKind::PermissionDenied => "Permission denied when performing backup filesystem operation.".to_string(),
+                std::io::ErrorKind::NotFound => "Requested backup file or directory was not found.".to_string(),
+                _ => "A filesystem IO error occurred during backup or restore.".to_string(),
+            },
+        }
+    }
+
+    /// Returns a coarse, privacy-safe classification string for operational logging and health tracking.
+    pub fn category(&self) -> &'static str {
+        match self {
+            BackupError::ConcurrentOperation(_) => "ConcurrentOperation",
+            BackupError::DestinationUnavailable(_) => "DestinationUnavailable",
+            BackupError::PermissionDenied(_) => "PermissionDenied",
+            BackupError::InsufficientDiskSpace => "InsufficientDiskSpace",
+            BackupError::DatabaseSnapshotFailed(_) => "DatabaseSnapshotFailed",
+            BackupError::ArchiveWriteFailed(_) => "ArchiveWriteFailed",
+            BackupError::ArchiveReadFailed(_) => "ArchiveReadFailed",
+            BackupError::ValidationFailed(_) => "ValidationFailed",
+            BackupError::ManifestInvalid(_) => "ManifestInvalid",
+            BackupError::ChecksumMismatch { .. } => "ChecksumMismatch",
+            BackupError::RequiredAttachmentMissing(_) => "RequiredAttachmentMissing",
+            BackupError::UnsupportedVersion { .. } => "UnsupportedVersion",
+            BackupError::IncompatibleSchema { .. } => "IncompatibleSchema",
+            BackupError::RestoreCheckpointFailed(_) => "RestoreCheckpointFailed",
+            BackupError::RestoreFailed(_) => "RestoreFailed",
+            BackupError::RollbackFailed(_) => "RollbackFailed",
+            BackupError::PostRestoreValidationFailed(_) => "PostRestoreValidationFailed",
+            BackupError::Cancelled => "Cancelled",
+            BackupError::PartialCleanupWarning(_) => "PartialCleanupWarning",
+            BackupError::InvalidRequest(_) => "InvalidRequest",
+            BackupError::Database(_) => "Database",
+            BackupError::Io(err) => match err.kind() {
+                std::io::ErrorKind::PermissionDenied => "PermissionDenied",
+                std::io::ErrorKind::NotFound => "NotFound",
+                _ => "Io",
+            },
+        }
+    }
+}
+
+impl From<BackupError> for StorageError {
+    fn from(err: BackupError) -> Self {
+        StorageError::Backup(err.user_friendly_message())
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
@@ -347,6 +505,7 @@ impl StorageError {
             StorageError::AttachmentError(msg) => msg.clone(),
             StorageError::InternalLink(msg) => msg.clone(),
             StorageError::ImportExport(msg) => msg.clone(),
+            StorageError::Backup(msg) => msg.clone(),
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => {
                 match err.code {
                     rusqlite::ErrorCode::ConstraintViolation => {
@@ -481,6 +640,37 @@ mod tests {
 
         let converted: StorageError = unsupp.into();
         assert!(converted.user_friendly_message().contains("Unsupported file format"));
+    }
+
+    #[test]
+    fn test_backup_error_user_friendly_messages() {
+        let cancel = BackupError::Cancelled;
+        assert_eq!(cancel.user_friendly_message(), "Backup or restore operation was cancelled.");
+
+        let unsupp = BackupError::UnsupportedVersion {
+            version: 2,
+            max_supported: 1,
+        };
+        assert!(unsupp.user_friendly_message().contains("Unsupported backup version 2"));
+
+        let mismatch = BackupError::ChecksumMismatch {
+            entry: "database.sqlite".to_string(),
+            expected: "abc".to_string(),
+            actual: "def".to_string(),
+        };
+        assert!(mismatch.user_friendly_message().contains("checksum mismatch for 'database.sqlite'"));
+
+        let missing_att = BackupError::RequiredAttachmentMissing("photo.png".to_string());
+        assert!(missing_att.user_friendly_message().contains("photo.png"));
+
+        let space = BackupError::InsufficientDiskSpace;
+        assert!(space.user_friendly_message().contains("Insufficient disk space"));
+
+        let checkpoint = BackupError::RestoreCheckpointFailed("disk write error".to_string());
+        assert!(checkpoint.user_friendly_message().contains("Safety checkpoint could not be created"));
+
+        let converted: StorageError = unsupp.into();
+        assert!(converted.user_friendly_message().contains("Unsupported backup version 2"));
     }
 }
 

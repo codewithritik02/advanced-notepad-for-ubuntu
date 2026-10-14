@@ -495,4 +495,302 @@ export interface InterchangeDocument {
   notes: InterchangeNote[];
 }
 
+/**
+ * =========================================================================
+ * Phase 11 — Backup & Data Safety Types and DTOs (Task 4)
+ * =========================================================================
+ */
+
+export type BackupType = "manual" | "automatic" | "checkpoint";
+
+export interface BackupDatabaseInfo {
+  entry_path: string;
+  file_size: number;
+  sha256: string;
+  schema_version: number;
+  note_count: number;
+  notebook_count: number;
+  tag_count: number;
+  trash_count: number;
+}
+
+export interface BackupAttachmentsSummary {
+  total_files: number;
+  total_bytes: number;
+}
+
+export interface BackupAttachmentItem {
+  id: string;
+  note_id: string;
+  file_name: string;
+  relative_path: string;
+  file_size: number;
+  mime_type: string | null;
+  sha256: string;
+}
+
+export interface BackupScopeDeclaration {
+  includes_settings: boolean;
+  includes_trash: boolean;
+  includes_attachments: boolean;
+}
+
+export interface BackupManifest {
+  format_identifier: string;
+  format_version: number;
+  app_version: string;
+  created_at: string;
+  backup_type: BackupType;
+  database: BackupDatabaseInfo;
+  attachments_summary: BackupAttachmentsSummary;
+  attachments: BackupAttachmentItem[];
+  scope: BackupScopeDeclaration;
+  checksums: Record<string, string>;
+}
+
+export interface BackupCreateRequest {
+  destinationPath?: string | null;
+  backupType?: BackupType | null;
+  allowOverwrite?: boolean | null;
+}
+
+export interface BackupCreateResult {
+  success: boolean;
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  createdAt: string;
+  backupType: BackupType;
+  verified: boolean;
+  noteCount: number;
+  attachmentCount: number;
+  warningMessage?: string | null;
+}
+
+export interface BackupListItem {
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  createdAt: string;
+  backupType: BackupType;
+  formatVersion?: number;
+  schemaVersion?: number;
+  noteCount?: number;
+  notebookCount?: number;
+  attachmentCount?: number;
+  isVerified: boolean;
+  isValid: boolean;
+  issueSummary?: string | null;
+}
+
+export type BackupValidationIssueSeverity = "warning" | "error";
+
+export interface BackupValidationIssue {
+  severity: BackupValidationIssueSeverity;
+  code: string;
+  message: string;
+}
+
+export type BackupCompatibilityStatus =
+  | "compatible"
+  | "requiresMigration"
+  | "incompatibleVersion"
+  | "corrupted";
+
+export interface BackupValidationResult {
+  isValid: boolean;
+  compatibility: BackupCompatibilityStatus;
+  manifest?: BackupManifest | null;
+  issues: BackupValidationIssue[];
+}
+
+export interface RestorePreviewResult {
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  createdAt: string;
+  backupType: BackupType;
+  formatVersion: number;
+  schemaVersion: number;
+  noteCount: number;
+  notebookCount: number;
+  tagCount: number;
+  trashCount: number;
+  attachmentCount: number;
+  attachmentTotalBytes: number;
+  includesSettings: boolean;
+  compatibility: BackupCompatibilityStatus;
+  warnings: string[];
+  canRestore: boolean;
+}
+
+export interface BackupRestoreRequest {
+  filePath: string;
+  operationId?: string;
+}
+
+export interface PostRestoreValidationReport {
+  isValid: boolean;
+  integrityCheckPassed: boolean;
+  foreignKeyCheckPassed: boolean;
+  schemaVersion: number;
+  noteCount: number;
+  notebookCount: number;
+  tagCount: number;
+  trashCount: number;
+  attachmentCount: number;
+  attachmentsVerifiedOnDisk: boolean;
+  ftsRebuiltAndQueryable: boolean;
+  internalLinksVerified: boolean;
+  settingsVerified: boolean;
+}
+
+export interface BackupRestoreResult {
+  success: boolean;
+  restoredAt: string;
+  noteCount: number;
+  notebookCount: number;
+  tagCount: number;
+  trashCount: number;
+  attachmentCount: number;
+  checkpointPath: string;
+  warningMessage?: string | null;
+  validationReport?: PostRestoreValidationReport | null;
+}
+
+export type BackupProgressStage =
+  | "starting"
+  | "snapshottingDatabase"
+  | "collectingAttachments"
+  | "generatingManifest"
+  | "writingArchive"
+  | "verifyingArchive"
+  | "applyingRetention"
+  | "extractingStaging"
+  | "preparingStagingData"
+  | "checkingDatabaseIntegrity"
+  | "checkingAttachments"
+  | "validatingBackup"
+  | "validatingStagedData"
+  | "creatingCheckpoint"
+  | "preparingActivation"
+  | "activatingRestoredData"
+  | "verifyingRestoredState"
+  | "rebuildingSearchIndex"
+  | "completed"
+  | "failed"
+  | "failedWithRecoveryAvailable"
+  | "failedAndRecoveryRequired"
+  | "cancelled";
+
+export interface BackupProgressEvent {
+  stage: BackupProgressStage;
+  message: string;
+  currentItem?: number | null;
+  totalItems?: number | null;
+  percentage?: number | null;
+  cancellable?: boolean;
+  operationId?: string | null;
+}
+
+export interface BackupSettings {
+  autoBackupEnabled: boolean;
+  intervalMinutes: number;
+  backupDestinationDir?: string | null;
+  retentionCount: number;
+  backupOnStartup: boolean;
+}
+
+export type BackupHealthLevel = "healthy" | "warning" | "critical" | "disabled";
+
+export interface BackupHealthWarning {
+  code: string;
+  level: "warning" | "critical" | "info";
+  message: string;
+  detail?: string | null;
+}
+
+export interface BackupHealthStatus {
+  healthLevel: BackupHealthLevel;
+  autoBackupEnabled: boolean;
+  destinationAvailable: boolean;
+  destinationPath: string;
+  isSameDisk: boolean;
+  lastAttemptAt?: string | null;
+  lastSuccessfulAt?: string | null;
+  lastFailureCategory?: string | null;
+  lastErrorMessage?: string | null;
+  lastRetentionWarning?: string | null;
+  failureCount: number;
+  managedBackupCount: number;
+  hasVerifiedBackup: boolean;
+  latestBackupName?: string | null;
+  latestBackupVerified: boolean;
+  warnings: BackupHealthWarning[];
+}
+
+export interface BackupSchedulerState {
+  lastAttemptAt?: string | null;
+  lastSuccessfulAt?: string | null;
+  lastErrorMessage?: string | null;
+  lastFailureCategory?: string | null;
+  lastRetentionWarning?: string | null;
+  failureCount: number;
+}
+
+/**
+ * Detailed metadata for an authoritative pre-restore recovery checkpoint (Phase 11, Task 16).
+ */
+export interface RecoveryCheckpoint {
+  checkpointId: string;
+  filePath: string;
+  fileName: string;
+  fileSize: number;
+  createdAt: string;
+  noteCount: number;
+  trashCount: number;
+  notebookCount: number;
+  tagCount: number;
+  attachmentCount: number;
+  attachmentTotalBytes: number;
+  schemaVersion: number;
+  isVerified: boolean;
+}
+
+/**
+ * Authoritative summary of an isolated staged archive extraction (Phase 11, Task 17).
+ */
+export interface StagedRestoreSummary {
+  stagingId: string;
+  stagingDir: string;
+  databasePath: string;
+  manifestPresent: boolean;
+  totalExtractedFiles: number;
+  totalExtractedBytes: number;
+  noteCount: number;
+  notebookCount: number;
+  tagCount: number;
+  trashCount: number;
+  attachmentCount: number;
+  initialSchemaVersion: number;
+  isValid: boolean;
+}
+
+/**
+ * Result of running database schema migrations on a staged database before activation (Phase 11, Task 18).
+ */
+export interface StagedMigrationResult {
+  stagingId: string;
+  stagingDir: string;
+  previousSchemaVersion: number;
+  migratedSchemaVersion: number;
+  migrationsApplied: number;
+  noteCount: number;
+  trashCount: number;
+  notebookCount: number;
+  tagCount: number;
+  attachmentCount: number;
+  isVerified: boolean;
+}
+
 

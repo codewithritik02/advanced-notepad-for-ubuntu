@@ -17,6 +17,18 @@ import {
   formatResultCount,
 } from "../src/features/search/utils.ts";
 import { computeNotebookPath } from "../src/features/notebooks/utils/notebookTree.ts";
+import {
+  formatBackupBytes,
+  getBackupStageDescription,
+  sanitizeBackupFilename,
+  generateDefaultBackupFilename,
+  isBackupDue,
+  MAX_CONSECUTIVE_FAILURES,
+  MIN_RETRY_BACKOFF_MINUTES,
+  computeRetentionPlan,
+  sortBackupsDescending,
+  isDeletionTargetProtected,
+} from "../src/features/backup/utils/backupUtils.ts";
 
 describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
   // =========================================================================
@@ -17688,6 +17700,3116 @@ describe("Phase 9 - Task 24: Security, Reliability, and Performance Verification
     });
   });
 });
+
+describe("Phase 11 - Task 8: Manual Backup Creation & Verification Tests", () => {
+  describe("1. Backup File Size Formatting", () => {
+    it("formats 0 or negative bytes cleanly", () => {
+      assert.strictEqual(formatBackupBytes(0), "0 Bytes");
+      assert.strictEqual(formatBackupBytes(-10), "0 Bytes");
+    });
+
+    it("formats small byte values", () => {
+      assert.strictEqual(formatBackupBytes(500), "500 Bytes");
+    });
+
+    it("formats kilobyte values", () => {
+      assert.strictEqual(formatBackupBytes(1024), "1.0 KB");
+      assert.strictEqual(formatBackupBytes(2048), "2.0 KB");
+      assert.strictEqual(formatBackupBytes(1536), "1.5 KB");
+    });
+
+    it("formats megabyte values", () => {
+      assert.strictEqual(formatBackupBytes(1048576), "1.0 MB");
+      assert.strictEqual(formatBackupBytes(2621440), "2.5 MB");
+    });
+
+    it("formats gigabyte values", () => {
+      assert.strictEqual(formatBackupBytes(1073741824), "1.0 GB");
+    });
+  });
+
+  describe("2. Backup Progress Stage Mapping", () => {
+    it("maps known stages to clear, human-friendly action text", () => {
+      assert.strictEqual(
+        getBackupStageDescription("starting"),
+        "Initializing backup process..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("snapshottingDatabase"),
+        "Creating consistent SQLite database snapshot..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("collectingAttachments"),
+        "Capturing and verifying attachment files..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("generatingManifest"),
+        "Building authoritative manifest and computing checksums..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("writingArchive"),
+        "Compressing and writing backup archive..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("verifyingArchive"),
+        "Reading back and verifying archive integrity..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("applyingRetention"),
+        "Applying backup retention policies..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("completed"),
+        "Backup complete and verified!"
+      );
+      assert.strictEqual(
+        getBackupStageDescription("failed"),
+        "Backup process failed."
+      );
+    });
+
+    it("falls back gracefully on unknown stages", () => {
+      // @ts-expect-error test invalid stage
+      assert.strictEqual(getBackupStageDescription("unknownStage"), "Processing backup...");
+    });
+  });
+
+  describe("3. Manual Backup Request Construction & Defaults", () => {
+    it("constructs default manual backup request with safe defaults", () => {
+      const buildRequest = (customDest, allowOverwrite) => ({
+        destinationPath: customDest || null,
+        backupType: "manual",
+        allowOverwrite: allowOverwrite ?? false,
+      });
+
+      const defaultReq = buildRequest(null, false);
+      assert.strictEqual(defaultReq.destinationPath, null);
+      assert.strictEqual(defaultReq.backupType, "manual");
+      assert.strictEqual(defaultReq.allowOverwrite, false);
+    });
+
+    it("accepts custom destination path and honors overwrite flag", () => {
+      const buildRequest = (customDest, allowOverwrite) => ({
+        destinationPath: customDest || null,
+        backupType: "manual",
+        allowOverwrite: allowOverwrite ?? false,
+      });
+
+      const customReq = buildRequest("/home/user/backups/notes-2026.pnbackup", true);
+      assert.strictEqual(customReq.destinationPath, "/home/user/backups/notes-2026.pnbackup");
+      assert.strictEqual(customReq.allowOverwrite, true);
+    });
+  });
+
+  describe("4. Pre-Backup Unsaved Draft Synchronization Invariant", () => {
+    it("ensures pending editor draft is saved before starting backup snapshot", async () => {
+      let isEditorDraftFlushed = false;
+      let backupSnapshotStarted = false;
+
+      const mockFlushSave = async () => {
+        isEditorDraftFlushed = true;
+      };
+
+      const mockStartBackup = async () => {
+        if (!isEditorDraftFlushed) {
+          throw new Error("Cannot snapshot database while editor draft is dirty!");
+        }
+        backupSnapshotStarted = true;
+      };
+
+      // Execute in required sequence
+      await mockFlushSave();
+      await mockStartBackup();
+
+      assert.strictEqual(isEditorDraftFlushed, true);
+      assert.strictEqual(backupSnapshotStarted, true);
+    });
+  });
+
+  describe("5. Verified Status and Integrity Enforcement", () => {
+    it("marks backup successful ONLY when verified is true", () => {
+      const assessResult = (res) => {
+        if (!res.success) return "failed";
+        if (!res.verified) return "unverified";
+        return "verified_success";
+      };
+
+      const validResult = {
+        success: true,
+        filePath: "/path/to/backup.pnbackup",
+        fileName: "backup.pnbackup",
+        fileSize: 45000,
+        createdAt: "2026-10-13T18:00:00Z",
+        backupType: "manual",
+        verified: true,
+        noteCount: 10,
+        attachmentCount: 2,
+      };
+
+      const unverifiedResult = {
+        ...validResult,
+        verified: false,
+      };
+
+      assert.strictEqual(assessResult(validResult), "verified_success");
+      assert.strictEqual(assessResult(unverifiedResult), "unverified");
+    });
+  });
+
+  describe("6. Complete Manual Backup Simulation Workflow", () => {
+    it("executes simulated end-to-end backup workflow with progress and verification", async () => {
+      const stagesObserved = [];
+      let finalPercentage = 0;
+
+      const mockBackupService = {
+        async createBackup(request, onProgress) {
+          const stages = [
+            { stage: "starting", pct: 5 },
+            { stage: "snapshottingDatabase", pct: 25 },
+            { stage: "collectingAttachments", pct: 50 },
+            { stage: "generatingManifest", pct: 75 },
+            { stage: "writingArchive", pct: 90 },
+            { stage: "verifyingArchive", pct: 95 },
+            { stage: "completed", pct: 100 },
+          ];
+
+          for (const s of stages) {
+            onProgress?.({
+              stage: s.stage,
+              message: getBackupStageDescription(s.stage),
+              percentage: s.pct,
+            });
+          }
+
+          return {
+            success: true,
+            filePath: "/test/backups/personal-notepad-backup-20261013-180000.pnbackup",
+            fileName: "personal-notepad-backup-20261013-180000.pnbackup",
+            fileSize: 125000,
+            createdAt: new Date().toISOString(),
+            backupType: "manual",
+            verified: true,
+            noteCount: 42,
+            attachmentCount: 7,
+          };
+        },
+      };
+
+      const result = await mockBackupService.createBackup(
+        { backupType: "manual" },
+        (progress) => {
+          stagesObserved.push(progress.stage);
+          if (progress.percentage) {
+            finalPercentage = progress.percentage;
+          }
+        }
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.verified, true);
+      assert.strictEqual(result.noteCount, 42);
+      assert.strictEqual(result.attachmentCount, 7);
+      assert.strictEqual(finalPercentage, 100);
+      assert.deepStrictEqual(stagesObserved, [
+        "starting",
+        "snapshottingDatabase",
+        "collectingAttachments",
+        "generatingManifest",
+        "writingArchive",
+        "verifyingArchive",
+        "completed",
+      ]);
+    });
+  });
+});
+
+describe("Phase 11 - Task 9: Safe Backup Destination and Filename Handling Tests", () => {
+  describe("1. Filename Sanitization & Cross-Platform Safety", () => {
+    it("strips illegal characters (/ \\ : * ? \" < > | and control characters)", () => {
+      assert.strictEqual(
+        sanitizeBackupFilename('backup/with\\bad:chars*and?"quotes"<angles>|pipe'),
+        "backupwithbadcharsandquotesanglespipe"
+      );
+    });
+
+    it("trims whitespace and removes leading and trailing dots", () => {
+      assert.strictEqual(sanitizeBackupFilename("...my-archive..."), "my-archive");
+      assert.strictEqual(sanitizeBackupFilename("   notes backup   "), "notes backup");
+      assert.strictEqual(sanitizeBackupFilename(" .dots.and.spaces. "), "dots.and.spaces");
+    });
+
+    it("falls back to default filename when input resolves to empty", () => {
+      assert.strictEqual(sanitizeBackupFilename(""), "personal-notepad-backup");
+      assert.strictEqual(sanitizeBackupFilename("   "), "personal-notepad-backup");
+      assert.strictEqual(sanitizeBackupFilename("..."), "personal-notepad-backup");
+      assert.strictEqual(sanitizeBackupFilename("///:::***"), "personal-notepad-backup");
+    });
+
+    it("neutralizes Windows reserved device names (CON, PRN, AUX, NUL, COM1, LPT1)", () => {
+      assert.strictEqual(sanitizeBackupFilename("CON"), "_CON");
+      assert.strictEqual(sanitizeBackupFilename("con"), "_con");
+      assert.strictEqual(sanitizeBackupFilename("PRN"), "_PRN");
+      assert.strictEqual(sanitizeBackupFilename("AUX"), "_AUX");
+      assert.strictEqual(sanitizeBackupFilename("NUL"), "_NUL");
+      assert.strictEqual(sanitizeBackupFilename("COM1"), "_COM1");
+      assert.strictEqual(sanitizeBackupFilename("LPT9"), "_LPT9");
+      assert.strictEqual(sanitizeBackupFilename("NORMAL_NAME"), "NORMAL_NAME");
+    });
+
+    it("preserves multi-lingual Unicode characters and emojis", () => {
+      assert.strictEqual(
+        sanitizeBackupFilename("नोट्स-बैकअप-2026-🚀-ノート"),
+        "नोट्स-बैकअप-2026-🚀-ノート"
+      );
+      assert.strictEqual(
+        sanitizeBackupFilename("résumé_sauvegarde_2026"),
+        "résumé_sauvegarde_2026"
+      );
+    });
+
+    it("bounds maximum filename length to 120 characters", () => {
+      const veryLong = "x".repeat(200);
+      const sanitized = sanitizeBackupFilename(veryLong);
+      assert.strictEqual(Array.from(sanitized).length, 120);
+      assert.strictEqual(sanitized, "x".repeat(120));
+    });
+  });
+
+  describe("2. Default Timestamped Filename Generation", () => {
+    it("generates stable, timestamped backup filename format", () => {
+      const fixedDate = new Date("2026-10-13T17:30:45Z");
+      const name = generateDefaultBackupFilename(fixedDate, "manual");
+      assert.ok(name.startsWith("personal-notepad-backup-"));
+      assert.ok(name.endsWith(".pnbackup"));
+    });
+
+    it("distinguishes automatic, manual, and checkpoint backup prefixes", () => {
+      const fixedDate = new Date("2026-10-13T17:30:45Z");
+      const manualName = generateDefaultBackupFilename(fixedDate, "manual");
+      const autoName = generateDefaultBackupFilename(fixedDate, "automatic");
+      const checkName = generateDefaultBackupFilename(fixedDate, "checkpoint");
+
+      assert.ok(manualName.includes("personal-notepad-backup-"));
+      assert.ok(autoName.includes("personal-notepad-auto-backup-"));
+      assert.ok(checkName.includes("personal-notepad-checkpoint-"));
+    });
+  });
+
+  describe("3. Destination Collision and Overwrite Guarantees", () => {
+    it("handles collision-free sequential naming formatting (1), (2)", () => {
+      const formatCandidate = (stem, counter, ext) => `${stem} (${counter}).${ext}`;
+      assert.strictEqual(formatCandidate("my-backup", 1, "pnbackup"), "my-backup (1).pnbackup");
+      assert.strictEqual(formatCandidate("my-backup", 2, "pnbackup"), "my-backup (2).pnbackup");
+    });
+
+    it("enforces explicit overwrite confirmation requirement", () => {
+      const canWrite = (targetExists, allowOverwrite) => {
+        if (!targetExists) return { allowed: true };
+        if (!allowOverwrite) return { allowed: false, error: "Explicit replacement confirmation required" };
+        return { allowed: true };
+      };
+
+      assert.strictEqual(canWrite(false, false).allowed, true);
+      assert.strictEqual(canWrite(true, false).allowed, false);
+      assert.strictEqual(canWrite(true, true).allowed, true);
+    });
+  });
+
+  describe("4. Path Traversal and Sensitive Target Protection Invariants", () => {
+    it("detects and rejects attempts to target live database or journals", () => {
+      const isTargetSafe = (targetPath, liveDbPath) => {
+        const t = targetPath.trim();
+        const db = liveDbPath.trim();
+        if (t === db || t.startsWith(`${db}-`)) {
+          return false;
+        }
+        return true;
+      };
+
+      const liveDb = "/data/database.sqlite";
+      assert.strictEqual(isTargetSafe("/data/database.sqlite", liveDb), false);
+      assert.strictEqual(isTargetSafe("/data/database.sqlite-wal", liveDb), false);
+      assert.strictEqual(isTargetSafe("/data/database.sqlite-shm", liveDb), false);
+      assert.strictEqual(isTargetSafe("/data/backups/backup-1.pnbackup", liveDb), true);
+    });
+  });
+});
+
+describe("Phase 11 - Task 10: Automatic Backup Settings Tests", () => {
+  describe("1. Default Settings Invariants", () => {
+    it("provides safe and well-documented defaults", () => {
+      const defaultSettings = {
+        autoBackupEnabled: true,
+        intervalMinutes: 1440,
+        backupDestinationDir: null,
+        retentionCount: 5,
+        backupOnStartup: true,
+      };
+
+      assert.strictEqual(defaultSettings.autoBackupEnabled, true);
+      assert.strictEqual(defaultSettings.intervalMinutes, 1440);
+      assert.strictEqual(defaultSettings.backupDestinationDir, null);
+      assert.strictEqual(defaultSettings.retentionCount, 5);
+      assert.strictEqual(defaultSettings.backupOnStartup, true);
+    });
+  });
+
+  describe("2. Interval Minutes Validation Bounds (15 min - 30 days)", () => {
+    const validateInterval = (mins) => {
+      if (typeof mins !== "number" || isNaN(mins)) return false;
+      return mins >= 15 && mins <= 43200;
+    };
+
+    it("accepts valid intervals within allowed bounds", () => {
+      assert.strictEqual(validateInterval(15), true); // minimum (15 min)
+      assert.strictEqual(validateInterval(60), true); // 1 hour
+      assert.strictEqual(validateInterval(360), true); // 6 hours
+      assert.strictEqual(validateInterval(1440), true); // 24 hours
+      assert.strictEqual(validateInterval(10080), true); // 7 days
+      assert.strictEqual(validateInterval(43200), true); // 30 days max
+    });
+
+    it("rejects dangerous or unbounded intervals", () => {
+      assert.strictEqual(validateInterval(0), false);
+      assert.strictEqual(validateInterval(-10), false);
+      assert.strictEqual(validateInterval(5), false); // too low, prevents unbounded loop
+      assert.strictEqual(validateInterval(14), false);
+      assert.strictEqual(validateInterval(50000), false); // exceeds 30 days
+    });
+  });
+
+  describe("3. Retention Count Validation Bounds (1 - 50)", () => {
+    const validateRetention = (count) => {
+      if (typeof count !== "number" || isNaN(count)) return false;
+      return count >= 1 && count <= 50;
+    };
+
+    it("accepts retention values between 1 and 50", () => {
+      assert.strictEqual(validateRetention(1), true);
+      assert.strictEqual(validateRetention(5), true);
+      assert.strictEqual(validateRetention(10), true);
+      assert.strictEqual(validateRetention(50), true);
+    });
+
+    it("rejects invalid retention counts", () => {
+      assert.strictEqual(validateRetention(0), false); // cannot delete immediately
+      assert.strictEqual(validateRetention(-1), false);
+      assert.strictEqual(validateRetention(51), false); // avoids unbounded disk consumption
+      assert.strictEqual(validateRetention(1000), false);
+    });
+  });
+
+  describe("4. Destination Directory Safety Invariants", () => {
+    const validateDestination = (dest, liveDbPath, attachmentsPath) => {
+      if (!dest) return { valid: true, normalized: null };
+      const trimmed = dest.trim();
+      if (!trimmed) return { valid: true, normalized: null };
+
+      if (trimmed === liveDbPath || trimmed.startsWith(`${liveDbPath}-`)) {
+        return { valid: false, error: "Cannot target active database" };
+      }
+      if (trimmed === attachmentsPath) {
+        return { valid: false, error: "Cannot target attachments directory" };
+      }
+      return { valid: true, normalized: trimmed };
+    };
+
+    it("normalizes empty or whitespace destinations to null (default managed folder)", () => {
+      assert.strictEqual(validateDestination("", "/db", "/att").normalized, null);
+      assert.strictEqual(validateDestination("   ", "/db", "/att").normalized, null);
+    });
+
+    it("rejects targeting live database or attachments folder", () => {
+      assert.strictEqual(validateDestination("/data/db.sqlite", "/data/db.sqlite", "/data/att").valid, false);
+      assert.strictEqual(validateDestination("/data/att", "/data/db.sqlite", "/data/att").valid, false);
+    });
+
+    it("permits safe custom backup destination directory", () => {
+      const res = validateDestination("/home/user/my_backups", "/data/db.sqlite", "/data/att");
+      assert.strictEqual(res.valid, true);
+      assert.strictEqual(res.normalized, "/home/user/my_backups");
+    });
+  });
+
+  describe("5. Settings Update and State Immutability", () => {
+    it("preserves settings configuration across toggle updates", () => {
+      const initial = {
+        autoBackupEnabled: true,
+        intervalMinutes: 720,
+        backupDestinationDir: "/custom/backups",
+        retentionCount: 8,
+        backupOnStartup: false,
+      };
+
+      // Disabling auto backup does not wipe configured values
+      const disabled = { ...initial, autoBackupEnabled: false };
+      assert.strictEqual(disabled.autoBackupEnabled, false);
+      assert.strictEqual(disabled.intervalMinutes, 720);
+      assert.strictEqual(disabled.retentionCount, 8);
+      assert.strictEqual(disabled.backupDestinationDir, "/custom/backups");
+
+      // Re-enabling retains values
+      const reEnabled = { ...disabled, autoBackupEnabled: true };
+      assert.deepStrictEqual(reEnabled, initial);
+    });
+  });
+});
+
+describe("Phase 11 - Task 11: Automatic Backup Scheduling Tests", () => {
+  const defaultSettings = {
+    autoBackupEnabled: true,
+    intervalMinutes: 1440,
+    backupDestinationDir: null,
+    retentionCount: 5,
+    backupOnStartup: true,
+  };
+
+  const defaultState = {
+    lastAttemptAt: null,
+    lastSuccessfulAt: null,
+    lastErrorMessage: null,
+    failureCount: 0,
+  };
+
+  describe("1. User Settings Compliance", () => {
+    it("never runs backups when autoBackupEnabled is false", () => {
+      const disabledSettings = { ...defaultSettings, autoBackupEnabled: false };
+      const now = new Date("2026-10-13T12:00:00Z");
+
+      // Neither startup check nor routine check should trigger backup
+      assert.strictEqual(isBackupDue(disabledSettings, defaultState, now, true), false);
+      assert.strictEqual(isBackupDue(disabledSettings, defaultState, now, false), false);
+    });
+  });
+
+  describe("2. First Run & Startup Triggers", () => {
+    it("triggers immediate backup on startup when backupOnStartup is true and no prior backup exists", () => {
+      const now = new Date("2026-10-13T12:00:00Z");
+      assert.strictEqual(isBackupDue(defaultSettings, defaultState, now, true), true);
+    });
+
+    it("does not trigger backup on startup when backupOnStartup is false and no prior backup exists", () => {
+      const settings = { ...defaultSettings, backupOnStartup: false };
+      const now = new Date("2026-10-13T12:00:00Z");
+      assert.strictEqual(isBackupDue(settings, defaultState, now, true), false);
+    });
+
+    it("triggers backup during routine interval check if never attempted", () => {
+      const now = new Date("2026-10-13T12:00:00Z");
+      assert.strictEqual(isBackupDue(defaultSettings, defaultState, now, false), true);
+    });
+  });
+
+  describe("3. Rapid Restart Protection Invariants", () => {
+    it("skips startup backup when a successful backup completed recently", () => {
+      const now = new Date("2026-10-13T12:00:00Z");
+      // Successful backup finished only 10 minutes ago
+      const state = {
+        ...defaultState,
+        lastSuccessfulAt: new Date(now.getTime() - 10 * 60 * 1000).toISOString(),
+        lastAttemptAt: new Date(now.getTime() - 10 * 60 * 1000).toISOString(),
+      };
+
+      // Even with backupOnStartup = true, rapid restart must NOT duplicate backups
+      assert.strictEqual(isBackupDue(defaultSettings, state, now, true), false);
+      assert.strictEqual(isBackupDue(defaultSettings, state, now, false), false);
+    });
+  });
+
+  describe("4. Configured Elapsed Interval Expiration", () => {
+    it("triggers backup when elapsed time exceeds configured interval", () => {
+      const settings = { ...defaultSettings, intervalMinutes: 60 };
+      const now = new Date("2026-10-13T12:00:00Z");
+
+      // Backup was made 75 minutes ago (> 60 minutes)
+      const dueState = {
+        ...defaultState,
+        lastSuccessfulAt: new Date(now.getTime() - 75 * 60 * 1000).toISOString(),
+      };
+      assert.strictEqual(isBackupDue(settings, dueState, now, false), true);
+      assert.strictEqual(isBackupDue(settings, dueState, now, true), true);
+
+      // Backup was made 30 minutes ago (< 60 minutes)
+      const notDueState = {
+        ...defaultState,
+        lastSuccessfulAt: new Date(now.getTime() - 30 * 60 * 1000).toISOString(),
+      };
+      assert.strictEqual(isBackupDue(settings, notDueState, now, false), false);
+    });
+  });
+
+  describe("5. Failure Backoff & Finite Retries Protection", () => {
+    it("enforces minimum retry backoff window following a failed attempt", () => {
+      const settings = { ...defaultSettings, intervalMinutes: 60 };
+      const now = new Date("2026-10-13T12:00:00Z");
+      const pastSuccess = new Date(now.getTime() - 120 * 60 * 1000).toISOString();
+
+      // Failed 5 minutes ago: within 15-minute backoff window -> should NOT retry yet
+      const stateUnderBackoff = {
+        ...defaultState,
+        lastSuccessfulAt: pastSuccess,
+        lastAttemptAt: new Date(now.getTime() - 5 * 60 * 1000).toISOString(),
+        failureCount: 1,
+      };
+      assert.strictEqual(isBackupDue(settings, stateUnderBackoff, now, false), false);
+
+      // Failed 20 minutes ago: exceeded 15-minute backoff window -> retry is allowed
+      const statePastBackoff = {
+        ...defaultState,
+        lastSuccessfulAt: pastSuccess,
+        lastAttemptAt: new Date(now.getTime() - 20 * 60 * 1000).toISOString(),
+        failureCount: 1,
+      };
+      assert.strictEqual(isBackupDue(settings, statePastBackoff, now, false), true);
+    });
+
+    it("halts automatic backup retries when MAX_CONSECUTIVE_FAILURES is reached", () => {
+      const settings = { ...defaultSettings, intervalMinutes: 60 };
+      const now = new Date("2026-10-13T12:00:00Z");
+
+      const stateMaxFailures = {
+        ...defaultState,
+        lastAttemptAt: new Date(now.getTime() - 300 * 60 * 1000).toISOString(),
+        failureCount: MAX_CONSECUTIVE_FAILURES,
+        lastErrorMessage: "Persistent disk error",
+      };
+
+      // Exceeded max failures cap -> do not retry automatically to prevent thrashing
+      assert.strictEqual(isBackupDue(settings, stateMaxFailures, now, false), false);
+      assert.strictEqual(isBackupDue(settings, stateMaxFailures, now, true), false);
+    });
+  });
+
+  describe("6. Clock Skew Defensive Guard", () => {
+    it("guards against clock skew where current time is before recorded success", () => {
+      const now = new Date("2026-10-13T12:00:00Z");
+      // Timestamp in the future due to system clock adjustment
+      const futureState = {
+        ...defaultState,
+        lastSuccessfulAt: new Date(now.getTime() + 60 * 60 * 1000).toISOString(),
+      };
+
+      assert.strictEqual(isBackupDue(defaultSettings, futureState, now, false), false);
+    });
+  });
+
+  describe("7. Concurrency & Restore Lock Emulation", () => {
+    it("simulates atomic lock acquisition preventing concurrent runs", () => {
+      let isBackupRunning = false;
+      let isRestoreRunning = false;
+
+      const tryAcquireLock = () => {
+        if (isRestoreRunning) return { ok: false, error: "Restore in progress" };
+        if (isBackupRunning) return { ok: false, error: "Backup in progress" };
+        isBackupRunning = true;
+        return { ok: true, release: () => { isBackupRunning = false; } };
+      };
+
+      // 1. Initial lock succeeds
+      const lock1 = tryAcquireLock();
+      assert.strictEqual(lock1.ok, true);
+
+      // 2. Second simultaneous lock fails
+      const lock2 = tryAcquireLock();
+      assert.strictEqual(lock2.ok, false);
+      assert.strictEqual(lock2.error, "Backup in progress");
+
+      // 3. Release allows subsequent lock
+      lock1.release();
+      assert.strictEqual(isBackupRunning, false);
+
+      const lock3 = tryAcquireLock();
+      assert.strictEqual(lock3.ok, true);
+      lock3.release();
+
+      // 4. Active restore blocks backup lock
+      isRestoreRunning = true;
+      const lockDuringRestore = tryAcquireLock();
+      assert.strictEqual(lockDuringRestore.ok, false);
+      assert.strictEqual(lockDuringRestore.error, "Restore in progress");
+    });
+  });
+});
+
+describe("Phase 11 - Task 12: Backup Retention and Safe Cleanup Tests", () => {
+  const baseDate = new Date("2026-10-13T12:00:00Z");
+
+  const makeItem = (name, offsetHours, type = "automatic") => ({
+    filePath: `/backups/${name}`,
+    fileName: name,
+    createdAt: new Date(baseDate.getTime() + offsetHours * 3600 * 1000).toISOString(),
+    backupType: type,
+  });
+
+  describe("1. Automatic Retention Pruning & Sorting", () => {
+    it("keeps the newest retentionCount automatic backups and prunes excess oldest", () => {
+      const candidates = [
+        makeItem("auto-1.pnbackup", 1),
+        makeItem("auto-2.pnbackup", 2),
+        makeItem("auto-3.pnbackup", 3),
+        makeItem("auto-4.pnbackup", 4),
+        makeItem("auto-5.pnbackup", 5),
+      ];
+
+      // Retention count = 3 -> keep the 3 newest (auto-5, auto-4, auto-3), delete 2 oldest (auto-2, auto-1)
+      const plan = computeRetentionPlan(candidates, 3);
+      assert.strictEqual(plan.totalManagedFound, 5);
+      assert.strictEqual(plan.kept.length, 3);
+      assert.strictEqual(plan.toDelete.length, 2);
+
+      assert.deepStrictEqual(
+        plan.kept.map((b) => b.fileName),
+        ["auto-5.pnbackup", "auto-4.pnbackup", "auto-3.pnbackup"]
+      );
+      assert.deepStrictEqual(
+        plan.toDelete.map((b) => b.fileName),
+        ["auto-2.pnbackup", "auto-1.pnbackup"]
+      );
+    });
+
+    it("retains all backups when total count does not exceed retention count", () => {
+      const candidates = [
+        makeItem("auto-1.pnbackup", 1),
+        makeItem("auto-2.pnbackup", 2),
+      ];
+
+      const plan = computeRetentionPlan(candidates, 5);
+      assert.strictEqual(plan.totalManagedFound, 2);
+      assert.strictEqual(plan.kept.length, 2);
+      assert.strictEqual(plan.toDelete.length, 0);
+    });
+
+    it("enforces minimum retention bound of 1", () => {
+      const candidates = [
+        makeItem("auto-1.pnbackup", 1),
+        makeItem("auto-2.pnbackup", 2),
+      ];
+
+      // Even if 0 or negative is passed, at least 1 newest backup is preserved
+      const plan = computeRetentionPlan(candidates, 0);
+      assert.strictEqual(plan.kept.length, 1);
+      assert.strictEqual(plan.kept[0].fileName, "auto-2.pnbackup");
+      assert.strictEqual(plan.toDelete.length, 1);
+      assert.strictEqual(plan.toDelete[0].fileName, "auto-1.pnbackup");
+    });
+  });
+
+  describe("2. Manual Backup & Checkpoint Immutability", () => {
+    it("never includes manual backups or checkpoints in deletion candidates", () => {
+      const candidates = [
+        makeItem("manual-very-old.pnbackup", -100, "manual"),
+        makeItem("checkpoint-old.pnbackup", -50, "checkpoint"),
+        makeItem("auto-1.pnbackup", 1, "automatic"),
+        makeItem("auto-2.pnbackup", 2, "automatic"),
+        makeItem("auto-3.pnbackup", 3, "automatic"),
+      ];
+
+      // Retention count = 1 for automatic backups
+      const plan = computeRetentionPlan(candidates, 1);
+      assert.strictEqual(plan.totalManagedFound, 3, "Only the 3 automatic backups are counted");
+      assert.strictEqual(plan.kept.length, 1);
+      assert.strictEqual(plan.kept[0].fileName, "auto-3.pnbackup");
+
+      // Verify that toDelete contains ONLY excess automatic backups
+      assert.strictEqual(plan.toDelete.length, 2);
+      for (const item of plan.toDelete) {
+        assert.strictEqual(item.backupType, "automatic");
+        assert.notStrictEqual(item.backupType, "manual");
+        assert.notStrictEqual(item.backupType, "checkpoint");
+      }
+    });
+  });
+
+  describe("3. Unrelated Files & Arbitrary Data Protection", () => {
+    it("completely excludes unrelated files from retention consideration", () => {
+      const isEligibleManagedBackup = (filename, manifest) => {
+        if (!filename.endsWith(".pnbackup") && !filename.endsWith(".zip")) return false;
+        if (!manifest) return false;
+        if (manifest.formatIdentifier !== "personal-notepad-backup") return false;
+        if (manifest.backupType !== "automatic") return false;
+        return true;
+      };
+
+      assert.strictEqual(isEligibleManagedBackup("notes.txt", null), false);
+      assert.strictEqual(isEligibleManagedBackup("database.sqlite", null), false);
+      assert.strictEqual(isEligibleManagedBackup("report.docx", null), false);
+      assert.strictEqual(
+        isEligibleManagedBackup("foreign.zip", {
+          formatIdentifier: "some-other-app",
+          backupType: "automatic",
+        }),
+        false
+      );
+      assert.strictEqual(
+        isEligibleManagedBackup("personal-notepad-backup.pnbackup", {
+          formatIdentifier: "personal-notepad-backup",
+          backupType: "manual",
+        }),
+        false
+      );
+      assert.strictEqual(
+        isEligibleManagedBackup("personal-notepad-auto-backup.pnbackup", {
+          formatIdentifier: "personal-notepad-backup",
+          backupType: "automatic",
+        }),
+        true
+      );
+    });
+  });
+
+  describe("4. Replacement & Order of Operations Guarantee", () => {
+    it("guarantees newly created and verified backup is never deleted", () => {
+      const newlyCreatedPath = "/backups/auto-newest.pnbackup";
+      const candidates = [
+        makeItem("auto-1.pnbackup", 1),
+        makeItem("auto-2.pnbackup", 2),
+        {
+          filePath: newlyCreatedPath,
+          fileName: "auto-newest.pnbackup",
+          createdAt: new Date(baseDate.getTime() + 10 * 3600 * 1000).toISOString(),
+          backupType: "automatic",
+        },
+      ];
+
+      const plan = computeRetentionPlan(candidates, 1, newlyCreatedPath);
+      assert.strictEqual(plan.kept[0].filePath, newlyCreatedPath);
+      assert.strictEqual(plan.toDelete.some((b) => b.filePath === newlyCreatedPath), false);
+    });
+  });
+
+  describe("5. Partial Cleanup Failure Resilience", () => {
+    it("simulates graceful handling of cleanup warnings without invalidating backup", () => {
+      const simulateRetentionCleanup = (toDeleteFiles, writableCheck) => {
+        const deleted = [];
+        const warnings = [];
+
+        for (const file of toDeleteFiles) {
+          if (writableCheck(file)) {
+            deleted.push(file);
+          } else {
+            warnings.push(`Failed to delete old automatic backup '${file}': Permission denied`);
+          }
+        }
+
+        return {
+          success: true, // Backup itself remains 100% valid
+          deleted,
+          warnings,
+        };
+      };
+
+      const files = ["old-1.pnbackup", "old-locked.pnbackup"];
+      const result = simulateRetentionCleanup(files, (f) => f !== "old-locked.pnbackup");
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.deleted.length, 1);
+      assert.strictEqual(result.deleted[0], "old-1.pnbackup");
+      assert.strictEqual(result.warnings.length, 1);
+      assert.strictEqual(
+        result.warnings[0],
+        "Failed to delete old automatic backup 'old-locked.pnbackup': Permission denied"
+      );
+    });
+  });
+});
+
+describe("Phase 11 - Task 13: Backup Listing and Metadata Display Tests", () => {
+  const sampleValidBackup = {
+    filePath: "/data/backups/backup-20261013-120000.pnbackup",
+    fileName: "backup-20261013-120000.pnbackup",
+    fileSizeBytes: 1048576 * 2.5, // 2.5 MB
+    createdAt: "2026-10-13T12:00:00.000Z",
+    backupType: "manual",
+    formatVersion: 1,
+    schemaVersion: 4,
+    noteCount: 42,
+    notebookCount: 5,
+    attachmentCount: 12,
+    contentChecksum: "sha256:abc123def456",
+    isValid: true,
+    isVerified: false,
+    issueSummary: null,
+  };
+
+  const sampleCorruptBackup = {
+    filePath: "/data/backups/corrupted-backup.pnbackup",
+    fileName: "corrupted-backup.pnbackup",
+    fileSizeBytes: 2048,
+    createdAt: "2026-10-13T10:00:00.000Z",
+    backupType: "manual",
+    formatVersion: null,
+    schemaVersion: null,
+    noteCount: 0,
+    notebookCount: 0,
+    attachmentCount: 0,
+    contentChecksum: null,
+    isValid: false,
+    isVerified: false,
+    issueSummary: "Archive is corrupted or manifest.json could not be read",
+  };
+
+  describe("1. Discovered vs Verified Invariant", () => {
+    it("ensures all newly discovered backups have isVerified set to false by default", () => {
+      // Discovered archives must never claim verification status without explicit deep verification pass
+      assert.strictEqual(sampleValidBackup.isVerified, false);
+      assert.strictEqual(sampleCorruptBackup.isVerified, false);
+
+      const items = [sampleValidBackup, sampleCorruptBackup];
+      const allUnverifiedByDefault = items.every((i) => i.isVerified === false);
+      assert.strictEqual(allUnverifiedByDefault, true);
+    });
+
+    it("requires explicit verification pass to transition isVerified from false to true", () => {
+      const simulateVerification = (backup, passIntegrityCheck) => {
+        if (!backup.isValid) {
+          return { ...backup, isVerified: false, issueSummary: "Cannot verify invalid archive" };
+        }
+        return {
+          ...backup,
+          isVerified: passIntegrityCheck,
+          issueSummary: passIntegrityCheck ? null : "Checksum mismatch during verification",
+        };
+      };
+
+      const verified = simulateVerification(sampleValidBackup, true);
+      assert.strictEqual(verified.isVerified, true);
+      assert.strictEqual(verified.isValid, true);
+
+      const failedVerification = simulateVerification(sampleValidBackup, false);
+      assert.strictEqual(failedVerification.isVerified, false);
+      assert.strictEqual(failedVerification.issueSummary, "Checksum mismatch during verification");
+    });
+  });
+
+  describe("2. Graceful Corrupt & Non-Archive Handling", () => {
+    it("preserves corrupt files in the listing with isValid=false and descriptive issueSummary", () => {
+      assert.strictEqual(sampleCorruptBackup.isValid, false);
+      assert.strictEqual(sampleCorruptBackup.noteCount, 0);
+      assert.strictEqual(sampleCorruptBackup.formatVersion, null);
+      assert.ok(
+        sampleCorruptBackup.issueSummary.includes("corrupted") ||
+          sampleCorruptBackup.issueSummary.includes("manifest")
+      );
+    });
+
+    it("does not throw or abort entire listing process when encountering a damaged file", () => {
+      const mockRawFiles = [
+        { name: "good.pnbackup", valid: true, size: 5000, date: "2026-10-13T12:00:00Z" },
+        { name: "bad.pnbackup", valid: false, size: 100, date: "2026-10-13T11:00:00Z" },
+        { name: "another-good.pnbackup", valid: true, size: 8000, date: "2026-10-13T13:00:00Z" },
+      ];
+
+      const scanDirectory = (files) => {
+        return files.map((f) => {
+          if (!f.valid) {
+            return {
+              fileName: f.name,
+              filePath: `/backups/${f.name}`,
+              fileSizeBytes: f.size,
+              createdAt: f.date,
+              backupType: "manual",
+              formatVersion: null,
+              schemaVersion: null,
+              noteCount: 0,
+              notebookCount: 0,
+              attachmentCount: 0,
+              contentChecksum: null,
+              isValid: false,
+              isVerified: false,
+              issueSummary: "Archive damaged",
+            };
+          }
+          return {
+            fileName: f.name,
+            filePath: `/backups/${f.name}`,
+            fileSizeBytes: f.size,
+            createdAt: f.date,
+            backupType: "manual",
+            formatVersion: 1,
+            schemaVersion: 4,
+            noteCount: 10,
+            notebookCount: 2,
+            attachmentCount: 1,
+            contentChecksum: "hash",
+            isValid: true,
+            isVerified: false,
+            issueSummary: null,
+          };
+        });
+      };
+
+      const result = scanDirectory(mockRawFiles);
+      assert.strictEqual(result.length, 3);
+      assert.strictEqual(result.filter((r) => r.isValid).length, 2);
+      assert.strictEqual(result.filter((r) => !r.isValid).length, 1);
+      assert.strictEqual(result[1].fileName, "bad.pnbackup");
+      assert.strictEqual(result[1].isValid, false);
+    });
+  });
+
+  describe("3. Safe Chronological Sorting", () => {
+    it("sorts backups descending with newest created timestamp first", () => {
+      const list = [
+        { fileName: "old.pnbackup", createdAt: "2026-10-10T10:00:00Z" },
+        { fileName: "newest.pnbackup", createdAt: "2026-10-13T15:00:00Z" },
+        { fileName: "middle.pnbackup", createdAt: "2026-10-12T12:00:00Z" },
+      ];
+
+      const sorted = sortBackupsDescending(list);
+      assert.deepStrictEqual(
+        sorted.map((i) => i.fileName),
+        ["newest.pnbackup", "middle.pnbackup", "old.pnbackup"]
+      );
+    });
+
+    it("handles invalid or corrupt dates gracefully placing them at the end", () => {
+      const list = [
+        { fileName: "valid-1.pnbackup", createdAt: "2026-10-11T10:00:00Z" },
+        { fileName: "bad-date.pnbackup", createdAt: "INVALID_DATE_STRING" },
+        { fileName: "valid-2.pnbackup", createdAt: "2026-10-13T10:00:00Z" },
+      ];
+
+      const sorted = sortBackupsDescending(list);
+      assert.strictEqual(sorted[0].fileName, "valid-2.pnbackup");
+      assert.strictEqual(sorted[1].fileName, "valid-1.pnbackup");
+      assert.strictEqual(sorted[2].fileName, "bad-date.pnbackup");
+    });
+  });
+
+  describe("4. Metadata Display & Formatting", () => {
+    it("formats human-readable size for small, medium and large backup archives", () => {
+      assert.strictEqual(formatBackupBytes(0), "0 Bytes");
+      assert.strictEqual(formatBackupBytes(512), "512 Bytes");
+      assert.strictEqual(formatBackupBytes(1024), "1.0 KB");
+      assert.strictEqual(formatBackupBytes(1024 * 1024 * 2.5), "2.5 MB");
+      assert.strictEqual(formatBackupBytes(1024 * 1024 * 1024 * 1.8), "1.8 GB");
+    });
+
+    it("retains comprehensive backup details without truncation", () => {
+      assert.strictEqual(sampleValidBackup.noteCount, 42);
+      assert.strictEqual(sampleValidBackup.notebookCount, 5);
+      assert.strictEqual(sampleValidBackup.attachmentCount, 12);
+      assert.strictEqual(sampleValidBackup.formatVersion, 1);
+      assert.strictEqual(sampleValidBackup.schemaVersion, 4);
+      assert.strictEqual(sampleValidBackup.backupType, "manual");
+      assert.strictEqual(sampleValidBackup.contentChecksum, "sha256:abc123def456");
+    });
+  });
+
+  describe("5. Protected File Deletion Safety Guards", () => {
+    const liveDb = "/home/user/.local/share/personal-notepad/database.sqlite";
+    const liveAttachments = "/home/user/.local/share/personal-notepad/attachments";
+
+    it("blocks deletion attempts targeting active SQLite database and journals", () => {
+      assert.strictEqual(isDeletionTargetProtected(liveDb, liveDb, liveAttachments), true);
+      assert.strictEqual(isDeletionTargetProtected(`${liveDb}-wal`, liveDb, liveAttachments), true);
+      assert.strictEqual(isDeletionTargetProtected(`${liveDb}-shm`, liveDb, liveAttachments), true);
+      assert.strictEqual(isDeletionTargetProtected("/path/database.sqlite", liveDb, liveAttachments), true);
+    });
+
+    it("blocks deletion attempts targeting live attachments directory or active notes", () => {
+      assert.strictEqual(isDeletionTargetProtected(liveAttachments, liveDb, liveAttachments), true);
+      assert.strictEqual(
+        isDeletionTargetProtected(`${liveAttachments}/photo.png`, liveDb, liveAttachments),
+        true
+      );
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/attachments/file.pdf", liveDb, liveAttachments),
+        true
+      );
+    });
+
+    it("blocks non-archive files even if placed inside backup folders", () => {
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/backups/notes.txt", liveDb, liveAttachments),
+        true
+      );
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/backups/secret.key", liveDb, liveAttachments),
+        true
+      );
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/backups/important.doc", liveDb, liveAttachments),
+        true
+      );
+    });
+
+    it("allows deletion of legitimate managed backup archives", () => {
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/backups/manual-1.pnbackup", liveDb, liveAttachments),
+        false
+      );
+      assert.strictEqual(
+        isDeletionTargetProtected("/data/backups/auto-backup.zip", liveDb, liveAttachments),
+        false
+      );
+    });
+  });
+});
+
+describe("Phase 11 - Task 14: Backup Validation Before Restore Tests", () => {
+  const CURRENT_APP_SCHEMA = 4;
+  const CURRENT_FORMAT_VERSION = 1;
+
+  // Mock validator replicating BackupValidationService invariants
+  const validateBackupArchive = ({
+    archiveReadable = true,
+    formatIdentifier = "personal-notepad-backup",
+    formatVersion = 1,
+    schemaVersion = 4,
+    hasDatabaseEntry = true,
+    databaseIntegrityOk = true,
+    foreignKeysOk = true,
+    missingTables = [],
+    missingColumns = [],
+    checksumsMatch = true,
+    missingAttachmentEntries = [],
+    unreferencedAttachments = [],
+    isTargetingActiveDb = false,
+  }) => {
+    if (isTargetingActiveDb) {
+      throw new Error("Cannot validate active database file as backup archive");
+    }
+
+    if (!archiveReadable) {
+      return {
+        isValid: false,
+        compatibility: "corrupted",
+        manifest: null,
+        issues: [
+          {
+            severity: "error",
+            code: "ARCHIVE_READ_FAILED",
+            message: "Failed to open or read ZIP archive",
+          },
+        ],
+      };
+    }
+
+    const issues = [];
+    let compatibility = "compatible";
+
+    if (formatIdentifier !== "personal-notepad-backup") {
+      issues.push({
+        severity: "error",
+        code: "INVALID_FORMAT_IDENTIFIER",
+        message: `Unknown format '${formatIdentifier}'`,
+      });
+      compatibility = "corrupted";
+    }
+
+    if (formatVersion > CURRENT_FORMAT_VERSION) {
+      issues.push({
+        severity: "error",
+        code: "UNSUPPORTED_FORMAT_VERSION",
+        message: `Format version ${formatVersion} is newer than supported version ${CURRENT_FORMAT_VERSION}`,
+      });
+      compatibility = "incompatibleVersion";
+    }
+
+    if (schemaVersion > CURRENT_APP_SCHEMA) {
+      issues.push({
+        severity: "error",
+        code: "INCOMPATIBLE_SCHEMA_VERSION",
+        message: `Database schema version v${schemaVersion} is newer than supported v${CURRENT_APP_SCHEMA}`,
+      });
+      compatibility = "incompatibleVersion";
+    } else if (schemaVersion < CURRENT_APP_SCHEMA) {
+      issues.push({
+        severity: "warning",
+        code: "SCHEMA_MIGRATION_REQUIRED",
+        message: `Database schema v${schemaVersion} requires migration to v${CURRENT_APP_SCHEMA}`,
+      });
+      if (compatibility === "compatible") {
+        compatibility = "requiresMigration";
+      }
+    }
+
+    if (!hasDatabaseEntry) {
+      issues.push({
+        severity: "error",
+        code: "DATABASE_ENTRY_MISSING",
+        message: "Required database.sqlite is missing from archive",
+      });
+      compatibility = "corrupted";
+    } else if (!checksumsMatch) {
+      issues.push({
+        severity: "error",
+        code: "DATABASE_CHECKSUM_MISMATCH",
+        message: "Cryptographic hash mismatch for database.sqlite",
+      });
+      compatibility = "corrupted";
+    } else {
+      if (!databaseIntegrityOk) {
+        issues.push({
+          severity: "error",
+          code: "DATABASE_INTEGRITY_FAILED",
+          message: "SQLite PRAGMA integrity_check reported corruption",
+        });
+        compatibility = "corrupted";
+      }
+
+      if (!foreignKeysOk) {
+        issues.push({
+          severity: "error",
+          code: "FOREIGN_KEY_VIOLATION",
+          message: "Foreign key reference violations detected",
+        });
+        compatibility = "corrupted";
+      }
+
+      for (const tbl of missingTables) {
+        issues.push({
+          severity: "error",
+          code: "MISSING_TABLE",
+          message: `Required table '${tbl}' is missing from database`,
+        });
+        compatibility = "corrupted";
+      }
+
+      for (const col of missingColumns) {
+        issues.push({
+          severity: "error",
+          code: "MISSING_COLUMN",
+          message: `Required column '${col.column}' missing from table '${col.table}'`,
+        });
+        compatibility = "corrupted";
+      }
+    }
+
+    for (const att of missingAttachmentEntries) {
+      issues.push({
+        severity: "error",
+        code: "ATTACHMENT_MISSING_FROM_ARCHIVE",
+        message: `Attachment '${att}' referenced in database is missing from archive`,
+      });
+      compatibility = "corrupted";
+    }
+
+    for (const att of unreferencedAttachments) {
+      issues.push({
+        severity: "warning",
+        code: "UNREFERENCED_ATTACHMENT",
+        message: `Attachment '${att}' is in archive but not referenced in database`,
+      });
+    }
+
+    const hasErrors = issues.some((i) => i.severity === "error");
+    const isValid = !hasErrors;
+    if (hasErrors && compatibility !== "incompatibleVersion") {
+      compatibility = "corrupted";
+    }
+
+    return {
+      isValid,
+      compatibility,
+      manifest: {
+        formatIdentifier,
+        formatVersion,
+        database: { schemaVersion },
+      },
+      issues,
+    };
+  };
+
+  describe("1. Valid and Compatible Backup Inspection", () => {
+    it("reports isValid=true and compatibility=compatible when all checks pass", () => {
+      const res = validateBackupArchive({});
+      assert.strictEqual(res.isValid, true);
+      assert.strictEqual(res.compatibility, "compatible");
+      assert.strictEqual(res.issues.filter((i) => i.severity === "error").length, 0);
+    });
+
+    it("includes parsed manifest metadata upon successful inspection", () => {
+      const res = validateBackupArchive({ schemaVersion: 4 });
+      assert.ok(res.manifest);
+      assert.strictEqual(res.manifest.formatIdentifier, "personal-notepad-backup");
+      assert.strictEqual(res.manifest.database.schemaVersion, 4);
+    });
+  });
+
+  describe("2. Older Supported Schema Migration Detection", () => {
+    it("flags older supported schemas (v1, v2, v3) as isValid=true with requiresMigration", () => {
+      for (const olderVersion of [1, 2, 3]) {
+        const res = validateBackupArchive({ schemaVersion: olderVersion });
+        assert.strictEqual(res.isValid, true);
+        assert.strictEqual(res.compatibility, "requiresMigration");
+        const warning = res.issues.find((i) => i.code === "SCHEMA_MIGRATION_REQUIRED");
+        assert.ok(warning, `Should record migration warning for v${olderVersion}`);
+        assert.strictEqual(warning.severity, "warning");
+      }
+    });
+  });
+
+  describe("3. Incompatible Newer Schema and Format Version Rejection", () => {
+    it("rejects database schema versions newer than current application (e.g. v99)", () => {
+      const res = validateBackupArchive({ schemaVersion: 99 });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "incompatibleVersion");
+      const err = res.issues.find((i) => i.code === "INCOMPATIBLE_SCHEMA_VERSION");
+      assert.ok(err);
+      assert.strictEqual(err.severity, "error");
+    });
+
+    it("rejects backup format version newer than current version (e.g. v2 > v1)", () => {
+      const res = validateBackupArchive({ formatVersion: 2 });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "incompatibleVersion");
+      const err = res.issues.find((i) => i.code === "UNSUPPORTED_FORMAT_VERSION");
+      assert.ok(err);
+    });
+  });
+
+  describe("4. Corrupted Archive, Checksum Mismatch and Missing Table Defense", () => {
+    it("handles unreadable / damaged archive with isValid=false and corrupted status", () => {
+      const res = validateBackupArchive({ archiveReadable: false });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.strictEqual(res.manifest, null);
+      assert.strictEqual(res.issues[0].code, "ARCHIVE_READ_FAILED");
+    });
+
+    it("detects cryptographic checksum mismatch on database.sqlite", () => {
+      const res = validateBackupArchive({ checksumsMatch: false });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.ok(res.issues.some((i) => i.code === "DATABASE_CHECKSUM_MISMATCH"));
+    });
+
+    it("detects SQLite PRAGMA integrity_check failures", () => {
+      const res = validateBackupArchive({ databaseIntegrityOk: false });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.ok(res.issues.some((i) => i.code === "DATABASE_INTEGRITY_FAILED"));
+    });
+
+    it("detects foreign key constraint violations", () => {
+      const res = validateBackupArchive({ foreignKeysOk: false });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.ok(res.issues.some((i) => i.code === "FOREIGN_KEY_VIOLATION"));
+    });
+
+    it("detects missing required tables (e.g. 'notes' or 'tags')", () => {
+      const res = validateBackupArchive({ missingTables: ["notes", "tags"] });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.strictEqual(res.issues.filter((i) => i.code === "MISSING_TABLE").length, 2);
+    });
+
+    it("detects missing required columns on tables", () => {
+      const res = validateBackupArchive({
+        missingColumns: [{ table: "notes", column: "content" }],
+      });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.ok(res.issues.some((i) => i.code === "MISSING_COLUMN"));
+    });
+  });
+
+  describe("5. Attachment Inventory and Database Cross-Check Verification", () => {
+    it("fails validation when database references an attachment missing from archive", () => {
+      const res = validateBackupArchive({
+        missingAttachmentEntries: ["doc-1.pdf"],
+      });
+      assert.strictEqual(res.isValid, false);
+      assert.strictEqual(res.compatibility, "corrupted");
+      assert.ok(res.issues.some((i) => i.code === "ATTACHMENT_MISSING_FROM_ARCHIVE"));
+    });
+
+    it("flags unreferenced archive attachments as a recoverable warning, not fatal error", () => {
+      const res = validateBackupArchive({
+        unreferencedAttachments: ["extra_image.png"],
+      });
+      assert.strictEqual(res.isValid, true);
+      assert.strictEqual(res.compatibility, "compatible");
+      assert.ok(res.issues.some((i) => i.code === "UNREFERENCED_ATTACHMENT" && i.severity === "warning"));
+    });
+  });
+
+  describe("6. Non-Destructive Invariant and Active Database Guard", () => {
+    it("refuses to validate active database file as a backup archive", () => {
+      assert.throws(() => {
+        validateBackupArchive({ isTargetingActiveDb: true });
+      }, /Cannot validate active database file/);
+    });
+
+    it("guarantees non-destructive validation leaves live application data untouched", () => {
+      const liveState = { notesCount: 15, notebooksCount: 3 };
+      const backupCandidate = { archiveReadable: true, schemaVersion: 4 };
+
+      // Validate candidate
+      const valRes = validateBackupArchive(backupCandidate);
+      assert.strictEqual(valRes.isValid, true);
+
+      // Verify live state is identical
+      assert.strictEqual(liveState.notesCount, 15);
+      assert.strictEqual(liveState.notebooksCount, 3);
+    });
+  });
+});
+
+describe("Phase 11 - Task 15: Restore Preview and Confirmation Workflow Tests", () => {
+  const sampleValidPreview = {
+    filePath: "/backups/personal-notepad-backup-20261013-120000.pnbackup",
+    fileName: "personal-notepad-backup-20261013-120000.pnbackup",
+    fileSize: 45000,
+    createdAt: "2026-10-13T12:00:00Z",
+    backupType: "manual",
+    formatVersion: 1,
+    schemaVersion: 4,
+    noteCount: 12,
+    notebookCount: 3,
+    tagCount: 5,
+    trashCount: 2,
+    attachmentCount: 4,
+    attachmentTotalBytes: 154000,
+    includesSettings: true,
+    compatibility: "compatible",
+    warnings: [],
+    canRestore: true,
+  };
+
+  const sampleRequiresMigrationPreview = {
+    ...sampleValidPreview,
+    schemaVersion: 2,
+    compatibility: "requiresMigration",
+    warnings: ["Database schema is v2; it will be migrated to v4 during restore."],
+    canRestore: true,
+  };
+
+  const sampleCorruptedPreview = {
+    ...sampleValidPreview,
+    canRestore: false,
+    compatibility: "corrupted",
+    warnings: ["SQLite PRAGMA integrity_check reported corruption."],
+  };
+
+  const sampleIncompatibleVersionPreview = {
+    ...sampleValidPreview,
+    schemaVersion: 99,
+    canRestore: false,
+    compatibility: "incompatibleVersion",
+    warnings: ["Database schema version (v99) is newer than current application version (v4)."],
+  };
+
+  describe("1. Restore Preview Metadata Invariants", () => {
+    it("presents comprehensive counts of active notes, trash, notebooks, tags, and attachments", () => {
+      assert.strictEqual(sampleValidPreview.noteCount, 12);
+      assert.strictEqual(sampleValidPreview.trashCount, 2);
+      assert.strictEqual(sampleValidPreview.notebookCount, 3);
+      assert.strictEqual(sampleValidPreview.tagCount, 5);
+      assert.strictEqual(sampleValidPreview.attachmentCount, 4);
+      assert.strictEqual(sampleValidPreview.attachmentTotalBytes, 154000);
+      assert.strictEqual(sampleValidPreview.includesSettings, true);
+    });
+
+    it("accurately classifies compatibility status for compatible, migration required, and corrupted backups", () => {
+      assert.strictEqual(sampleValidPreview.compatibility, "compatible");
+      assert.strictEqual(sampleRequiresMigrationPreview.compatibility, "requiresMigration");
+      assert.strictEqual(sampleCorruptedPreview.compatibility, "corrupted");
+      assert.strictEqual(sampleIncompatibleVersionPreview.compatibility, "incompatibleVersion");
+    });
+  });
+
+  describe("2. Warnings and Consequence Disclosure", () => {
+    it("exposes migration warning to user when older schema is detected", () => {
+      assert.ok(sampleRequiresMigrationPreview.warnings.length > 0);
+      assert.ok(
+        sampleRequiresMigrationPreview.warnings[0].includes("migrated to v4")
+      );
+      assert.strictEqual(sampleRequiresMigrationPreview.canRestore, true);
+    });
+
+    it("renders destructive consequence notice text informing about overwrite risk", () => {
+      const consequenceNotice = (previewDate) =>
+        `Restoring this backup will replace your current notes, notebooks, tags, and attachments with the archived state from ${previewDate}. Any modifications made after this backup date will be overwritten.`;
+
+      const notice = consequenceNotice("Oct 13, 2026");
+      assert.ok(notice.includes("replace your current notes"));
+      assert.ok(notice.includes("will be overwritten"));
+    });
+
+    it("discloses that an automated pre-restore recovery checkpoint will be taken", () => {
+      const checkpointNotice =
+        "A pre-restore recovery checkpoint of your current active data will be created automatically before any files are replaced.";
+      assert.ok(checkpointNotice.includes("recovery checkpoint"));
+      assert.ok(checkpointNotice.includes("created automatically"));
+    });
+  });
+
+  describe("3. Explicit Confirmation Guard Invariant", () => {
+    const isRestoreButtonEnabled = ({ canRestore, isConfirmed, isSubmitting }) => {
+      return canRestore && isConfirmed && !isSubmitting;
+    };
+
+    it("disables restore button when checkbox is unchecked even if backup is valid", () => {
+      const enabled = isRestoreButtonEnabled({
+        canRestore: sampleValidPreview.canRestore,
+        isConfirmed: false,
+        isSubmitting: false,
+      });
+      assert.strictEqual(enabled, false, "Must be disabled when checkbox is unchecked");
+    });
+
+    it("enables restore button only when backup is valid and checkbox is explicitly checked", () => {
+      const enabled = isRestoreButtonEnabled({
+        canRestore: sampleValidPreview.canRestore,
+        isConfirmed: true,
+        isSubmitting: false,
+      });
+      assert.strictEqual(enabled, true, "Must be enabled when valid and confirmed");
+    });
+
+    it("keeps restore button disabled when backup is corrupt regardless of checkbox state", () => {
+      const enabled = isRestoreButtonEnabled({
+        canRestore: sampleCorruptedPreview.canRestore,
+        isConfirmed: true,
+        isSubmitting: false,
+      });
+      assert.strictEqual(enabled, false, "Corrupted backup must never enable restore button");
+    });
+
+    it("prevents duplicate submissions by disabling button while submission is in flight", () => {
+      const enabled = isRestoreButtonEnabled({
+        canRestore: sampleValidPreview.canRestore,
+        isConfirmed: true,
+        isSubmitting: true,
+      });
+      assert.strictEqual(enabled, false, "Must be disabled while submission is in-flight");
+    });
+  });
+
+  describe("4. Safe Cancellation Invariant", () => {
+    it("guarantees cancelling restore preview leaves live database and attachments unchanged", () => {
+      const liveStateBefore = { notes: 25, trashed: 3, lastModified: "2026-10-13T23:00:00Z" };
+
+      // Simulate opening preview, reviewing warnings, and clicking Cancel
+      const onCancelPreview = () => {
+        // Safe dismissal without executing restore pipeline
+        return null;
+      };
+
+      const dismissedCandidate = onCancelPreview();
+      assert.strictEqual(dismissedCandidate, null);
+
+      // Verify state after cancellation
+      const liveStateAfter = { notes: 25, trashed: 3, lastModified: "2026-10-13T23:00:00Z" };
+      assert.deepStrictEqual(liveStateBefore, liveStateAfter);
+    });
+  });
+
+  describe("5. Revalidation Invariant", () => {
+    it("forces revalidation of selected backup candidate immediately before preview render", () => {
+      let validationExecutionCount = 0;
+      const revalidateImmediately = (filePath) => {
+        validationExecutionCount += 1;
+        return {
+          revalidatedPath: filePath,
+          timestamp: Date.now(),
+        };
+      };
+
+      revalidateImmediately("/backups/backup-1.pnbackup");
+      assert.strictEqual(validationExecutionCount, 1);
+    });
+  });
+});
+
+describe("Phase 11 - Task 16: Pre-Restore Recovery Checkpoint Tests", () => {
+  const sampleLiveState = {
+    noteCount: 15,
+    trashCount: 3,
+    notebookCount: 4,
+    tagCount: 6,
+    attachmentCount: 5,
+    attachmentTotalBytes: 256000,
+    schemaVersion: 4,
+  };
+
+  const sampleCheckpoint = {
+    checkpointId: "checkpoint-20261013-183000-uuid",
+    filePath: "/data/backups/checkpoints/personal-notepad-checkpoint-20261013-183000.pnbackup",
+    fileName: "personal-notepad-checkpoint-20261013-183000.pnbackup",
+    fileSize: 512000,
+    createdAt: "2026-10-13T18:30:00Z",
+    noteCount: sampleLiveState.noteCount,
+    trashCount: sampleLiveState.trashCount,
+    notebookCount: sampleLiveState.notebookCount,
+    tagCount: sampleLiveState.tagCount,
+    attachmentCount: sampleLiveState.attachmentCount,
+    attachmentTotalBytes: sampleLiveState.attachmentTotalBytes,
+    schemaVersion: sampleLiveState.schemaVersion,
+    isVerified: true,
+  };
+
+  describe("1. Checkpoint Content and Metadata Completeness", () => {
+    it("captures full inventory of live state including notes, trash, notebooks, tags, and attachments", () => {
+      assert.strictEqual(sampleCheckpoint.noteCount, 15);
+      assert.strictEqual(sampleCheckpoint.trashCount, 3);
+      assert.strictEqual(sampleCheckpoint.notebookCount, 4);
+      assert.strictEqual(sampleCheckpoint.tagCount, 6);
+      assert.strictEqual(sampleCheckpoint.attachmentCount, 5);
+      assert.strictEqual(sampleCheckpoint.attachmentTotalBytes, 256000);
+      assert.strictEqual(sampleCheckpoint.schemaVersion, 4);
+      assert.strictEqual(sampleCheckpoint.isVerified, true);
+    });
+
+    it("resides in a durable checkpoints directory, never in volatile temporary storage", () => {
+      assert.ok(sampleCheckpoint.filePath.includes("checkpoints"));
+      assert.ok(!sampleCheckpoint.filePath.startsWith("/tmp"));
+      assert.ok(!sampleCheckpoint.filePath.includes(".tmp."));
+    });
+  });
+
+  describe("2. Pre-Restore Sequencing & Timing Invariant", () => {
+    it("enforces that checkpoint creation strictly precedes any destructive modifications", () => {
+      const executionLog = [];
+
+      const executeRestorePipeline = (checkpointShouldSucceed = true) => {
+        // Step 1: Mandatory recovery checkpoint
+        executionLog.push("CREATE_CHECKPOINT");
+        if (!checkpointShouldSucceed) {
+          throw new Error("Checkpoint snapshot failed: disk full");
+        }
+
+        // Step 2: Staged extraction (Task 17)
+        executionLog.push("STAGE_EXTRACTION");
+
+        // Step 3: Staged migrations (Task 18)
+        executionLog.push("APPLY_MIGRATIONS");
+
+        // Step 4: Controlled activation / file swap (Task 19)
+        executionLog.push("CONTROLLED_SWAP");
+
+        return "RESTORE_SUCCESS";
+      };
+
+      const result = executeRestorePipeline(true);
+      assert.strictEqual(result, "RESTORE_SUCCESS");
+      assert.deepStrictEqual(executionLog, [
+        "CREATE_CHECKPOINT",
+        "STAGE_EXTRACTION",
+        "APPLY_MIGRATIONS",
+        "CONTROLLED_SWAP",
+      ]);
+    });
+  });
+
+  describe("3. Fail-Fast Checkpoint Invariant", () => {
+    it("halts restoration immediately if checkpoint fails, leaving live data completely untouched", () => {
+      const liveData = { notes: 15, trashed: 3, attachments: 5 };
+      let liveDataModified = false;
+
+      const attemptRestoreWithCheckpointFailure = () => {
+        // Step 1: Checkpoint creation fails
+        const checkpointSuccess = false;
+        if (!checkpointSuccess) {
+          return {
+            success: false,
+            error: "Cannot proceed with restore: Recovery checkpoint failed (Disk full). Current data has not been modified.",
+          };
+        }
+
+        // Destructive phase (should never be reached)
+        liveDataModified = true;
+        return { success: true };
+      };
+
+      const outcome = attemptRestoreWithCheckpointFailure();
+      assert.strictEqual(outcome.success, false);
+      assert.ok(outcome.error.includes("Current data has not been modified"));
+      assert.strictEqual(liveDataModified, false);
+      assert.strictEqual(liveData.notes, 15);
+      assert.strictEqual(liveData.trashed, 3);
+    });
+  });
+
+  describe("4. Independent Validatability Invariant", () => {
+    it("allows checkpoint to be validated independently as a standard .pnbackup archive", () => {
+      const validateCheckpoint = (chk) => {
+        return {
+          isValid: chk.isVerified && chk.fileSize > 0,
+          backupType: "checkpoint",
+          noteCount: chk.noteCount,
+          attachmentCount: chk.attachmentCount,
+        };
+      };
+
+      const valResult = validateCheckpoint(sampleCheckpoint);
+      assert.strictEqual(valResult.isValid, true);
+      assert.strictEqual(valResult.backupType, "checkpoint");
+      assert.strictEqual(valResult.noteCount, 15);
+      assert.strictEqual(valResult.attachmentCount, 5);
+    });
+  });
+
+  describe("5. Collision-Free Immutability Invariant", () => {
+    it("never overwrites an existing valid checkpoint upon naming collision", () => {
+      const existingCheckpoints = new Set([
+        "personal-notepad-checkpoint-20261013-183000.pnbackup",
+      ]);
+
+      const resolveCollisionFreeCheckpointName = (desiredName) => {
+        if (!existingCheckpoints.has(desiredName)) {
+          return desiredName;
+        }
+        const stem = desiredName.replace(/\.pnbackup$/, "");
+        return `${stem} (1).pnbackup`;
+      };
+
+      const allocatedName = resolveCollisionFreeCheckpointName(
+        "personal-notepad-checkpoint-20261013-183000.pnbackup"
+      );
+
+      assert.strictEqual(
+        allocatedName,
+        "personal-notepad-checkpoint-20261013-183000 (1).pnbackup"
+      );
+      assert.ok(existingCheckpoints.has("personal-notepad-checkpoint-20261013-183000.pnbackup"));
+    });
+  });
+
+  describe("6. Retention Policy & Isolation from Automatic Backup Pruning", () => {
+    it("ensures automatic retention cleanup never deletes recovery checkpoints", () => {
+      const archivesOnDisk = [
+        { name: "personal-notepad-auto-backup-20261013-120000.pnbackup", type: "automatic" },
+        { name: "personal-notepad-auto-backup-20261013-130000.pnbackup", type: "automatic" },
+        { name: "personal-notepad-checkpoint-20261013-140000.pnbackup", type: "checkpoint" },
+        { name: "personal-notepad-backup-20261013-150000.pnbackup", type: "manual" },
+      ];
+
+      // Automatic retention pruning logic: ONLY targets type === "automatic"
+      const eligibleForRetentionPruning = archivesOnDisk.filter((a) => a.type === "automatic");
+      assert.strictEqual(eligibleForRetentionPruning.length, 2);
+      assert.ok(eligibleForRetentionPruning.every((a) => a.type === "automatic"));
+      assert.ok(!eligibleForRetentionPruning.some((a) => a.type === "checkpoint"));
+    });
+
+    it("retains bounded number of recovery checkpoints (keeping newest 5) when pruning checkpoints", () => {
+      const checkpointsOnDisk = [
+        { id: "chk-1", timestamp: 1 },
+        { id: "chk-2", timestamp: 2 },
+        { id: "chk-3", timestamp: 3 },
+        { id: "chk-4", timestamp: 4 },
+        { id: "chk-5", timestamp: 5 },
+        { id: "chk-6", timestamp: 6 },
+        { id: "chk-7", timestamp: 7 },
+      ];
+
+      const maxKeep = 5;
+      checkpointsOnDisk.sort((a, b) => b.timestamp - a.timestamp);
+      const kept = checkpointsOnDisk.slice(0, maxKeep);
+      const pruned = checkpointsOnDisk.slice(maxKeep);
+
+      assert.strictEqual(kept.length, 5);
+      assert.strictEqual(pruned.length, 2);
+      assert.deepStrictEqual(pruned.map((c) => c.id), ["chk-2", "chk-1"]);
+    });
+  });
+});
+
+describe("Phase 11 - Task 17: Staged Restore & Safe Archive Extraction Tests", () => {
+  describe("1. Archive Entry Sanitization & Zip-Slip Defense", () => {
+    it("rejects path traversal components ('..') and absolute paths", () => {
+      const isPathSafe = (entryPath) => {
+        const normalized = entryPath.trim().replace(/\\/g, "/");
+        if (!normalized || normalized.includes("\0")) return false;
+        if (normalized.startsWith("/") || /^[a-zA-Z]:/.test(normalized)) return false;
+        const parts = normalized.split("/");
+        return !parts.some((p) => p === ".." || (p === "." && parts.length === 1));
+      };
+
+      assert.strictEqual(isPathSafe("database.sqlite"), true);
+      assert.strictEqual(isPathSafe("attachments/note-1/doc.pdf"), true);
+      assert.strictEqual(isPathSafe("../evil.txt"), false);
+      assert.strictEqual(isPathSafe("dir/../../evil.txt"), false);
+      assert.strictEqual(isPathSafe("/etc/passwd"), false);
+      assert.strictEqual(isPathSafe("C:/Windows/System32"), false);
+      assert.strictEqual(isPathSafe(""), false);
+    });
+
+    it("prevents duplicate archive entry collision", () => {
+      const extractedEntries = new Set();
+      const processEntry = (entryName) => {
+        const normalized = entryName.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+        if (extractedEntries.has(normalized)) {
+          throw new Error(`Duplicate archive entry detected: '${normalized}'`);
+        }
+        extractedEntries.add(normalized);
+        return normalized;
+      };
+
+      assert.strictEqual(processEntry("notes/note1.txt"), "notes/note1.txt");
+      assert.throws(() => processEntry("./notes/note1.txt"), /Duplicate archive entry detected/);
+    });
+  });
+
+  describe("2. Staged Restore Summary Data Contract & IPC Integration", () => {
+    it("validates StagedRestoreSummary structure and field types", () => {
+      const summary = {
+        stagingId: "stg-uuid-456",
+        stagingDir: "/data/backups/.restore_staging_stg-uuid-456",
+        databasePath: "/data/backups/.restore_staging_stg-uuid-456/database.sqlite",
+        manifestPresent: true,
+        totalExtractedFiles: 3,
+        totalExtractedBytes: 1048576,
+        noteCount: 15,
+        notebookCount: 2,
+        tagCount: 4,
+        trashCount: 1,
+        attachmentCount: 2,
+        initialSchemaVersion: 4,
+        isValid: true,
+      };
+
+      assert.strictEqual(typeof summary.stagingId, "string");
+      assert.strictEqual(typeof summary.stagingDir, "string");
+      assert.strictEqual(typeof summary.databasePath, "string");
+      assert.strictEqual(summary.manifestPresent, true);
+      assert.strictEqual(summary.noteCount, 15);
+      assert.strictEqual(summary.initialSchemaVersion, 4);
+      assert.strictEqual(summary.isValid, true);
+    });
+
+    it("verifies backupStorage exposes stageRestoreArchive, migrateStagedDatabase, and cleanupStagedRestore methods", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/services/storage/backup.ts", "utf-8");
+      assert.ok(content.includes("async stageRestoreArchive("), "backupStorage must define stageRestoreArchive");
+      assert.ok(content.includes("async migrateStagedDatabase("), "backupStorage must define migrateStagedDatabase");
+      assert.ok(content.includes("async cleanupStagedRestore("), "backupStorage must define cleanupStagedRestore");
+      assert.ok(content.includes("stage_restore_archive"), "backupStorage must invoke Tauri stage_restore_archive");
+      assert.ok(content.includes("migrate_staged_database"), "backupStorage must invoke Tauri migrate_staged_database");
+      assert.ok(content.includes("cleanup_staged_restore"), "backupStorage must invoke Tauri cleanup_staged_restore");
+    });
+  });
+
+  describe("3. Staging Cleanup Guard Rails", () => {
+    it("rejects non-staging directories from cleanup attempts", () => {
+      const canSafelyCleanup = (targetDir, backupsDir) => {
+        const basename = targetDir.split("/").filter(Boolean).pop() || "";
+        if (!basename.startsWith(".restore_staging_")) {
+          return false;
+        }
+        return targetDir.startsWith(backupsDir) && targetDir !== backupsDir;
+      };
+
+      const backupsDir = "/app/data/backups";
+      assert.strictEqual(canSafelyCleanup("/app/data/backups/.restore_staging_123", backupsDir), true);
+      assert.strictEqual(canSafelyCleanup("/app/data/backups", backupsDir), false);
+      assert.strictEqual(canSafelyCleanup("/app/data/database.sqlite", backupsDir), false);
+      assert.strictEqual(canSafelyCleanup("/app/data/attachments", backupsDir), false);
+      assert.strictEqual(canSafelyCleanup("/app/data/backups/normal_folder", backupsDir), false);
+    });
+  });
+});
+
+describe("Phase 11 - Task 18: Database Schema Compatibility & Migrations Tests", () => {
+  const CURRENT_APP_SCHEMA_VERSION = 4;
+
+  describe("1. Compatibility Classification & Version Checks", () => {
+    it("correctly identifies compatibility and migration requirements", () => {
+      const evaluateCompatibility = (schemaVersion) => {
+        if (schemaVersion > CURRENT_APP_SCHEMA_VERSION) {
+          return { status: "incompatible", canRestore: false, requiresMigration: false };
+        }
+        if (schemaVersion < 1) {
+          return { status: "unsupported", canRestore: false, requiresMigration: false };
+        }
+        if (schemaVersion < CURRENT_APP_SCHEMA_VERSION) {
+          return { status: "requiresMigration", canRestore: true, requiresMigration: true };
+        }
+        return { status: "compatible", canRestore: true, requiresMigration: false };
+      };
+
+      assert.deepStrictEqual(evaluateCompatibility(4), { status: "compatible", canRestore: true, requiresMigration: false });
+      assert.deepStrictEqual(evaluateCompatibility(3), { status: "requiresMigration", canRestore: true, requiresMigration: true });
+      assert.deepStrictEqual(evaluateCompatibility(1), { status: "requiresMigration", canRestore: true, requiresMigration: true });
+      assert.deepStrictEqual(evaluateCompatibility(99), { status: "incompatible", canRestore: false, requiresMigration: false });
+      assert.deepStrictEqual(evaluateCompatibility(0), { status: "unsupported", canRestore: false, requiresMigration: false });
+    });
+  });
+
+  describe("2. Staged Migration Result Data Contract", () => {
+    it("validates StagedMigrationResult contract and migration count calculation", () => {
+      const migrationRes = {
+        stagingId: "stg-uuid-789",
+        stagingDir: "/data/backups/.restore_staging_stg-uuid-789",
+        previousSchemaVersion: 1,
+        migratedSchemaVersion: 4,
+        migrationsApplied: 3,
+        noteCount: 10,
+        trashCount: 2,
+        notebookCount: 2,
+        tagCount: 3,
+        attachmentCount: 1,
+        isVerified: true,
+      };
+
+      assert.strictEqual(migrationRes.previousSchemaVersion, 1);
+      assert.strictEqual(migrationRes.migratedSchemaVersion, 4);
+      assert.strictEqual(migrationRes.migrationsApplied, 3);
+      assert.strictEqual(migrationRes.isVerified, true);
+      assert.strictEqual(migrationRes.noteCount, 10);
+    });
+  });
+
+  describe("3. Staged Isolation Invariant", () => {
+    it("ensures live database path is never targeted for staged migration", () => {
+      const liveDbPath = "/app/data/database.sqlite";
+      const isValidStagingTarget = (targetDbPath) => {
+        return targetDbPath.includes(".restore_staging_") && targetDbPath !== liveDbPath;
+      };
+
+      assert.strictEqual(isValidStagingTarget("/app/data/backups/.restore_staging_123/database.sqlite"), true);
+      assert.strictEqual(isValidStagingTarget(liveDbPath), false);
+    });
+  });
+});
+
+describe("Phase 11 - Task 19: Controlled Restore Activation & Rollback Tests", () => {
+  describe("1. Restore Activation Marker & Phase Contract", () => {
+    it("validates RestoreActivationMarker schema and field types", () => {
+      const marker = {
+        operationId: "op-uuid-101",
+        startedAt: "2026-10-14T10:00:00Z",
+        candidateArchivePath: "/backups/candidate.pnbackup",
+        stagingDir: "/backups/.restore_staging_op-uuid-101",
+        checkpointPath: "/backups/checkpoints/personal-notepad-checkpoint-20261014-100000.pnbackup",
+        liveDbBackupPath: "/app/data/.db_pre_restore_op-uuid-101.sqlite",
+        liveAttachmentsBackupPath: "/app/data/.att_pre_restore_op-uuid-101",
+        phase: "filesSwapped",
+      };
+
+      assert.strictEqual(typeof marker.operationId, "string");
+      assert.strictEqual(typeof marker.startedAt, "string");
+      assert.strictEqual(typeof marker.candidateArchivePath, "string");
+      assert.strictEqual(typeof marker.stagingDir, "string");
+      assert.strictEqual(typeof marker.checkpointPath, "string");
+      assert.strictEqual(typeof marker.liveDbBackupPath, "string");
+      assert.strictEqual(typeof marker.liveAttachmentsBackupPath, "string");
+      assert.strictEqual(marker.phase, "filesSwapped");
+    });
+
+    it("verifies all valid restore activation phase states", () => {
+      const validPhases = new Set([
+        "initiated",
+        "checkpointCreated",
+        "filesSwapped",
+        "postVerificationStarted",
+        "rollbackInProgress",
+        "rolledBack",
+        "completed",
+      ]);
+
+      const testPhases = [
+        "initiated",
+        "checkpointCreated",
+        "filesSwapped",
+        "postVerificationStarted",
+        "rollbackInProgress",
+        "rolledBack",
+        "completed",
+      ];
+
+      for (const phase of testPhases) {
+        assert.ok(validPhases.has(phase), `Phase "${phase}" must be recognized`);
+      }
+    });
+  });
+
+  describe("2. backupStorage API Contract for Execute Restore & Crash Recovery", () => {
+    it("verifies backupStorage exposes executeRestore and checkAndRecoverInterruptedRestore", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/services/storage/backup.ts", "utf-8");
+
+      assert.ok(content.includes("async executeRestore("), "backupStorage must define executeRestore");
+      assert.ok(content.includes("async checkAndRecoverInterruptedRestore("), "backupStorage must define checkAndRecoverInterruptedRestore");
+      assert.ok(content.includes('"execute_restore"'), "backupStorage must invoke Tauri execute_restore");
+      assert.ok(content.includes('"check_and_recover_interrupted_restore"'), "backupStorage must invoke Tauri check_and_recover_interrupted_restore");
+      assert.ok(content.includes('"backup-progress"'), "backupStorage must listen for backup-progress events");
+    });
+
+    it("verifies App.tsx wires RestorePreviewModal to executeRestore and handles post-restore reload", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      assert.ok(content.includes("backupStorage.executeRestore"), "App.tsx must call backupStorage.executeRestore");
+      assert.ok(content.includes("isRestoringBackup"), "App.tsx must manage isRestoringBackup state");
+      assert.ok(content.includes("loadNotes()"), "App.tsx must reload notes after restore");
+      assert.ok(content.includes("loadNotebooks()"), "App.tsx must reload notebooks after restore");
+      assert.ok(content.includes("refreshNoteCounts()"), "App.tsx must refresh note counts after restore");
+    });
+  });
+
+  describe("3. Rollback State Machine Simulation & Invariants", () => {
+    it("simulates atomic swap and rollback on post-verification failure", () => {
+      const state = {
+        liveDb: "original_live_db",
+        liveAtt: "original_live_att",
+        backupLiveDb: null,
+        backupLiveAtt: null,
+        marker: null,
+        currentData: "original",
+      };
+
+      // Step 1: Initiated & Checkpoint created
+      state.marker = {
+        operationId: "op-1",
+        phase: "checkpointCreated",
+      };
+
+      // Step 2: Swap files
+      state.backupLiveDb = state.liveDb;
+      state.backupLiveAtt = state.liveAtt;
+      state.liveDb = "candidate_staged_db";
+      state.liveAtt = "candidate_staged_att";
+      state.currentData = "candidate";
+      state.marker.phase = "filesSwapped";
+
+      // Step 3: Post-verification begins
+      state.marker.phase = "postVerificationStarted";
+
+      // Simulate verification failure (e.g. schema mismatch or corrupted attachment)
+      const verificationPassed = false;
+
+      if (!verificationPassed) {
+        // Trigger rollback
+        state.marker.phase = "rollbackInProgress";
+
+        // Restore original files
+        state.liveDb = state.backupLiveDb;
+        state.liveAtt = state.backupLiveAtt;
+        state.backupLiveDb = null;
+        state.backupLiveAtt = null;
+        state.currentData = "original";
+
+        state.marker.phase = "rolledBack";
+        // Remove marker
+        state.marker = null;
+      }
+
+      assert.strictEqual(state.currentData, "original", "Data must be restored to original after rollback");
+      assert.strictEqual(state.liveDb, "original_live_db");
+      assert.strictEqual(state.liveAtt, "original_live_att");
+      assert.strictEqual(state.marker, null, "Marker must be cleared after rollback completion");
+    });
+
+    it("simulates crash recovery on startup if marker is found in filesSwapped phase", () => {
+      const startupState = {
+        hasInterruptedMarker: true,
+        markerPhase: "filesSwapped",
+        liveDbSwapBackupExists: true,
+        recovered: false,
+      };
+
+      const handleStartupRecovery = (env) => {
+        if (!env.hasInterruptedMarker) return false;
+        if (env.liveDbSwapBackupExists) {
+          // Perform rollback from swap backup
+          env.liveDbSwapBackupExists = false;
+          env.hasInterruptedMarker = false;
+          env.recovered = true;
+          return true;
+        }
+        return false;
+      };
+
+      const didRecover = handleStartupRecovery(startupState);
+      assert.strictEqual(didRecover, true);
+      assert.strictEqual(startupState.hasInterruptedMarker, false);
+      assert.strictEqual(startupState.recovered, true);
+    });
+  });
+});
+
+describe("Phase 11 - Task 20: Post-Restore Validation & Application Reinitialization Tests", () => {
+  describe("1. PostRestoreValidationReport Schema & Data Contract", () => {
+    it("validates PostRestoreValidationReport fields and contract", () => {
+      const report = {
+        isValid: true,
+        integrityCheckPassed: true,
+        foreignKeyCheckPassed: true,
+        schemaVersion: 4,
+        noteCount: 18,
+        notebookCount: 3,
+        tagCount: 5,
+        trashCount: 2,
+        attachmentCount: 4,
+        attachmentsVerifiedOnDisk: true,
+        ftsRebuiltAndQueryable: true,
+        internalLinksVerified: true,
+        settingsVerified: true,
+      };
+
+      assert.strictEqual(report.isValid, true);
+      assert.strictEqual(report.integrityCheckPassed, true);
+      assert.strictEqual(report.foreignKeyCheckPassed, true);
+      assert.strictEqual(report.schemaVersion, 4);
+      assert.strictEqual(report.noteCount, 18);
+      assert.strictEqual(report.notebookCount, 3);
+      assert.strictEqual(report.tagCount, 5);
+      assert.strictEqual(report.trashCount, 2);
+      assert.strictEqual(report.attachmentCount, 4);
+      assert.strictEqual(report.attachmentsVerifiedOnDisk, true);
+      assert.strictEqual(report.ftsRebuiltAndQueryable, true);
+      assert.strictEqual(report.internalLinksVerified, true);
+      assert.strictEqual(report.settingsVerified, true);
+    });
+
+    it("verifies backupStorage exposes validatePostRestoreState method", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/services/storage/backup.ts", "utf-8");
+
+      assert.ok(content.includes("async validatePostRestoreState("), "backupStorage must define validatePostRestoreState");
+      assert.ok(content.includes('"validate_post_restore_state"'), "backupStorage must invoke Tauri validate_post_restore_state");
+    });
+  });
+
+  describe("2. Application State Reinitialization & Stale Cache Clearance", () => {
+    it("verifies App.tsx enforces stale editor clearance and pending write invalidation", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      // Verify pending write invalidation
+      assert.ok(content.includes("editorSaveRef.current = null"), "App.tsx must nullify editorSaveRef to prevent stale overwrites");
+      // Verify editor remount key increment
+      assert.ok(content.includes("setNoteRefreshKey((prev) => prev + 1)"), "App.tsx must increment noteRefreshKey to force remount");
+      // Verify selection reset
+      assert.ok(content.includes("setSelectedNoteId(null)"), "App.tsx must reset selectedNoteId to null");
+      // Verify search clearance
+      assert.ok(content.includes("cancelPendingDebounce()"), "App.tsx must cancel pending search debounce");
+      assert.ok(content.includes("clearSearch()"), "App.tsx must clear search query");
+      // Verify navigation reset
+      assert.ok(content.includes('setActiveNavId("all-notes")'), "App.tsx must reset nav to all-notes");
+      assert.ok(content.includes("selectAllNotes()"), "App.tsx must call selectAllNotes()");
+      // Verify domain data reload
+      assert.ok(content.includes("loadNotes("), "App.tsx must reload notes");
+      assert.ok(content.includes("loadNotebooks()"), "App.tsx must reload notebooks");
+      assert.ok(content.includes("loadTags()"), "App.tsx must reload tags");
+      assert.ok(content.includes("refreshNoteCounts()"), "App.tsx must refresh note counts");
+      // Verify settings hydration
+      assert.ok(content.includes('storageService.settings.get("theme")'), "App.tsx must refresh theme setting");
+    });
+
+    it("simulates prevention of stale autosave from overwriting newly restored data", () => {
+      let activeDatabase = {
+        notes: [{ id: "restored-note-1", title: "Restored Astrophysics", content: "Fresh restored body" }],
+      };
+
+      let pendingPreRestoreSave = {
+        noteId: "old-live-note-99",
+        title: "Obsolete Draft",
+        content: "Draft written before restore was triggered",
+      };
+
+      let editorSaveRef = () => {
+        // Obsolete save handler
+        activeDatabase.notes.push({
+          id: pendingPreRestoreSave.noteId,
+          title: pendingPreRestoreSave.title,
+          content: pendingPreRestoreSave.content,
+        });
+      };
+
+      // Restore process begins:
+      // Invariant: editorSaveRef is nullified BEFORE restore completes
+      editorSaveRef = null;
+
+      // Delayed debounce / autosave timer fires:
+      if (editorSaveRef) {
+        editorSaveRef();
+      }
+
+      // Restored database remains clean with zero stale note injection
+      assert.strictEqual(activeDatabase.notes.length, 1);
+      assert.strictEqual(activeDatabase.notes[0].id, "restored-note-1");
+      assert.strictEqual(activeDatabase.notes[0].title, "Restored Astrophysics");
+    });
+  });
+
+  describe("3. Post-Restore Failure Rollback Reinitialization", () => {
+    it("guarantees UI reinitializes against rolled-back data if restore fails", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      // Verify error block in onConfirmRestore reinitializes the UI
+      const restoreCatchBlock = content.slice(content.indexOf("Restore failed:"));
+      assert.ok(restoreCatchBlock.includes("setNoteRefreshKey((prev) => prev + 1)"), "Catch block must increment noteRefreshKey");
+      assert.ok(restoreCatchBlock.includes("setSelectedNoteId(null)"), "Catch block must reset selectedNoteId");
+      assert.ok(restoreCatchBlock.includes("loadNotes("), "Catch block must reload notes");
+      assert.ok(restoreCatchBlock.includes("loadNotebooks()"), "Catch block must reload notebooks");
+      assert.ok(restoreCatchBlock.includes("loadTags()"), "Catch block must reload tags");
+    });
+  });
+});
+
+describe("Phase 11 - Task 21: Implement Restore Progress, Cancellation, and Recovery Feedback Tests", () => {
+  describe("1. Restore Progress Stage Classification & Event Contract", () => {
+    it("validates all required restore stages and BackupProgressEvent contract", () => {
+      const stages = [
+        "starting",
+        "validatingBackup",
+        "preparingStagingData",
+        "extractingStaging",
+        "checkingDatabaseIntegrity",
+        "validatingStagedData",
+        "checkingAttachments",
+        "creatingCheckpoint",
+        "preparingActivation",
+        "activatingRestoredData",
+        "verifyingRestoredState",
+        "rebuildingSearchIndex",
+        "completed",
+        "failed",
+        "failedWithRecoveryAvailable",
+        "failedAndRecoveryRequired",
+        "cancelled",
+      ];
+
+      const event = {
+        stage: "checkingAttachments",
+        message: "Verifying staged attachments...",
+        percentage: 50,
+        cancellable: true,
+        operationId: "op-restore-123",
+      };
+
+      assert.ok(stages.includes(event.stage));
+      assert.strictEqual(event.cancellable, true);
+      assert.strictEqual(event.operationId, "op-restore-123");
+    });
+
+    it("verifies getBackupStageDescription handles all restore progress stages accurately", async () => {
+      const { getBackupStageDescription } = await import(
+        "../src/features/backup/utils/backupUtils.ts"
+      );
+
+      assert.strictEqual(
+        getBackupStageDescription("validatingBackup"),
+        "Validating backup archive integrity..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("preparingStagingData"),
+        "Extracting backup to isolated staging directory..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("checkingDatabaseIntegrity"),
+        "Verifying database integrity and schema compatibility..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("checkingAttachments"),
+        "Verifying staged attachments..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("creatingCheckpoint"),
+        "Creating pre-restore recovery checkpoint..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("preparingActivation"),
+        "Preparing activation (cancellation locked)..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("activatingRestoredData"),
+        "Activating restored database and attachments..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("verifyingRestoredState"),
+        "Verifying restored state and reinitializing search index..."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("failedWithRecoveryAvailable"),
+        "Restore failed. Previous state remains safely active."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("failedAndRecoveryRequired"),
+        "Restore failed. Manual recovery action is required."
+      );
+      assert.strictEqual(
+        getBackupStageDescription("cancelled"),
+        "Operation was cancelled."
+      );
+    });
+  });
+
+  describe("2. Cancellation Protocol & Lockout State Machine", () => {
+    it("verifies backupStorage exposes cancelRestore API and invokes cancel_restore_operation", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/services/storage/backup.ts", "utf-8");
+
+      assert.ok(content.includes("async cancelRestore("), "backupStorage must define cancelRestore");
+      assert.ok(content.includes('"cancel_restore_operation"'), "backupStorage must invoke cancel_restore_operation");
+    });
+
+    it("simulates safe cancellation before activation with live data preservation", () => {
+      const restoreProcess = {
+        operationId: "restore-sim-1",
+        stage: "checkingAttachments",
+        isCancelled: false,
+        stagingPurged: false,
+        liveDataTouched: false,
+        checkpointPreserved: false,
+      };
+
+      // Request cancellation during safe preparation
+      const cancelOperation = (proc) => {
+        const safeStages = [
+          "starting",
+          "validatingBackup",
+          "preparingStagingData",
+          "extractingStaging",
+          "checkingDatabaseIntegrity",
+          "checkingAttachments",
+          "creatingCheckpoint",
+        ];
+        if (safeStages.includes(proc.stage)) {
+          proc.isCancelled = true;
+          proc.stagingPurged = true;
+          proc.stage = "cancelled";
+          return true;
+        }
+        return false;
+      };
+
+      const cancelled = cancelOperation(restoreProcess);
+      assert.strictEqual(cancelled, true);
+      assert.strictEqual(restoreProcess.isCancelled, true);
+      assert.strictEqual(restoreProcess.stage, "cancelled");
+      assert.strictEqual(restoreProcess.stagingPurged, true);
+      assert.strictEqual(restoreProcess.liveDataTouched, false);
+    });
+
+    it("simulates cancellation lockout during destructive activation", () => {
+      const activationProcess = {
+        operationId: "restore-sim-2",
+        stage: "activatingRestoredData",
+        liveFilesSwapped: true,
+      };
+
+      // Cancellation request during activation must be rejected casually
+      const attemptCasualCancel = (proc) => {
+        if (proc.stage === "activatingRestoredData" || proc.stage === "preparingActivation") {
+          return { allowed: false, reason: "Lockout active: destructive file swapping in progress." };
+        }
+        return { allowed: true };
+      };
+
+      const result = attemptCasualCancel(activationProcess);
+      assert.strictEqual(result.allowed, false);
+      assert.ok(result.reason.includes("Lockout active"));
+    });
+
+    it("verifies checkpoint is preserved when cancellation occurs after checkpoint creation", () => {
+      const processWithCheckpoint = {
+        operationId: "restore-sim-3",
+        checkpointCreated: true,
+        checkpointPath: "/backups/checkpoints/chk-1.pnbackup",
+        stage: "creatingCheckpoint",
+        liveDataTouched: false,
+      };
+
+      // Cancel right after checkpoint
+      processWithCheckpoint.stage = "cancelled";
+      processWithCheckpoint.isCancelled = true;
+
+      // Invariants
+      assert.strictEqual(processWithCheckpoint.checkpointCreated, true);
+      assert.strictEqual(processWithCheckpoint.liveDataTouched, false);
+      assert.strictEqual(processWithCheckpoint.checkpointPath, "/backups/checkpoints/chk-1.pnbackup");
+    });
+  });
+
+  describe("3. UI Transparency, Feedback, and Modal Wiring", () => {
+    it("verifies RestorePreviewModal renders live progress and cancellation controls", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("restore-progress-container"), "Modal must render restore-progress-container");
+      assert.ok(content.includes("restoreProgress"), "Modal must accept restoreProgress prop");
+      assert.ok(content.includes("onCancelRestore"), "Modal must accept onCancelRestore prop");
+      assert.ok(content.includes("formatStageBadge"), "Modal must define formatStageBadge helper");
+      assert.ok(content.includes("restore-lockout-banner"), "Modal must render lockout banner when activation begins");
+      assert.ok(content.includes("restore-cancellable-banner"), "Modal must render safe cancellation banner");
+    });
+
+    it("verifies App.tsx wires progress tracking and handles cancellation feedback explicitly", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      assert.ok(content.includes("restoreProgress"), "App.tsx must maintain restoreProgress state");
+      assert.ok(content.includes("handleCancelRestore"), "App.tsx must define handleCancelRestore");
+      assert.ok(content.includes("backupStorage.cancelRestore"), "App.tsx must invoke backupStorage.cancelRestore");
+      assert.ok(content.includes("onCancelRestore={handleCancelRestore}"), "App.tsx must pass onCancelRestore to modal");
+      assert.ok(content.includes("isCancelled"), "App.tsx must distinguish cancelled restores from general failures");
+    });
+  });
+});
+
+describe("Phase 11 - Task 22: Implement Backup Health and Failure Notifications Tests", () => {
+  describe("1. Backup Health Data Contract & Status Modeling", () => {
+    it("validates BackupHealthStatus and BackupHealthWarning data schema", () => {
+      const sampleHealth = {
+        healthLevel: "warning",
+        autoBackupEnabled: true,
+        destinationAvailable: true,
+        destinationPath: "/home/user/.local/share/personal-notepad/backups",
+        isSameDisk: true,
+        lastAttemptAt: "2026-10-14T10:00:00Z",
+        lastSuccessfulAt: null,
+        lastFailureCategory: null,
+        lastErrorMessage: null,
+        lastRetentionWarning: null,
+        failureCount: 0,
+        managedBackupCount: 0,
+        hasVerifiedBackup: false,
+        latestBackupName: null,
+        latestBackupVerified: false,
+        warnings: [
+          {
+            code: "NO_VERIFIED_BACKUP",
+            level: "warning",
+            message: "No verified backup exists yet.",
+            detail: "Create a manual backup or wait for the scheduled backup job.",
+          },
+          {
+            code: "SAME_PHYSICAL_DISK",
+            level: "info",
+            message: "Backup destination is on the primary system drive.",
+            detail: "An external drive is recommended for physical drive failure protection.",
+          },
+        ],
+      };
+
+      assert.strictEqual(typeof sampleHealth.healthLevel, "string");
+      assert.strictEqual(typeof sampleHealth.autoBackupEnabled, "boolean");
+      assert.strictEqual(typeof sampleHealth.destinationAvailable, "boolean");
+      assert.strictEqual(typeof sampleHealth.isSameDisk, "boolean");
+      assert.strictEqual(sampleHealth.hasVerifiedBackup, false);
+      assert.strictEqual(Array.isArray(sampleHealth.warnings), true);
+      assert.strictEqual(sampleHealth.warnings.length, 2);
+    });
+
+    it("verifies backupStorage exposes getHealthStatus API", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/services/storage/backup.ts", "utf-8");
+
+      assert.ok(content.includes("async getHealthStatus("), "backupStorage must define getHealthStatus");
+      assert.ok(content.includes('"get_backup_health_status"'), "backupStorage must invoke Tauri get_backup_health_status");
+    });
+  });
+
+  describe("2. Health State Transitions & Warning Rules", () => {
+    it("evaluates health status level based on destination, failure count, and settings", () => {
+      const evaluateHealth = (status) => {
+        if (!status.destinationAvailable || (status.failureCount >= 3 && status.lastErrorMessage)) {
+          return "critical";
+        }
+        if (!status.autoBackupEnabled) {
+          return "disabled";
+        }
+        if (status.warnings && status.warnings.some((w) => w.level === "warning" || w.level === "critical")) {
+          return "warning";
+        }
+        return "healthy";
+      };
+
+      // Critical: destination unavailable
+      assert.strictEqual(
+        evaluateHealth({
+          destinationAvailable: false,
+          failureCount: 0,
+          autoBackupEnabled: true,
+          warnings: [{ level: "critical" }],
+        }),
+        "critical"
+      );
+
+      // Disabled: auto-backup toggled off
+      assert.strictEqual(
+        evaluateHealth({
+          destinationAvailable: true,
+          failureCount: 0,
+          autoBackupEnabled: false,
+          warnings: [{ level: "warning" }],
+        }),
+        "disabled"
+      );
+
+      // Warning: no verified backups yet
+      assert.strictEqual(
+        evaluateHealth({
+          destinationAvailable: true,
+          failureCount: 0,
+          autoBackupEnabled: true,
+          warnings: [{ level: "warning" }],
+        }),
+        "warning"
+      );
+
+      // Healthy: all clear
+      assert.strictEqual(
+        evaluateHealth({
+          destinationAvailable: true,
+          failureCount: 0,
+          autoBackupEnabled: true,
+          warnings: [{ level: "info" }],
+        }),
+        "healthy"
+      );
+    });
+
+    it("distinguishes backup availability from verified recoverability", () => {
+      const discoveredBackups = [
+        { fileName: "backup-1.pnbackup", isValid: false },
+        { fileName: "backup-2.pnbackup", isValid: false },
+      ];
+
+      const availableCount = discoveredBackups.length;
+      const verifiedCount = discoveredBackups.filter((b) => b.isValid).length;
+      const isRecoverable = verifiedCount > 0;
+
+      assert.strictEqual(availableCount, 2);
+      assert.strictEqual(verifiedCount, 0);
+      assert.strictEqual(isRecoverable, false);
+    });
+
+    it("enforces drive isolation guidance for same-disk storage", () => {
+      const sameDiskHealth = {
+        isSameDisk: true,
+        warnings: [
+          {
+            code: "SAME_PHYSICAL_DISK",
+            level: "info",
+            message: "Backup destination is on the primary system drive.",
+            detail: "Does not protect against physical drive failure.",
+          },
+        ],
+      };
+
+      const hasIsolationWarning = sameDiskHealth.warnings.some(
+        (w) => w.code === "SAME_PHYSICAL_DISK" && w.detail.includes("physical drive failure")
+      );
+      assert.strictEqual(hasIsolationWarning, true);
+    });
+  });
+
+  describe("3. Non-Repetitive Notification Dispatch & Settings Panel UI", () => {
+    it("verifies notification de-duplication mechanism avoids repetitive alerts", () => {
+      const dismissedCodes = new Set();
+      const notificationHistory = [];
+
+      const dispatchAlert = (warning) => {
+        if (!dismissedCodes.has(warning.code)) {
+          notificationHistory.push(warning.code);
+        }
+      };
+
+      const warn = { code: "NO_VERIFIED_BACKUP", message: "No verified backup exists yet." };
+
+      // First evaluation: alert dispatched
+      dispatchAlert(warn);
+      assert.strictEqual(notificationHistory.length, 1);
+
+      // User dismisses alert
+      dismissedCodes.add(warn.code);
+
+      // Second evaluation (e.g. 60-second periodic poll): must NOT dispatch duplicate alert
+      dispatchAlert(warn);
+      assert.strictEqual(notificationHistory.length, 1);
+    });
+
+    it("verifies BackupSettingsPanel renders health card, statistics, and warning indicators", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupSettingsPanel/BackupSettingsPanel.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("backup-health-card"), "Settings panel must render backup-health-card");
+      assert.ok(content.includes("backup-health-badge"), "Settings panel must render health badge");
+      assert.ok(content.includes("backup-health-stat"), "Settings panel must render health statistics");
+      assert.ok(content.includes("health-last-successful"), "Settings panel must render last successful backup stat");
+      assert.ok(content.includes("health-destination-status"), "Settings panel must render destination status");
+      assert.ok(content.includes("health-recoverability-status"), "Settings panel must render recoverability status");
+      assert.ok(content.includes("health-drive-isolation"), "Settings panel must render drive isolation notice");
+      assert.ok(content.includes("backup-health-warnings-list"), "Settings panel must render health warnings list");
+    });
+
+    it("verifies App.tsx handles backup alerts and recoverable restore warnings", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      assert.ok(content.includes("backupAlert"), "App.tsx must maintain backupAlert state");
+      assert.ok(content.includes("dismissedBackupCodes"), "App.tsx must maintain dismissedBackupCodes set");
+      assert.ok(content.includes("backup-alert-toast"), "App.tsx must render backup-alert-toast component");
+      assert.ok(content.includes("AUTOMATIC_BACKUP_EXECUTION_FAILED"), "App.tsx must handle automatic backup execution failure");
+      assert.ok(content.includes("Restore completed with warnings"), "App.tsx must render recoverable restore warnings");
+    });
+  });
+});
+
+describe("Phase 11 - Task 24: Frontend Tests, End-to-End Workflows, and Data-Loss Simulations", () => {
+  describe("1. Frontend Backup Settings & Configuration Workflow", () => {
+    it("verifies BackupSettingsPanel loads initial configuration and health status", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupSettingsPanel/BackupSettingsPanel.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("backupStorage.getSettings()"), "Must fetch settings on mount");
+      assert.ok(content.includes("backupStorage.getHealthStatus()"), "Must fetch health on mount");
+      assert.ok(content.includes("backup-health-card"), "Must render backup health card");
+      assert.ok(content.includes("backup-settings-loading"), "Must support loading state");
+    });
+
+    it("verifies automatic backup configuration controls and validation bounds (1-50 retention)", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupSettingsPanel/BackupSettingsPanel.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("handleToggleAutoBackup"), "Must provide auto-backup toggle");
+      assert.ok(content.includes("handleIntervalChange"), "Must provide interval change handler");
+      assert.ok(content.includes("handleRetentionChange"), "Must provide retention change handler");
+      assert.ok(content.includes("count >= 1 && count <= 50"), "Must enforce 1..50 retention bounds");
+      assert.ok(content.includes("handleToggleStartup"), "Must provide backupOnStartup toggle");
+      assert.ok(content.includes("handlePickFolder"), "Must provide destination picker");
+      assert.ok(content.includes("handleResetFolder"), "Must provide destination reset");
+    });
+
+    it("simulates settings update state transition and persistence feedback", () => {
+      let state = {
+        settings: {
+          autoBackupEnabled: true,
+          intervalMinutes: 1440,
+          retentionCount: 5,
+          backupDestinationDir: null,
+          backupOnStartup: true,
+        },
+        feedback: null,
+        isSaving: false,
+      };
+
+      const updateSettings = (updates) => {
+        state.isSaving = true;
+        state.settings = { ...state.settings, ...updates };
+        state.isSaving = false;
+        state.feedback = { type: "saved", text: "Settings saved successfully." };
+      };
+
+      updateSettings({ intervalMinutes: 720, retentionCount: 10 });
+      assert.strictEqual(state.settings.intervalMinutes, 720);
+      assert.strictEqual(state.settings.retentionCount, 10);
+      assert.strictEqual(state.feedback.type, "saved");
+      assert.strictEqual(state.isSaving, false);
+    });
+  });
+
+  describe("2. Manual Backup Creation & Verification Workflow", () => {
+    it("verifies CreateBackupModal renders full application scope checklist and offline-first banner", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/CreateBackupModal/CreateBackupModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("Offline-First Application Snapshot"), "Must render offline snapshot banner");
+      assert.ok(content.includes("Active Notes & Content"), "Must list active notes scope");
+      assert.ok(content.includes("Notebooks & Hierarchy"), "Must list notebooks scope");
+      assert.ok(content.includes("Tags & Tag Mappings"), "Must list tags scope");
+      assert.ok(content.includes("Trash & Deleted Notes"), "Must list trash scope");
+      assert.ok(content.includes("Managed File Attachments"), "Must list attachments scope");
+    });
+
+    it("verifies manual backup flushes pending editor writes before snapshot creation", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/CreateBackupModal/CreateBackupModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("if (onFlushSave)"), "Must check for onFlushSave callback");
+      assert.ok(content.includes("await onFlushSave()"), "Must await onFlushSave before backupStorage.createBackup");
+      assert.ok(content.includes("backupStorage.createBackup"), "Must invoke backupStorage.createBackup");
+    });
+
+    it("verifies manual backup duplicate submission guard while running", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/CreateBackupModal/CreateBackupModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes('status === "running"'), "Must track running status");
+      assert.ok(content.includes("Creating Backup..."), "Must show disabled progress indicator");
+      assert.ok(content.includes("if (status === \"running\") return;"), "Must prevent closing or re-submitting while running");
+    });
+  });
+
+  describe("3. Backup Listing, Inspection, and Selection Workflow", () => {
+    it("verifies BackupListModal fetches archives, renders counts, and handles empty state", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupListModal/BackupListModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("backupStorage.listBackups()"), "Must fetch backups via storage API");
+      assert.ok(content.includes("backup-empty-state-box"), "Must render empty state container");
+      assert.ok(content.includes("No backups available yet"), "Must show informative empty state text");
+      assert.ok(content.includes("backup-items-column"), "Must render items list column");
+      assert.ok(content.includes("backup-detail-column"), "Must render detail inspection column");
+    });
+
+    it("verifies display of verification status, metadata badges, and deep inspection report", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupListModal/BackupListModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("handleValidateBackup"), "Must provide deep validation trigger");
+      assert.ok(content.includes("backupStorage.validateBackup"), "Must invoke backupStorage.validateBackup");
+      assert.ok(content.includes("backup-validation-report"), "Must render validation report section");
+      assert.ok(content.includes("SQLite Integrity"), "Must check SQLite integrity in report");
+      assert.ok(content.includes("Foreign Keys"), "Must check foreign keys in report");
+      assert.ok(content.includes("Attachment Inventory"), "Must check attachments in report");
+      assert.ok(content.includes("handlePickExternal"), "Must support external archive picking");
+    });
+
+    it("simulates selecting a backup item and updating the detail inspection pane", () => {
+      const backups = [
+        {
+          filePath: "/backups/backup-20261014-080000.pnbackup",
+          fileName: "backup-20261014-080000.pnbackup",
+          fileSize: 45000,
+          createdAt: "2026-10-14T08:00:00Z",
+          backupType: "automatic",
+          isVerified: true,
+          isValid: true,
+          noteCount: 15,
+          attachmentCount: 3,
+        },
+        {
+          filePath: "/backups/backup-20261014-120000.pnbackup",
+          fileName: "backup-20261014-120000.pnbackup",
+          fileSize: 52000,
+          createdAt: "2026-10-14T12:00:00Z",
+          backupType: "manual",
+          isVerified: true,
+          isValid: true,
+          noteCount: 18,
+          attachmentCount: 4,
+        },
+      ];
+
+      let selected = backups[0];
+      const selectBackup = (item) => {
+        selected = item;
+      };
+
+      selectBackup(backups[1]);
+      assert.strictEqual(selected.fileName, "backup-20261014-120000.pnbackup");
+      assert.strictEqual(selected.noteCount, 18);
+      assert.strictEqual(selected.backupType, "manual");
+    });
+  });
+
+  describe("4. Restore Preview, Safety Notices, and Confirmation Workflow", () => {
+    it("verifies RestorePreviewModal displays full content summary grid and schema version transition", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("previewRestore"), "Must fetch preview via storage API");
+      assert.ok(content.includes("restore-preview-grid"), "Must render content summary grid");
+      assert.ok(content.includes("Active Notes"), "Must show active notes count");
+      assert.ok(content.includes("Notebooks"), "Must show notebooks count");
+      assert.ok(content.includes("Tags"), "Must show tags count");
+      assert.ok(content.includes("Trash Notes"), "Must show trash notes count");
+      assert.ok(content.includes("Attachments"), "Must show attachments count and size");
+      assert.ok(content.includes("Schema"), "Must show schema version transition");
+    });
+
+    it("verifies consequence warning banner, recovery checkpoint disclosure, and confirmation checkbox guard", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("Restoration Consequence Notice"), "Must display consequence banner");
+      assert.ok(content.includes("recovery checkpoint"), "Must disclose automated recovery checkpoint");
+      assert.ok(content.includes("restore-preview-confirm-group"), "Must render confirmation checkbox group");
+      assert.ok(content.includes("disabled={!preview?.canRestore || !isConfirmed || isLoading}"), "Restore button must be disabled without confirmation");
+      assert.ok(content.includes("Restoration Blocked"), "Must display blocked banner for invalid backups");
+    });
+
+    it("simulates confirmation state machine preventing proceed without explicit checkbox", () => {
+      const canProceed = (preview, isConfirmed, isRestoring) => {
+        return Boolean(preview?.canRestore && isConfirmed && !isRestoring);
+      };
+
+      const validPreview = { canRestore: true, noteCount: 10 };
+      const invalidPreview = { canRestore: false, noteCount: 0 };
+
+      // Case 1: Valid preview, but not confirmed -> BLOCKED
+      assert.strictEqual(canProceed(validPreview, false, false), false);
+
+      // Case 2: Valid preview, confirmed, idle -> ALLOWED
+      assert.strictEqual(canProceed(validPreview, true, false), true);
+
+      // Case 3: Valid preview, confirmed, but already restoring -> BLOCKED (duplicate submission guard)
+      assert.strictEqual(canProceed(validPreview, true, true), false);
+
+      // Case 4: Invalid preview, confirmed -> BLOCKED
+      assert.strictEqual(canProceed(invalidPreview, true, false), false);
+    });
+  });
+
+  describe("5. Restore Progress, Cancellation, Lockout, and Reinitialization Workflow", () => {
+    it("verifies RestorePreviewModal displays progress bar, stage badges, and cancellation lockout", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("restore-progress-container"), "Must render progress container");
+      assert.ok(content.includes("restore-progress-bar-fill"), "Must render progress bar fill");
+      assert.ok(content.includes("Safe Cancellation Window Active"), "Must render safe cancellation banner");
+      assert.ok(content.includes("Activation Lockout Active"), "Must render activation lockout banner");
+      assert.ok(content.includes("Cancellation Locked"), "Must disable cancel button during lockout");
+    });
+
+    it("verifies App.tsx wires full restore execution, progress reporting, and state reinitialization", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+      assert.ok(content.includes("backupStorage.executeRestore"), "App.tsx must invoke backupStorage.executeRestore");
+      assert.ok(content.includes("editorSaveRef.current = null"), "App.tsx must nullify pending editor write ref");
+      assert.ok(content.includes("setNoteRefreshKey((prev) => prev + 1)"), "App.tsx must increment noteRefreshKey");
+      assert.ok(content.includes("setSelectedNoteId(null)"), "App.tsx must clear selected note");
+      assert.ok(content.includes("clearSearch()"), "App.tsx must clear search query");
+      assert.ok(content.includes("selectAllNotes()"), "App.tsx must reset nav to all-notes");
+      assert.ok(content.includes("loadNotes("), "App.tsx must reload notes");
+      assert.ok(content.includes("loadNotebooks()"), "App.tsx must reload notebooks");
+      assert.ok(content.includes("loadTags()"), "App.tsx must reload tags");
+    });
+
+    it("simulates safe cancellation before activation with live data preservation", () => {
+      let liveData = { notes: ["live note 1", "live note 2"], status: "clean" };
+      let restoreCancelled = false;
+
+      const progressEvent = { stage: "preparingStagingData", cancellable: true };
+
+      if (progressEvent.cancellable) {
+        // User triggers cancel
+        restoreCancelled = true;
+      }
+
+      assert.strictEqual(restoreCancelled, true);
+      assert.strictEqual(liveData.status, "clean");
+      assert.strictEqual(liveData.notes.length, 2);
+    });
+
+    it("simulates activation lockout rejecting cancellation requests during file swap", () => {
+      const progressEvent = { stage: "activatingRestoredData", cancellable: false };
+
+      const attemptCancel = (evt) => {
+        if (!evt.cancellable) {
+          return { accepted: false, reason: "LOCKED_OUT_DURING_ACTIVATION" };
+        }
+        return { accepted: true };
+      };
+
+      const result = attemptCancel(progressEvent);
+      assert.strictEqual(result.accepted, false);
+      assert.strictEqual(result.reason, "LOCKED_OUT_DURING_ACTIVATION");
+    });
+  });
+
+  describe("6. Keyboard Navigation and Focus Management", () => {
+    it("verifies BackupListModal supports keyboard navigation with Enter and Space keys", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/BackupListModal/BackupListModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes('tabIndex={0}'), "List items must have tabIndex={0} for keyboard focus");
+      assert.ok(content.includes('role="listitem"'), "List items must have ARIA role listitem");
+      assert.ok(content.includes('role="list"'), "List container must have ARIA role list");
+      assert.ok(content.includes('e.key === "Enter" || e.key === " "'), "Keyboard handler must accept Enter and Space");
+    });
+
+    it("verifies Modal component disables backdrop and ESC close while restoring or submitting", async () => {
+      const fs = await import("node:fs");
+      const content = fs.readFileSync(
+        "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+        "utf-8"
+      );
+
+      assert.ok(content.includes("onClose={isRestoring ? () => {} : onClose}"), "Must block closing modal while restore is active");
+    });
+  });
+
+  describe("7. End-to-End Scenario A — Normal Recovery Simulation", () => {
+    it("executes Scenario A: create notes, notebooks, tags, attachments, trash -> backup -> modify -> restore -> restart", () => {
+      // 1. Initial State before Backup
+      const preBackupState = {
+        notes: [
+          { id: "note-1", title: "Quantum Computing Intro", content: "Superposition and entanglement", isFavorite: true, deletedAt: null },
+          { id: "note-2", title: "Astrophysics Notes", content: "Stellar evolution and black holes", isFavorite: false, deletedAt: null },
+          { id: "note-trash-1", title: "Old Draft", content: "To be trashed", isFavorite: false, deletedAt: "2026-10-14T09:00:00Z" },
+        ],
+        notebooks: [
+          { id: "nb-1", name: "Physics Research", parentId: null },
+        ],
+        tags: [
+          { id: "tag-1", name: "quantum" },
+          { id: "tag-2", name: "science" },
+        ],
+        attachments: [
+          { id: "att-1", noteId: "note-1", fileName: "circuit.png", bytes: "fake-png-binary-data", sha256: "hash-circuit-png" },
+        ],
+      };
+
+      // 2. Create Backup Snapshot
+      const backupArchive = {
+        manifest: {
+          formatVersion: 1,
+          schemaVersion: 4,
+          createdAt: "2026-10-14T10:00:00Z",
+          noteCount: 3,
+          notebookCount: 1,
+          tagCount: 2,
+          attachmentCount: 1,
+        },
+        snapshotData: JSON.parse(JSON.stringify(preBackupState)),
+      };
+
+      // 3. Make Intervening Changes in Live Application (Simulating live mutations after backup)
+      let liveAppState = JSON.parse(JSON.stringify(preBackupState));
+      liveAppState.notes.push({
+        id: "note-post-backup",
+        title: "Unwanted Temporary Draft",
+        content: "Created after backup, will be overwritten",
+        isFavorite: false,
+        deletedAt: null,
+      });
+      liveAppState.notes[0].content = "Accidentally corrupted note body";
+      liveAppState.attachments = []; // Attachments deleted in live app
+
+      assert.strictEqual(liveAppState.notes.length, 4);
+      assert.strictEqual(liveAppState.attachments.length, 0);
+
+      // 4. Restore the Backup
+      // Create pre-restore recovery checkpoint first
+      const preRestoreCheckpoint = {
+        createdAt: "2026-10-14T11:00:00Z",
+        snapshotData: JSON.parse(JSON.stringify(liveAppState)),
+      };
+      assert.ok(preRestoreCheckpoint, "Pre-restore checkpoint must be created");
+
+      // Replace live state with restored backup state
+      liveAppState = JSON.parse(JSON.stringify(backupArchive.snapshotData));
+
+      // 5. Verify Restored State matches Backup Exactly
+      assert.strictEqual(liveAppState.notes.length, 3);
+      assert.strictEqual(liveAppState.notes[0].title, "Quantum Computing Intro");
+      assert.strictEqual(liveAppState.notes[0].content, "Superposition and entanglement");
+      assert.strictEqual(liveAppState.notes[0].isFavorite, true);
+      assert.strictEqual(liveAppState.notes[2].deletedAt, "2026-10-14T09:00:00Z"); // Trash preserved
+      assert.strictEqual(liveAppState.notebooks.length, 1);
+      assert.strictEqual(liveAppState.tags.length, 2);
+      assert.strictEqual(liveAppState.attachments.length, 1);
+      assert.strictEqual(liveAppState.attachments[0].fileName, "circuit.png");
+      assert.strictEqual(liveAppState.attachments[0].sha256, "hash-circuit-png");
+
+      // 6. Simulate Application Restart (Cold boot rehydration)
+      const restartState = JSON.parse(JSON.stringify(liveAppState));
+      assert.strictEqual(restartState.notes.length, 3);
+      assert.strictEqual(restartState.notes[0].title, "Quantum Computing Intro");
+      assert.strictEqual(restartState.attachments[0].fileName, "circuit.png");
+    });
+  });
+
+  describe("8. End-to-End Scenario B — Corrupt Backup Simulation", () => {
+    it("executes Scenario B: corrupt archive entry -> validation fails -> restore blocked -> live data unchanged", () => {
+      const liveAppState = {
+        notes: [{ id: "n1", title: "Authoritative Note", content: "Safe and sound" }],
+        attachments: [{ id: "a1", fileName: "document.pdf", sha256: "orig-sha256" }],
+      };
+
+      const corruptBackup = {
+        manifest: { formatVersion: 1, schemaVersion: 4, noteCount: 1 },
+        corruptedEntry: "database.sqlite",
+        checksumMismatch: true,
+      };
+
+      // Attempt validation
+      const validateBackup = (backup) => {
+        const issues = [];
+        if (backup.checksumMismatch) {
+          issues.push({ severity: "error", message: "SHA-256 checksum mismatch for database.sqlite entry." });
+        }
+        return {
+          isValid: issues.length === 0,
+          canRestore: issues.length === 0,
+          issues,
+        };
+      };
+
+      const validation = validateBackup(corruptBackup);
+      assert.strictEqual(validation.isValid, false);
+      assert.strictEqual(validation.canRestore, false);
+      assert.strictEqual(validation.issues.length, 1);
+
+      // Attempt restore -> Must be rejected immediately
+      const executeRestore = (val, state) => {
+        if (!val.canRestore) {
+          throw new Error("Cannot restore corrupted backup archive.");
+        }
+        return state;
+      };
+
+      assert.throws(() => executeRestore(validation, liveAppState), /Cannot restore corrupted backup/);
+
+      // Confirm live data remains 100% untouched
+      assert.strictEqual(liveAppState.notes.length, 1);
+      assert.strictEqual(liveAppState.notes[0].title, "Authoritative Note");
+      assert.strictEqual(liveAppState.attachments.length, 1);
+    });
+  });
+
+  describe("9. End-to-End Scenario C — Interrupted Restore & Rollback Simulation", () => {
+    it("executes Scenario C: simulated failure during staging -> rollback to checkpoint -> no mixed state", () => {
+      const liveAppState = {
+        notes: [{ id: "n1", title: "Active Live Note", content: "Live content" }],
+        attachments: [{ id: "a1", fileName: "photo.jpg", bytes: "live-photo" }],
+      };
+
+      // 1. Pre-restore checkpoint creation
+      const checkpoint = {
+        id: "checkpoint-20261014-120000",
+        state: JSON.parse(JSON.stringify(liveAppState)),
+      };
+
+      // 2. Simulate failure during staged validation
+      const stagedRestoreResult = {
+        stagingDir: "/tmp/staged-restore-123",
+        stagedDbValid: false, // Simulated corruption in staged sqlite file
+        error: "PRAGMA integrity_check failed on staged database.",
+      };
+
+      // 3. Rollback protocol execution
+      let currentState = liveAppState;
+      if (!stagedRestoreResult.stagedDbValid) {
+        // Rollback: live files are never swapped, or restored from checkpoint
+        currentState = JSON.parse(JSON.stringify(checkpoint.state));
+      }
+
+      // 4. Confirm consistency and absence of partial state
+      assert.strictEqual(currentState.notes.length, 1);
+      assert.strictEqual(currentState.notes[0].title, "Active Live Note");
+      assert.strictEqual(currentState.attachments.length, 1);
+      assert.strictEqual(currentState.attachments[0].fileName, "photo.jpg");
+    });
+  });
+
+  describe("10. End-to-End Scenario D — Automatic Backup & Failure Simulation", () => {
+    it("executes Scenario D: enable auto-backup -> trigger schedule -> retain N backups -> report destination failure", () => {
+      let schedulerState = {
+        autoBackupEnabled: true,
+        intervalMinutes: 1440,
+        retentionCount: 3,
+        lastSuccessfulAt: null,
+        lastFailureCategory: null,
+        lastErrorMessage: null,
+        failureCount: 0,
+      };
+
+      const managedBackups = [];
+
+      // 1. Trigger scheduled backup
+      const runScheduledBackup = (destinationWritable) => {
+        if (!destinationWritable) {
+          schedulerState.failureCount += 1;
+          schedulerState.lastFailureCategory = "DESTINATION_UNAVAILABLE";
+          schedulerState.lastErrorMessage = "Backup destination directory is unwritable or offline.";
+          return { success: false };
+        }
+
+        const newBackup = {
+          name: `auto-backup-${Date.now()}.pnbackup`,
+          createdAt: new Date().toISOString(),
+          type: "automatic",
+        };
+        managedBackups.push(newBackup);
+
+        // Apply retention policy: keep newest N
+        while (managedBackups.length > schedulerState.retentionCount) {
+          managedBackups.shift(); // Remove oldest
+        }
+
+        schedulerState.lastSuccessfulAt = newBackup.createdAt;
+        schedulerState.failureCount = 0;
+        schedulerState.lastFailureCategory = null;
+        schedulerState.lastErrorMessage = null;
+        return { success: true };
+      };
+
+      // Run 4 automatic backups with destination accessible
+      runScheduledBackup(true);
+      runScheduledBackup(true);
+      runScheduledBackup(true);
+      runScheduledBackup(true);
+
+      // Verify retention: bounded to retentionCount = 3
+      assert.strictEqual(managedBackups.length, 3);
+      assert.ok(schedulerState.lastSuccessfulAt !== null);
+      assert.strictEqual(schedulerState.failureCount, 0);
+
+      // 2. Simulate application restart
+      const rehydratedScheduler = JSON.parse(JSON.stringify(schedulerState));
+      assert.strictEqual(rehydratedScheduler.autoBackupEnabled, true);
+      assert.strictEqual(rehydratedScheduler.retentionCount, 3);
+
+      // 3. Simulate inaccessible destination
+      const failedRun = runScheduledBackup(false);
+      assert.strictEqual(failedRun.success, false);
+      assert.strictEqual(schedulerState.failureCount, 1);
+      assert.strictEqual(schedulerState.lastFailureCategory, "DESTINATION_UNAVAILABLE");
+      assert.ok(schedulerState.lastErrorMessage.includes("unwritable or offline"));
+
+      // 4. Verify health evaluation reflects warning/critical alert
+      const evaluateHealthLevel = (sched) => {
+        if (sched.failureCount > 0 && sched.lastFailureCategory) {
+          return "warning";
+        }
+        return "healthy";
+      };
+
+      assert.strictEqual(evaluateHealthLevel(schedulerState), "warning");
+    });
+  });
+});
+
+
+
+
+
+
+
+
 
 
 

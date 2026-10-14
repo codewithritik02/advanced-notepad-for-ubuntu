@@ -1,0 +1,313 @@
+/* Personal Notepad — Create Manual Backup Modal Styles */
+
+.backup-modal-container {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-modal-banner {
+  padding: 12px 16px;
+  border-radius: var(--radius-md, 8px);
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.backup-modal-banner-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--color-accent, #0284c7);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.backup-modal-banner-content h4 {
+  margin: 0 0 4px 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-modal-banner-content p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary, #64748b);
+  line-height: 1.45;
+}
+
+/* Inclusion Matrix Checklist */
+.backup-scope-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backup-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.backup-section-title {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary, #64748b);
+}
+
+.backup-scope-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.backup-scope-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm, 6px);
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.05));
+  font-size: 0.83rem;
+  font-weight: 500;
+}
+
+.backup-scope-item .check-icon {
+  color: #10b981;
+  font-weight: bold;
+}
+
+/* Destination Selector */
+.backup-dest-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backup-dest-box {
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+  background-color: var(--color-bg-secondary, #f8fafc);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backup-dest-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backup-dest-path-preview {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--color-text-primary, #0f172a);
+  background: var(--color-bg-primary, #ffffff);
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.1));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.backup-dest-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-dest-note {
+  font-size: 0.76rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 0;
+}
+
+.backup-overwrite-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: var(--color-text-secondary, #64748b);
+  cursor: pointer;
+  margin-top: 2px;
+}
+
+.backup-overwrite-row input {
+  cursor: pointer;
+}
+
+/* Progress Stage View */
+.backup-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 0;
+}
+
+.backup-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.backup-progress-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-border-subtle, #e2e8f0);
+  border-top-color: var(--color-accent, #0284c7);
+  border-radius: 50%;
+  animation: backupSpin 0.8s linear infinite;
+}
+
+@keyframes backupSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.backup-progress-track {
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-bg-secondary, #e2e8f0);
+  border-radius: 9999px;
+  overflow: hidden;
+}
+
+.backup-progress-bar {
+  height: 100%;
+  background-color: var(--color-accent, #0284c7);
+  border-radius: 9999px;
+  transition: width 0.3s ease;
+}
+
+.backup-progress-status-msg {
+  font-size: 0.82rem;
+  color: var(--color-text-secondary, #64748b);
+  margin: 0;
+}
+
+/* Success & Verified Report */
+.backup-success-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+.backup-success-badge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background-color: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-md, 8px);
+}
+
+.backup-success-badge-wrap .success-icon {
+  font-size: 1.5rem;
+  color: #059669;
+}
+
+.backup-success-badge-wrap h4 {
+  margin: 0 0 2px 0;
+  color: #065f46;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.backup-success-badge-wrap p {
+  margin: 0;
+  color: #047857;
+  font-size: 0.8rem;
+}
+
+.backup-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.backup-summary-card {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm, 6px);
+  background-color: var(--color-bg-secondary, #f8fafc);
+  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.06));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.backup-summary-label {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  color: var(--color-text-secondary, #64748b);
+  letter-spacing: 0.03em;
+}
+
+.backup-summary-val {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--color-text-primary, #0f172a);
+}
+
+.backup-path-card {
+  grid-column: span 2;
+}
+
+.backup-path-card .backup-summary-val {
+  font-family: monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+  font-weight: normal;
+}
+
+/* Failure Alert */
+.backup-error-banner {
+  padding: 12px 16px;
+  background-color: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md, 8px);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.backup-error-banner .error-icon {
+  font-size: 1.25rem;
+  color: #dc2626;
+  flex-shrink: 0;
+}
+
+.backup-error-banner h4 {
+  margin: 0 0 4px 0;
+  color: #991b1b;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.backup-error-banner p {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.8rem;
+}

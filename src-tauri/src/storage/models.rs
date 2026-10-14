@@ -780,7 +780,418 @@ pub struct InterchangeNote {
     pub internal_links: Vec<InterchangeInternalLink>,
 }
 
+// =========================================================================
+// Phase 11 — Backup & Data Safety Domain Models and DTOs (Task 4)
+// =========================================================================
 
+pub const CURRENT_BACKUP_FORMAT_VERSION: u32 = 1;
+pub const BACKUP_FORMAT_IDENTIFIER: &str = "personal-notepad-backup";
+pub const PRIMARY_BACKUP_EXTENSION: &str = "pnbackup";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupType {
+    Manual,
+    Automatic,
+    Checkpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupDatabaseInfo {
+    pub entry_path: String,
+    pub file_size: u64,
+    pub sha256: String,
+    pub schema_version: i32,
+    pub note_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub trash_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupAttachmentsSummary {
+    pub total_files: usize,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupAttachmentItem {
+    pub id: String,
+    pub note_id: String,
+    pub file_name: String,
+    pub relative_path: String,
+    pub file_size: u64,
+    pub mime_type: Option<String>,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupScopeDeclaration {
+    pub includes_settings: bool,
+    pub includes_trash: bool,
+    pub includes_attachments: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupManifest {
+    pub format_identifier: String,
+    pub format_version: u32,
+    pub app_version: String,
+    pub created_at: String,
+    pub backup_type: BackupType,
+    pub database: BackupDatabaseInfo,
+    pub attachments_summary: BackupAttachmentsSummary,
+    #[serde(default)]
+    pub attachments: Vec<BackupAttachmentItem>,
+    pub scope: BackupScopeDeclaration,
+    #[serde(default)]
+    pub checksums: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCreateRequest {
+    pub destination_path: Option<String>,
+    pub backup_type: Option<BackupType>,
+    pub allow_overwrite: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCreateResult {
+    pub success: bool,
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub created_at: String,
+    pub backup_type: BackupType,
+    pub verified: bool,
+    pub note_count: usize,
+    pub attachment_count: usize,
+    pub warning_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupListItem {
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub created_at: String,
+    pub backup_type: BackupType,
+    pub format_version: Option<u32>,
+    pub schema_version: Option<i32>,
+    pub note_count: Option<usize>,
+    pub notebook_count: Option<usize>,
+    pub attachment_count: Option<usize>,
+    pub is_verified: bool,
+    pub is_valid: bool,
+    pub issue_summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupValidationIssueSeverity {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupValidationIssue {
+    pub severity: BackupValidationIssueSeverity,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupCompatibilityStatus {
+    Compatible,
+    RequiresMigration,
+    IncompatibleVersion,
+    Corrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupValidationResult {
+    pub is_valid: bool,
+    pub compatibility: BackupCompatibilityStatus,
+    pub manifest: Option<BackupManifest>,
+    pub issues: Vec<BackupValidationIssue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestorePreviewResult {
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub created_at: String,
+    pub backup_type: BackupType,
+    pub format_version: u32,
+    pub schema_version: i32,
+    pub note_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub trash_count: usize,
+    pub attachment_count: usize,
+    pub attachment_total_bytes: u64,
+    pub includes_settings: bool,
+    pub compatibility: BackupCompatibilityStatus,
+    pub warnings: Vec<String>,
+    pub can_restore: bool,
+}
+
+/// Authoritative metadata for a pre-restore recovery checkpoint (Phase 11, Task 16).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryCheckpoint {
+    pub checkpoint_id: String,
+    pub file_path: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub created_at: String,
+    pub note_count: usize,
+    pub trash_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub attachment_count: usize,
+    pub attachment_total_bytes: u64,
+    pub schema_version: i32,
+    pub is_verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreRequest {
+    pub file_path: String,
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+/// Detailed post-restore validation report confirming data and schema integrity across all subsystems (Phase 11, Task 20).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PostRestoreValidationReport {
+    pub is_valid: bool,
+    pub integrity_check_passed: bool,
+    pub foreign_key_check_passed: bool,
+    pub schema_version: i32,
+    pub note_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub trash_count: usize,
+    pub attachment_count: usize,
+    pub attachments_verified_on_disk: bool,
+    pub fts_rebuilt_and_queryable: bool,
+    pub internal_links_verified: bool,
+    pub settings_verified: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRestoreResult {
+    pub success: bool,
+    pub restored_at: String,
+    pub note_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub trash_count: usize,
+    pub attachment_count: usize,
+    pub checkpoint_path: String,
+    pub warning_message: Option<String>,
+    #[serde(default)]
+    pub validation_report: Option<PostRestoreValidationReport>,
+}
+
+/// Authoritative summary of an isolated staged archive extraction (Phase 11, Task 17).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedRestoreSummary {
+    pub staging_id: String,
+    pub staging_dir: String,
+    pub database_path: String,
+    pub manifest_present: bool,
+    pub total_extracted_files: usize,
+    pub total_extracted_bytes: u64,
+    pub note_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub trash_count: usize,
+    pub attachment_count: usize,
+    pub initial_schema_version: i32,
+    pub is_valid: bool,
+}
+
+/// Result of running database schema migrations on a staged database before activation (Phase 11, Task 18).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedMigrationResult {
+    pub staging_id: String,
+    pub staging_dir: String,
+    pub previous_schema_version: i32,
+    pub migrated_schema_version: i32,
+    pub migrations_applied: usize,
+    pub note_count: usize,
+    pub trash_count: usize,
+    pub notebook_count: usize,
+    pub tag_count: usize,
+    pub attachment_count: usize,
+    pub is_verified: bool,
+}
+
+/// Lifecycle phases of a controlled restore activation operation (Phase 11, Task 19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RestoreActivationPhase {
+    Initiated,
+    CheckpointCreated,
+    FilesSwapped,
+    PostVerificationStarted,
+    RollbackInProgress,
+    RolledBack,
+    Completed,
+}
+
+/// Durable marker payload tracking multi-component restore activation state across crashes (Phase 11, Task 19).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreActivationMarker {
+    pub operation_id: String,
+    pub started_at: String,
+    pub candidate_archive_path: String,
+    pub staging_dir: String,
+    pub checkpoint_path: String,
+    pub live_db_backup_path: String,
+    pub live_attachments_backup_path: String,
+    pub phase: RestoreActivationPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupProgressStage {
+    Starting,
+    SnapshottingDatabase,
+    CollectingAttachments,
+    GeneratingManifest,
+    WritingArchive,
+    VerifyingArchive,
+    ApplyingRetention,
+    ExtractingStaging,
+    PreparingStagingData,
+    CheckingDatabaseIntegrity,
+    CheckingAttachments,
+    ValidatingBackup,
+    ValidatingStagedData,
+    CreatingCheckpoint,
+    PreparingActivation,
+    ActivatingRestoredData,
+    VerifyingRestoredState,
+    RebuildingSearchIndex,
+    Completed,
+    Failed,
+    FailedWithRecoveryAvailable,
+    FailedAndRecoveryRequired,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupProgressEvent {
+    pub stage: BackupProgressStage,
+    pub message: String,
+    pub current_item: Option<usize>,
+    pub total_items: Option<usize>,
+    pub percentage: Option<f32>,
+    #[serde(default)]
+    pub cancellable: bool,
+    #[serde(default)]
+    pub operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSettings {
+    pub auto_backup_enabled: bool,
+    pub interval_minutes: u32,
+    pub backup_destination_dir: Option<String>,
+    pub retention_count: u32,
+    pub backup_on_startup: bool,
+}
+
+impl Default for BackupSettings {
+    fn default() -> Self {
+        Self {
+            auto_backup_enabled: true,
+            interval_minutes: 1440,
+            backup_destination_dir: None,
+            retention_count: 5,
+            backup_on_startup: true,
+        }
+    }
+}
+
+/// Runtime and persistent scheduler execution state (Phase 11, Task 11 & Task 22)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSchedulerState {
+    #[serde(default)]
+    pub last_attempt_at: Option<String>,
+    #[serde(default)]
+    pub last_successful_at: Option<String>,
+    #[serde(default)]
+    pub last_error_message: Option<String>,
+    #[serde(default)]
+    pub last_failure_category: Option<String>,
+    #[serde(default)]
+    pub last_retention_warning: Option<String>,
+    #[serde(default)]
+    pub failure_count: u32,
+}
+
+/// Overall health level classification of the backup subsystem (Phase 11, Task 22)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupHealthLevel {
+    Healthy,
+    Warning,
+    Critical,
+    Disabled,
+}
+
+/// Granular, discoverable backup health warning or notification item (Phase 11, Task 22)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupHealthWarning {
+    pub code: String,
+    pub level: String,
+    pub message: String,
+    pub detail: Option<String>,
+}
+
+/// Authoritative snapshot of backup health and operational readiness (Phase 11, Task 22)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupHealthStatus {
+    pub health_level: BackupHealthLevel,
+    pub auto_backup_enabled: bool,
+    pub destination_available: bool,
+    pub destination_path: String,
+    pub is_same_disk: bool,
+    pub last_attempt_at: Option<String>,
+    pub last_successful_at: Option<String>,
+    pub last_failure_category: Option<String>,
+    pub last_error_message: Option<String>,
+    pub last_retention_warning: Option<String>,
+    pub failure_count: u32,
+    pub managed_backup_count: usize,
+    pub has_verified_backup: bool,
+    pub latest_backup_name: Option<String>,
+    pub latest_backup_verified: bool,
+    pub warnings: Vec<BackupHealthWarning>,
+}
 
 #[cfg(test)]
 mod tests {
@@ -1137,6 +1548,265 @@ mod tests {
         assert_eq!(parsed_doc.notes[0].attachments_omitted_count, Some(2));
         assert_eq!(parsed_doc.notes[0].internal_links.len(), 1);
         assert!(!parsed_doc.notes[0].internal_links[0].is_package_internal);
+    }
+
+    #[test]
+    fn test_backup_domain_models_and_dtos() {
+        // 1. Test BackupType serialization
+        assert_eq!(serde_json::to_string(&BackupType::Manual).unwrap(), "\"manual\"");
+        assert_eq!(serde_json::to_string(&BackupType::Automatic).unwrap(), "\"automatic\"");
+        assert_eq!(serde_json::to_string(&BackupType::Checkpoint).unwrap(), "\"checkpoint\"");
+
+        // 2. Test BackupManifest round-trip
+        let mut checksums = std::collections::HashMap::new();
+        checksums.insert("database.sqlite".to_string(), "abc123sha256".to_string());
+        checksums.insert("attachments/note-1/doc.pdf".to_string(), "def456sha256".to_string());
+
+        let manifest = BackupManifest {
+            format_identifier: BACKUP_FORMAT_IDENTIFIER.to_string(),
+            format_version: CURRENT_BACKUP_FORMAT_VERSION,
+            app_version: "0.1.0".to_string(),
+            created_at: "2026-10-13T12:00:00Z".to_string(),
+            backup_type: BackupType::Manual,
+            database: BackupDatabaseInfo {
+                entry_path: "database.sqlite".to_string(),
+                file_size: 1048576,
+                sha256: "abc123sha256".to_string(),
+                schema_version: 4,
+                note_count: 42,
+                notebook_count: 5,
+                tag_count: 10,
+                trash_count: 3,
+            },
+            attachments_summary: BackupAttachmentsSummary {
+                total_files: 1,
+                total_bytes: 524288,
+            },
+            attachments: vec![BackupAttachmentItem {
+                id: "att-1".to_string(),
+                note_id: "note-1".to_string(),
+                file_name: "doc.pdf".to_string(),
+                relative_path: "attachments/note-1/doc.pdf".to_string(),
+                file_size: 524288,
+                mime_type: Some("application/pdf".to_string()),
+                sha256: "def456sha256".to_string(),
+            }],
+            scope: BackupScopeDeclaration {
+                includes_settings: true,
+                includes_trash: true,
+                includes_attachments: true,
+            },
+            checksums,
+        };
+
+        let manifest_json = serde_json::to_string(&manifest).expect("Serialize manifest");
+        assert!(manifest_json.contains("\"format_identifier\":\"personal-notepad-backup\""));
+        assert!(manifest_json.contains("\"format_version\":1"));
+        assert!(manifest_json.contains("\"schema_version\":4"));
+        assert!(manifest_json.contains("\"note_count\":42"));
+        assert!(manifest_json.contains("\"trash_count\":3"));
+
+        let deserialized_manifest: BackupManifest = serde_json::from_str(&manifest_json).expect("Deserialize manifest");
+        assert_eq!(manifest, deserialized_manifest);
+
+        // 3. Test BackupCreateResult camelCase serialization
+        let create_res = BackupCreateResult {
+            success: true,
+            file_path: "/home/user/backups/backup.pnbackup".to_string(),
+            file_name: "backup.pnbackup".to_string(),
+            file_size: 1572864,
+            created_at: "2026-10-13T12:00:00Z".to_string(),
+            backup_type: BackupType::Manual,
+            verified: true,
+            note_count: 42,
+            attachment_count: 1,
+            warning_message: None,
+        };
+        let create_json = serde_json::to_string(&create_res).unwrap();
+        assert!(create_json.contains("\"filePath\":"));
+        assert!(create_json.contains("\"fileName\":"));
+        assert!(create_json.contains("\"fileSize\":"));
+        assert!(create_json.contains("\"noteCount\":42"));
+        assert!(create_json.contains("\"backupType\":\"manual\""));
+
+        // 4. Test BackupListItem camelCase serialization
+        let list_item = BackupListItem {
+            file_path: "/home/user/backups/auto.pnbackup".to_string(),
+            file_name: "auto.pnbackup".to_string(),
+            file_size: 1048576,
+            created_at: "2026-10-13T11:00:00Z".to_string(),
+            backup_type: BackupType::Automatic,
+            format_version: Some(1),
+            schema_version: Some(4),
+            note_count: Some(15),
+            notebook_count: Some(2),
+            attachment_count: Some(0),
+            is_verified: true,
+            is_valid: true,
+            issue_summary: None,
+        };
+        let list_json = serde_json::to_string(&list_item).unwrap();
+        assert!(list_json.contains("\"isVerified\":true"));
+        assert!(list_json.contains("\"isValid\":true"));
+        assert!(list_json.contains("\"schemaVersion\":4"));
+
+        // 5. Test BackupValidationResult and Compatibility status
+        let val_res = BackupValidationResult {
+            is_valid: true,
+            compatibility: BackupCompatibilityStatus::Compatible,
+            manifest: Some(manifest.clone()),
+            issues: vec![BackupValidationIssue {
+                severity: BackupValidationIssueSeverity::Warning,
+                code: "ATTACHMENT_OPTIONAL_NOTICE".to_string(),
+                message: "No issues found".to_string(),
+            }],
+        };
+        let val_json = serde_json::to_string(&val_res).unwrap();
+        assert!(val_json.contains("\"isValid\":true"));
+        assert!(val_json.contains("\"compatibility\":\"compatible\""));
+        assert!(val_json.contains("\"severity\":\"warning\""));
+
+        // 6. Test BackupSettings default values and serialization
+        let default_settings = BackupSettings::default();
+        assert!(default_settings.auto_backup_enabled);
+        assert_eq!(default_settings.interval_minutes, 1440);
+        assert_eq!(default_settings.retention_count, 5);
+        assert!(default_settings.backup_on_startup);
+        let settings_json = serde_json::to_string(&default_settings).unwrap();
+        assert!(settings_json.contains("\"autoBackupEnabled\":true"));
+        assert!(settings_json.contains("\"retentionCount\":5"));
+
+        // 7. Test BackupProgressEvent serialization
+        let prog = BackupProgressEvent {
+            stage: BackupProgressStage::WritingArchive,
+            message: "Writing backup entries...".to_string(),
+            current_item: Some(3),
+            total_items: Some(10),
+            percentage: Some(30.0),
+            cancellable: true,
+            operation_id: Some("op-test-123".to_string()),
+        };
+        let prog_json = serde_json::to_string(&prog).unwrap();
+        assert!(prog_json.contains("\"stage\":\"writingArchive\""));
+        assert!(prog_json.contains("\"percentage\":30.0"));
+        assert!(prog_json.contains("\"cancellable\":true"));
+        assert!(prog_json.contains("\"operationId\":\"op-test-123\""));
+
+        let stage_cancelled = BackupProgressStage::Cancelled;
+        let stage_cancelled_json = serde_json::to_string(&stage_cancelled).unwrap();
+        assert_eq!(stage_cancelled_json, "\"cancelled\"");
+
+        let stage_prep_act = BackupProgressStage::PreparingActivation;
+        let stage_prep_act_json = serde_json::to_string(&stage_prep_act).unwrap();
+        assert_eq!(stage_prep_act_json, "\"preparingActivation\"");
+
+        // 8. Test RecoveryCheckpoint serialization & round-trip (Phase 11, Task 16)
+        let checkpoint = RecoveryCheckpoint {
+            checkpoint_id: "chk-uuid-1".to_string(),
+            file_path: "/data/backups/checkpoints/personal-notepad-checkpoint-20261013-120000.pnbackup".to_string(),
+            file_name: "personal-notepad-checkpoint-20261013-120000.pnbackup".to_string(),
+            file_size: 409600,
+            created_at: "2026-10-13T12:00:00Z".to_string(),
+            note_count: 10,
+            trash_count: 2,
+            notebook_count: 3,
+            tag_count: 5,
+            attachment_count: 4,
+            attachment_total_bytes: 1048576,
+            schema_version: 4,
+            is_verified: true,
+        };
+        let chk_json = serde_json::to_string(&checkpoint).unwrap();
+        assert!(chk_json.contains("\"checkpointId\":\"chk-uuid-1\""));
+        assert!(chk_json.contains("\"attachmentTotalBytes\":1048576"));
+        assert!(chk_json.contains("\"isVerified\":true"));
+        let de_chk: RecoveryCheckpoint = serde_json::from_str(&chk_json).unwrap();
+        assert_eq!(checkpoint, de_chk);
+
+        // 9. Test StagedRestoreSummary serialization (Phase 11, Task 17)
+        let staged_summary = StagedRestoreSummary {
+            staging_id: "stg-123".to_string(),
+            staging_dir: "/data/backups/.restore_staging_stg-123".to_string(),
+            database_path: "/data/backups/.restore_staging_stg-123/database.sqlite".to_string(),
+            manifest_present: true,
+            total_extracted_files: 5,
+            total_extracted_bytes: 2048000,
+            note_count: 12,
+            notebook_count: 2,
+            tag_count: 4,
+            trash_count: 1,
+            attachment_count: 2,
+            initial_schema_version: 3,
+            is_valid: true,
+        };
+        let summary_json = serde_json::to_string(&staged_summary).unwrap();
+        assert!(summary_json.contains("\"stagingId\":\"stg-123\""));
+        assert!(summary_json.contains("\"totalExtractedBytes\":2048000"));
+        assert!(summary_json.contains("\"initialSchemaVersion\":3"));
+        let de_summary: StagedRestoreSummary = serde_json::from_str(&summary_json).unwrap();
+        assert_eq!(staged_summary, de_summary);
+
+        // 10. Test StagedMigrationResult serialization (Phase 11, Task 18)
+        let migration_res = StagedMigrationResult {
+            staging_id: "stg-123".to_string(),
+            staging_dir: "/data/backups/.restore_staging_stg-123".to_string(),
+            previous_schema_version: 3,
+            migrated_schema_version: 4,
+            migrations_applied: 1,
+            note_count: 12,
+            trash_count: 1,
+            notebook_count: 2,
+            tag_count: 4,
+            attachment_count: 2,
+            is_verified: true,
+        };
+        let mig_json = serde_json::to_string(&migration_res).unwrap();
+        assert!(mig_json.contains("\"previousSchemaVersion\":3"));
+        assert!(mig_json.contains("\"migratedSchemaVersion\":4"));
+        assert!(mig_json.contains("\"migrationsApplied\":1"));
+        let de_mig: StagedMigrationResult = serde_json::from_str(&mig_json).unwrap();
+        assert_eq!(migration_res, de_mig);
+
+        // 11. Test RestoreActivationMarker & RestoreActivationPhase serialization (Phase 11, Task 19)
+        let marker = RestoreActivationMarker {
+            operation_id: "op-uuid-1".to_string(),
+            started_at: "2026-10-14T10:00:00Z".to_string(),
+            candidate_archive_path: "/data/backups/backup.pnbackup".to_string(),
+            staging_dir: "/data/backups/.restore_staging_op-uuid-1".to_string(),
+            checkpoint_path: "/data/backups/checkpoints/chk-1.pnbackup".to_string(),
+            live_db_backup_path: "/data/.db_pre_restore_op-uuid-1.sqlite".to_string(),
+            live_attachments_backup_path: "/data/.att_pre_restore_op-uuid-1".to_string(),
+            phase: RestoreActivationPhase::FilesSwapped,
+        };
+        let marker_json = serde_json::to_string(&marker).unwrap();
+        assert!(marker_json.contains("\"operationId\":\"op-uuid-1\""));
+        assert!(marker_json.contains("\"phase\":\"filesSwapped\""));
+        let de_marker: RestoreActivationMarker = serde_json::from_str(&marker_json).unwrap();
+        assert_eq!(marker, de_marker);
+
+        // 12. Test PostRestoreValidationReport serialization (Phase 11, Task 20)
+        let report = PostRestoreValidationReport {
+            is_valid: true,
+            integrity_check_passed: true,
+            foreign_key_check_passed: true,
+            schema_version: 4,
+            note_count: 25,
+            notebook_count: 4,
+            tag_count: 6,
+            trash_count: 2,
+            attachment_count: 3,
+            attachments_verified_on_disk: true,
+            fts_rebuilt_and_queryable: true,
+            internal_links_verified: true,
+            settings_verified: true,
+        };
+        let report_json = serde_json::to_string(&report).unwrap();
+        assert!(report_json.contains("\"isValid\":true"));
+        assert!(report_json.contains("\"integrityCheckPassed\":true"));
+        assert!(report_json.contains("\"ftsRebuiltAndQueryable\":true"));
+        assert!(report_json.contains("\"attachmentsVerifiedOnDisk\":true"));
+        let de_report: PostRestoreValidationReport = serde_json::from_str(&report_json).unwrap();
+        assert_eq!(report, de_report);
     }
 }
 
