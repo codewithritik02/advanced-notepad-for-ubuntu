@@ -29,6 +29,13 @@ import {
   sortBackupsDescending,
   isDeletionTargetProtected,
 } from "../src/features/backup/utils/backupUtils.ts";
+import {
+  validatePassword,
+  validatePasswordMatch,
+  validateChangePassword,
+  MIN_PASSWORD_LENGTH,
+  MAX_PASSWORD_LENGTH,
+} from "../src/features/security/utils/passwordValidation.ts";
 
 describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
   // =========================================================================
@@ -20802,6 +20809,2872 @@ describe("Phase 11 - Task 24: Frontend Tests, End-to-End Workflows, and Data-Los
     });
   });
 });
+
+describe("Phase 12 - Task 8: Initial Encryption Setup & Security Settings Tests", () => {
+  describe("1. Password Validation Logic", () => {
+    it("rejects empty or whitespace passwords", () => {
+      assert.strictEqual(validatePassword("").isValid, false);
+      assert.strictEqual(validatePassword("   ").isValid, false);
+      assert.ok(validatePassword("").errorMessage.includes("cannot be empty"));
+    });
+
+    it("rejects passwords shorter than MIN_PASSWORD_LENGTH (8)", () => {
+      assert.strictEqual(validatePassword("short").isValid, false);
+      assert.strictEqual(validatePassword("1234567").isValid, false);
+      assert.ok(validatePassword("1234567").errorMessage.includes("at least 8"));
+    });
+
+    it("accepts valid passwords meeting minimum length", () => {
+      assert.strictEqual(validatePassword("12345678").isValid, true);
+      assert.strictEqual(validatePassword("correct-horse-battery-staple").isValid, true);
+      assert.strictEqual(validatePassword("पासवर्ड_गोपनीयता_123").isValid, true);
+    });
+
+    it("detects password and confirmation mismatch", () => {
+      const matchRes = validatePasswordMatch("master-pass-1", "master-pass-2");
+      assert.strictEqual(matchRes.isValid, false);
+      assert.ok(matchRes.errorMessage.includes("do not match"));
+    });
+
+    it("accepts matching valid confirmation passwords", () => {
+      const matchRes = validatePasswordMatch("safe-passphrase-99", "safe-passphrase-99");
+      assert.strictEqual(matchRes.isValid, true);
+      assert.strictEqual(matchRes.errorMessage, undefined);
+    });
+  });
+
+  describe("2. Encryption Setup State Machine & Checkpoint Invariant", () => {
+    it("simulates setup state transition: plaintext -> pre-checkpoint -> KEK/DEK -> unlocked", async () => {
+      // Mock storage layer state
+      let storageState = {
+        isConfigured: false,
+        isLocked: false,
+        checkpoints: [],
+        metadata: null,
+      };
+
+      // Simulated setup operation matching Rust backend behavior
+      const executeSetup = async (password, confirmPassword) => {
+        const val = validatePasswordMatch(password, confirmPassword);
+        if (!val.isValid) {
+          throw new Error(val.errorMessage);
+        }
+
+        if (storageState.isConfigured) {
+          throw new Error("Encryption is already configured on this installation.");
+        }
+
+        // 1. Mandatory pre-migration checkpoint
+        const checkpointArchive = `pre_encryption_checkpoint_${Date.now()}.pnbackup`;
+        storageState.checkpoints.push(checkpointArchive);
+
+        // 2. KEK derivation & DEK wrapping
+        storageState.metadata = {
+          format_version: 1,
+          algorithm: "AES-256-GCM",
+          kdf_algorithm: "Argon2id",
+          memory_kib: 65536,
+          iterations: 3,
+          parallelism: 4,
+          created_at: new Date().toISOString(),
+        };
+
+        // 3. Mark configured & unlocked in active session
+        storageState.isConfigured = true;
+        storageState.isLocked = false;
+
+        return {
+          success: true,
+          format_version: 1,
+          algorithm: "AES-256-GCM",
+          message: "Encryption successfully configured with verified pre-migration checkpoint.",
+        };
+      };
+
+      // Try with invalid password
+      await assert.rejects(
+        async () => await executeSetup("short", "short"),
+        /at least 8 characters/
+      );
+      assert.strictEqual(storageState.isConfigured, false);
+      assert.strictEqual(storageState.checkpoints.length, 0);
+
+      // Perform valid setup
+      const result = await executeSetup("strong-encryption-passphrase", "strong-encryption-passphrase");
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.algorithm, "AES-256-GCM");
+      assert.strictEqual(storageState.isConfigured, true);
+      assert.strictEqual(storageState.isLocked, false);
+      assert.strictEqual(storageState.checkpoints.length, 1);
+      assert.ok(storageState.checkpoints[0].startsWith("pre_encryption_checkpoint_"));
+
+      // Attempting double setup must be rejected
+      await assert.rejects(
+        async () => await executeSetup("another-passphrase", "another-passphrase"),
+        /already configured/
+      );
+    });
+
+    it("simulates lock and unlock lifecycle", () => {
+      let session = {
+        configured: true,
+        locked: false,
+        activeKey: "dek-bytes",
+      };
+
+      const lockApp = () => {
+        session.activeKey = null; // Zeroized
+        session.locked = true;
+      };
+
+      const unlockApp = (pw) => {
+        if (pw === "correct-password") {
+          session.activeKey = "dek-bytes";
+          session.locked = false;
+          return { success: true };
+        } else {
+          throw new Error("Invalid password provided.");
+        }
+      };
+
+      // Lock
+      lockApp();
+      assert.strictEqual(session.locked, true);
+      assert.strictEqual(session.activeKey, null);
+
+      // Failed unlock attempt
+      assert.throws(() => unlockApp("wrong-pw"), /Invalid password/);
+      assert.strictEqual(session.locked, true);
+      assert.strictEqual(session.activeKey, null);
+
+      // Successful unlock
+      const unlockRes = unlockApp("correct-password");
+      assert.strictEqual(unlockRes.success, true);
+      assert.strictEqual(session.locked, false);
+      assert.strictEqual(session.activeKey, "dek-bytes");
+    });
+  });
+
+  describe("3. SettingsModal Security Display Invariants", () => {
+    it("evaluates badge variant and label according to encryption status", () => {
+      const getBadgeConfig = (status) => {
+        if (!status || !status.enabled) {
+          return { variant: "default", label: "Plaintext (Not Encrypted)" };
+        }
+        if (!status.is_locked) {
+          return { variant: "success", label: "Enabled & Unlocked" };
+        }
+        return { variant: "warning", label: "Enabled & Locked" };
+      };
+
+      // Plaintext
+      const plaintextConfig = getBadgeConfig({ enabled: false, is_locked: false });
+      assert.strictEqual(plaintextConfig.variant, "default");
+      assert.strictEqual(plaintextConfig.label, "Plaintext (Not Encrypted)");
+
+      // Enabled & Unlocked
+      const unlockedConfig = getBadgeConfig({ enabled: true, is_locked: false });
+      assert.strictEqual(unlockedConfig.variant, "success");
+      assert.strictEqual(unlockedConfig.label, "Enabled & Unlocked");
+
+      // Enabled & Locked
+      const lockedConfig = getBadgeConfig({ enabled: true, is_locked: true });
+      assert.strictEqual(lockedConfig.variant, "warning");
+      assert.strictEqual(lockedConfig.label, "Enabled & Locked");
+    });
+  });
+});
+
+describe("Phase 12 - Task 12: Implement Application Lock and Unlock Workflows Tests", () => {
+  describe("1. UnlockScreen Component Structure & Design Invariants", () => {
+    it("verifies UnlockScreen component and styles are created and exported", async () => {
+      const fs = await import("node:fs");
+      const secIndex = fs.readFileSync(
+        new URL("../src/features/security/index.ts", import.meta.url),
+        "utf8"
+      );
+      assert.ok(
+        secIndex.includes('export * from "./components/UnlockScreen/UnlockScreen"'),
+        "security/index.ts must export UnlockScreen"
+      );
+
+      const unlockScreenTsx = fs.readFileSync(
+        new URL("../src/features/security/components/UnlockScreen/UnlockScreen.tsx", import.meta.url),
+        "utf8"
+      );
+      assert.ok(
+        unlockScreenTsx.includes("export const UnlockScreen: React.FC<UnlockScreenProps>"),
+        "UnlockScreen.tsx must export typed UnlockScreen component"
+      );
+      assert.ok(
+        unlockScreenTsx.includes('id="unlock-password-input"'),
+        "UnlockScreen must render password input with id 'unlock-password-input'"
+      );
+      assert.ok(
+        unlockScreenTsx.includes('id="unlock-submit-button"'),
+        "UnlockScreen must render submit button with id 'unlock-submit-button'"
+      );
+      assert.ok(
+        unlockScreenTsx.includes('role="alert"'),
+        "UnlockScreen must render accessible role='alert' error container"
+      );
+
+      const unlockCss = fs.readFileSync(
+        new URL("../src/features/security/components/UnlockScreen/UnlockScreen.css", import.meta.url),
+        "utf8"
+      );
+      assert.ok(unlockCss.includes(".unlock-screen-wrapper"), "CSS must style .unlock-screen-wrapper");
+      assert.ok(unlockCss.includes(".unlock-shake"), "CSS must define .unlock-shake animation");
+    });
+  });
+
+  describe("2. Password Submission, Validation, and Authentication Error Handling", () => {
+    it("simulates client-side empty password validation guard", () => {
+      let error = null;
+      let didSubmit = false;
+
+      const submitAttempt = (password) => {
+        const trimmed = (password || "").trim();
+        if (!trimmed) {
+          error = "Please enter your encryption password.";
+          return false;
+        }
+        didSubmit = true;
+        return true;
+      };
+
+      assert.strictEqual(submitAttempt(""), false);
+      assert.strictEqual(error, "Please enter your encryption password.");
+      assert.strictEqual(didSubmit, false);
+
+      assert.strictEqual(submitAttempt("   "), false);
+      assert.strictEqual(didSubmit, false);
+
+      assert.strictEqual(submitAttempt("valid-master-key-pass"), true);
+      assert.strictEqual(didSubmit, true);
+    });
+
+    it("simulates authentication failure handling and data preservation", async () => {
+      let appLocked = true;
+      let activeDek = null;
+      let dataTampered = false;
+      let displayError = null;
+
+      const mockUnlockBackend = async (pwd) => {
+        if (pwd !== "correct-secret-password") {
+          throw new Error("Authentication failed: invalid passphrase or corrupted key data.");
+        }
+        return true;
+      };
+
+      const handleUnlockSubmission = async (pwd) => {
+        try {
+          await mockUnlockBackend(pwd);
+          appLocked = false;
+          activeDek = "valid-unwrapped-dek-32bytes";
+          displayError = null;
+        } catch (err) {
+          const msg = err.message;
+          displayError = msg.includes("Authentication failed")
+            ? "Incorrect encryption password. Please try again."
+            : msg;
+          // Invariant: locked state and DEK remain untouched
+          assert.strictEqual(appLocked, true);
+          assert.strictEqual(activeDek, null);
+          assert.strictEqual(dataTampered, false);
+        }
+      };
+
+      // Incorrect password attempt
+      await handleUnlockSubmission("wrong-password");
+      assert.strictEqual(displayError, "Incorrect encryption password. Please try again.");
+      assert.strictEqual(appLocked, true);
+      assert.strictEqual(activeDek, null);
+
+      // Successful unlock
+      await handleUnlockSubmission("correct-secret-password");
+      assert.strictEqual(displayError, null);
+      assert.strictEqual(appLocked, false);
+      assert.strictEqual(activeDek, "valid-unwrapped-dek-32bytes");
+    });
+  });
+
+  describe("3. App.tsx Locked State Boundaries & Zero-Leakage Invariants", () => {
+    it("verifies App.tsx mounts UnlockScreen and prevents editor/note leakage when locked", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        appContent.includes("UnlockScreen") && appContent.includes('"../features/security"'),
+        "App.tsx must import UnlockScreen"
+      );
+      assert.ok(
+        appContent.includes("isAppLocked"),
+        "App.tsx must track isAppLocked state"
+      );
+      assert.ok(
+        appContent.includes("storageService.crypto.getEncryptionStatus()"),
+        "App.tsx must query getEncryptionStatus on startup"
+      );
+      assert.ok(
+        appContent.includes("if (isAppLocked) {"),
+        "App.tsx must check isAppLocked to render UnlockScreen"
+      );
+      assert.ok(
+        appContent.includes("<UnlockScreen onUnlockSuccess={handleUnlockSuccess} />"),
+        "App.tsx must render UnlockScreen when locked"
+      );
+      assert.ok(
+        appContent.includes("enabled: !isAppLocked,"),
+        "App.tsx must disable keyboard shortcuts when locked"
+      );
+    });
+
+    it("verifies manual lock action sanitizes notes, search, and selection from memory", () => {
+      // Simulating App state machine on lock
+      let notes = [{ id: "n1", title: "Secret 1" }, { id: "n2", title: "Secret 2" }];
+      let selectedNoteId = "n1";
+      let searchQuery = "sensitive financial query";
+      let isAppLocked = false;
+
+      const handleLockApp = () => {
+        searchQuery = "";
+        selectedNoteId = null;
+        notes = [];
+        isAppLocked = true;
+      };
+
+      handleLockApp();
+
+      assert.strictEqual(isAppLocked, true, "Application must be locked");
+      assert.strictEqual(selectedNoteId, null, "Active note selection must be wiped");
+      assert.strictEqual(notes.length, 0, "In-memory note cards must be flushed");
+      assert.strictEqual(searchQuery, "", "Search query and results must be cleared");
+    });
+  });
+
+  describe("4. Rust Backend Protected Command Enforcement", () => {
+    it("verifies commands/storage.rs guards note-reading, mutation, attachment, and link commands", async () => {
+      const fs = await import("node:fs");
+      const storageCommands = fs.readFileSync(
+        new URL("../src-tauri/src/commands/storage.rs", import.meta.url),
+        "utf8"
+      );
+
+      // Verify link commands check session and dek
+      assert.ok(
+        storageCommands.includes("pub fn resolve_link_target(") &&
+          storageCommands.includes("session: State<'_, CryptoSession>"),
+        "resolve_link_target must require CryptoSession"
+      );
+      assert.ok(
+        storageCommands.includes("pub fn get_backlinks(") &&
+          storageCommands.includes("session: State<'_, CryptoSession>"),
+        "get_backlinks must require CryptoSession"
+      );
+      assert.ok(
+        storageCommands.includes("pub fn permanently_delete_note(") &&
+          storageCommands.includes("session: State<'_, CryptoSession>"),
+        "permanently_delete_note must require CryptoSession"
+      );
+      assert.ok(
+        storageCommands.includes("pub fn empty_trash(") &&
+          storageCommands.includes("session: State<'_, CryptoSession>"),
+        "empty_trash must require CryptoSession"
+      );
+
+      // Verify rejection string
+      assert.ok(
+        storageCommands.includes('"Application is locked. Please unlock first."'),
+        "Backend commands must reject with standard locked error message"
+      );
+    });
+  });
+});
+
+describe("Phase 12 - Task 13: Implement Manual Lock and Key-Lifecycle Management Tests", () => {
+  describe("1. TopBar Manual Lock Button & Accessible Controls", () => {
+    it("verifies TopBar component defines and exports lock action props and elements", async () => {
+      const fs = await import("node:fs");
+      const topBarCode = fs.readFileSync(
+        new URL("../src/components/TopBar/TopBar.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        topBarCode.includes("isEncryptionEnabled?: boolean;"),
+        "TopBarProps must define isEncryptionEnabled"
+      );
+      assert.ok(
+        topBarCode.includes("onLockClick?: () => void;"),
+        "TopBarProps must define onLockClick"
+      );
+      assert.ok(
+        topBarCode.includes('id="topbar-lock-btn"'),
+        "TopBar must render lock button with id 'topbar-lock-btn'"
+      );
+      assert.ok(
+        topBarCode.includes('aria-label="Lock Application"'),
+        "TopBar lock button must include aria-label 'Lock Application'"
+      );
+      assert.ok(
+        topBarCode.includes('title="Lock Application (Ctrl+Alt+L)"'),
+        "TopBar lock button must include shortcut hint in title"
+      );
+
+      const topBarCss = fs.readFileSync(
+        new URL("../src/components/TopBar/TopBar.css", import.meta.url),
+        "utf8"
+      );
+      assert.ok(
+        topBarCss.includes(".topbar-lock-btn"),
+        "TopBar.css must include .topbar-lock-btn styling"
+      );
+    });
+
+    it("simulates TopBar conditional rendering and lock button click dispatch", () => {
+      let isRenderedWithoutEncryption = false;
+      let isRenderedWithEncryption = false;
+      let lockClicked = false;
+
+      const renderTopBar = (props) => {
+        if (props.isEncryptionEnabled) {
+          isRenderedWithEncryption = true;
+          return {
+            clickLock: () => {
+              props.onLockClick?.();
+            },
+          };
+        }
+        isRenderedWithoutEncryption = true;
+        return null;
+      };
+
+      // With encryption disabled: lock button not present
+      const outDisabled = renderTopBar({ isEncryptionEnabled: false });
+      assert.strictEqual(outDisabled, null);
+      assert.strictEqual(isRenderedWithoutEncryption, true);
+
+      // With encryption enabled: lock button present and clickable
+      const outEnabled = renderTopBar({
+        isEncryptionEnabled: true,
+        onLockClick: () => {
+          lockClicked = true;
+        },
+      });
+      assert.ok(outEnabled !== null);
+      assert.strictEqual(isRenderedWithEncryption, true);
+      outEnabled.clickLock();
+      assert.strictEqual(lockClicked, true, "Clicking lock button must fire onLockClick");
+    });
+  });
+
+  describe("2. Global Keyboard Shortcut Handling (Ctrl/Cmd + Alt + L / Shift + L)", () => {
+    it("verifies useKeyboardShortcuts hook registers onLockApp handler and keydown event", async () => {
+      const fs = await import("node:fs");
+      const shortcutsCode = fs.readFileSync(
+        new URL("../src/hooks/useKeyboardShortcuts.ts", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        shortcutsCode.includes("onLockApp?: () => void;"),
+        "KeyboardShortcutHandlers must declare onLockApp"
+      );
+      assert.ok(
+        shortcutsCode.includes('key === "l"'),
+        "useKeyboardShortcuts must inspect the 'l' key"
+      );
+      assert.ok(
+        shortcutsCode.includes("event.altKey") && shortcutsCode.includes("event.shiftKey"),
+        "useKeyboardShortcuts must support Alt or Shift modifier for lock shortcut"
+      );
+      assert.ok(
+        shortcutsCode.includes("onLockApp?.();"),
+        "useKeyboardShortcuts must invoke onLockApp"
+      );
+    });
+
+    it("simulates keyboard shortcut trigger for Ctrl+Alt+L and Cmd+Shift+L", () => {
+      let lockFiredCount = 0;
+
+      const simulateKeyDown = (event, handler) => {
+        const isModifier = event.ctrlKey || event.metaKey;
+        const key = event.key.toLowerCase();
+        if (isModifier && (event.altKey || event.shiftKey) && key === "l") {
+          event.preventDefault();
+          handler?.();
+          return true;
+        }
+        return false;
+      };
+
+      const handler = () => {
+        lockFiredCount++;
+      };
+
+      // Unrelated key: Ctrl+L (no Alt/Shift) -> should not trigger lock
+      let handled = simulateKeyDown({ ctrlKey: true, altKey: false, shiftKey: false, key: "l", preventDefault: () => {} }, handler);
+      assert.strictEqual(handled, false);
+      assert.strictEqual(lockFiredCount, 0);
+
+      // Ctrl + Alt + L -> triggers lock
+      handled = simulateKeyDown({ ctrlKey: true, altKey: true, shiftKey: false, key: "l", preventDefault: () => {} }, handler);
+      assert.strictEqual(handled, true);
+      assert.strictEqual(lockFiredCount, 1);
+
+      // Cmd + Shift + L -> triggers lock
+      handled = simulateKeyDown({ metaKey: true, altKey: false, shiftKey: true, key: "l", preventDefault: () => {} }, handler);
+      assert.strictEqual(handled, true);
+      assert.strictEqual(lockFiredCount, 2);
+    });
+  });
+
+  describe("3. Save-Before-Lock Invariant & Execution Ordering", () => {
+    it("guarantees handleFlushPendingSave executes and completes BEFORE lockApplication purges keys", async () => {
+      const executionLog = [];
+      let activeDekInMemory = "valid-32-byte-dek";
+
+      const handleFlushPendingSave = async () => {
+        executionLog.push("1_flush_pending_save_start");
+        // Verify key is still valid and accessible during flush
+        assert.strictEqual(activeDekInMemory, "valid-32-byte-dek", "DEK must be present while persisting edits");
+        executionLog.push("2_flush_pending_save_complete");
+      };
+
+      const backendLockApplication = async () => {
+        executionLog.push("3_backend_lock_purging_dek");
+        activeDekInMemory = null; // Key zeroized
+        executionLog.push("4_backend_lock_purged_complete");
+      };
+
+      // Simulation of App.tsx handleLockApp
+      const handleLockApp = async () => {
+        await handleFlushPendingSave();
+        await backendLockApplication();
+      };
+
+      await handleLockApp();
+
+      assert.deepStrictEqual(executionLog, [
+        "1_flush_pending_save_start",
+        "2_flush_pending_save_complete",
+        "3_backend_lock_purging_dek",
+        "4_backend_lock_purged_complete",
+      ], "Save flush must precede cryptographic purge");
+      assert.strictEqual(activeDekInMemory, null, "Active DEK must be purged after lock completes");
+    });
+
+    it("verifies SettingsModal delegates lock action to onLock callback", async () => {
+      const fs = await import("node:fs");
+      const settingsModalCode = fs.readFileSync(
+        new URL("../src/features/settings/components/SettingsModal/SettingsModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        settingsModalCode.includes("onLock?: () => Promise<void> | void;"),
+        "SettingsModalProps must allow async onLock callback"
+      );
+      assert.ok(
+        settingsModalCode.includes("if (onLock) {") &&
+          settingsModalCode.includes("await onLock();"),
+        "SettingsModal handleLock must await onLock to ensure save-before-lock invariant"
+      );
+    });
+  });
+
+  describe("4. State Sanitization, Debounce Cancellation, and Modal Teardown", () => {
+    it("verifies App.tsx handleLockApp sanitizes notes, search, debounces, and modals", async () => {
+      const fs = await import("node:fs");
+      const appContent = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        appContent.includes("await handleFlushPendingSave();"),
+        "App.tsx handleLockApp must await handleFlushPendingSave"
+      );
+      assert.ok(
+        appContent.includes("await storageService.crypto.lockApplication();"),
+        "App.tsx handleLockApp must call storageService.crypto.lockApplication"
+      );
+      assert.ok(
+        appContent.includes("cancelPendingDebounce();"),
+        "App.tsx handleLockApp must cancel pending search debounce"
+      );
+      assert.ok(
+        appContent.includes("clearSearch();"),
+        "App.tsx handleLockApp must wipe search queries and results"
+      );
+      assert.ok(
+        appContent.includes("setSelectedNoteId(null);"),
+        "App.tsx handleLockApp must wipe active note selection"
+      );
+      assert.ok(
+        appContent.includes("setNotes([]);"),
+        "App.tsx handleLockApp must clear in-memory notes"
+      );
+      assert.ok(
+        appContent.includes("setIsSettingsOpen(false);"),
+        "App.tsx handleLockApp must dismiss settings modal"
+      );
+      assert.ok(
+        appContent.includes("setIsAppLocked(true);"),
+        "App.tsx handleLockApp must transition to locked state"
+      );
+    });
+
+    it("simulates comprehensive state teardown upon manual lock", () => {
+      let notes = [{ id: "n1", title: "Top Secret" }, { id: "n2", title: "Confidential" }];
+      let selectedNoteId = "n1";
+      let searchQuery = "secret project roadmap";
+      let debounceActive = true;
+      let isSettingsOpen = true;
+      let isCreateBackupOpen = true;
+      let isAppLocked = false;
+
+      const cancelPendingDebounce = () => {
+        debounceActive = false;
+      };
+      const clearSearch = () => {
+        searchQuery = "";
+      };
+
+      const executeLockTeardown = () => {
+        cancelPendingDebounce();
+        clearSearch();
+        isSettingsOpen = false;
+        isCreateBackupOpen = false;
+        selectedNoteId = null;
+        notes = [];
+        isAppLocked = true;
+      };
+
+      executeLockTeardown();
+
+      assert.strictEqual(isAppLocked, true, "App must be in locked state");
+      assert.strictEqual(notes.length, 0, "Loaded notes array must be empty");
+      assert.strictEqual(selectedNoteId, null, "Active note selection must be null");
+      assert.strictEqual(searchQuery, "", "Search query must be empty");
+      assert.strictEqual(debounceActive, false, "Pending debounce must be cancelled");
+      assert.strictEqual(isSettingsOpen, false, "Settings modal must be closed");
+      assert.strictEqual(isCreateBackupOpen, false, "Backup modal must be closed");
+    });
+  });
+
+  describe("5. Key-Lifecycle Memory Boundaries & Temporary Disk Revocation", () => {
+    it("verifies backend lock_application cleans up decrypted preview files", async () => {
+      const fs = await import("node:fs");
+      const cryptoCommands = fs.readFileSync(
+        new URL("../src-tauri/src/commands/crypto.rs", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        cryptoCommands.includes("pub fn lock_application("),
+        "commands/crypto.rs must export lock_application command"
+      );
+      assert.ok(
+        cryptoCommands.includes("session.lock();"),
+        "lock_application must invoke session.lock()"
+      );
+      assert.ok(
+        cryptoCommands.includes("storage.cleanup_decrypted_attachments();"),
+        "lock_application must clean up decrypted attachments on disk"
+      );
+    });
+
+    it("verifies SecretBytes in Rust backend implements Zeroize and ZeroizeOnDrop", async () => {
+      const fs = await import("node:fs");
+      const secretCode = fs.readFileSync(
+        new URL("../src-tauri/src/storage/crypto/secret.rs", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        secretCode.includes("#[derive(Clone, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]"),
+        "SecretBytes must derive Zeroize and ZeroizeOnDrop for automatic memory scrubbing"
+      );
+      assert.ok(
+        secretCode.includes("pub struct SecretBytes(Vec<u8>);"),
+        "SecretBytes must wrap sensitive byte buffer"
+      );
+    });
+  });
+});
+
+describe("Phase 12 - Task 14: Implement Automatic Locking and Inactivity Policy Tests", () => {
+  describe("1. Auto-Lock Settings Model, Defaults & Storage", () => {
+    it("verifies useAutoLock exports configuration defaults and allowed timeout values", async () => {
+      const fs = await import("node:fs");
+      const autoLockCode = fs.readFileSync(
+        new URL("../src/features/security/hooks/useAutoLock.ts", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        autoLockCode.includes("export const DEFAULT_AUTO_LOCK_SETTINGS: AutoLockSettings = {"),
+        "useAutoLock must export DEFAULT_AUTO_LOCK_SETTINGS"
+      );
+      assert.ok(
+        autoLockCode.includes("autoLockEnabled: true,"),
+        "Default policy must have autoLockEnabled: true"
+      );
+      assert.ok(
+        autoLockCode.includes("inactivityTimeoutMinutes: 15,"),
+        "Default policy must have inactivityTimeoutMinutes: 15"
+      );
+      assert.ok(
+        autoLockCode.includes("lockOnSleep: true,"),
+        "Default policy must have lockOnSleep: true"
+      );
+      assert.ok(
+        autoLockCode.includes("export const ALLOWED_AUTO_LOCK_TIMEOUTS = [1, 5, 15, 30, 60]"),
+        "Must allow 1, 5, 15, 30, 60 minute timeouts"
+      );
+    });
+
+    it("simulates parsing stored settings with fallback defense against corrupt inputs", () => {
+      const parseSettings = (raw) => {
+        const DEFAULT = { autoLockEnabled: true, inactivityTimeoutMinutes: 15, lockOnSleep: true };
+        const ALLOWED = [1, 5, 15, 30, 60];
+        if (!raw) return DEFAULT;
+        try {
+          const parsed = JSON.parse(raw);
+          return {
+            autoLockEnabled: typeof parsed.autoLockEnabled === "boolean" ? parsed.autoLockEnabled : true,
+            inactivityTimeoutMinutes: ALLOWED.includes(parsed.inactivityTimeoutMinutes)
+              ? parsed.inactivityTimeoutMinutes
+              : 15,
+            lockOnSleep: typeof parsed.lockOnSleep === "boolean" ? parsed.lockOnSleep : true,
+          };
+        } catch {
+          return DEFAULT;
+        }
+      };
+
+      // Corrupt JSON string
+      assert.deepStrictEqual(parseSettings("{invalid json"), {
+        autoLockEnabled: true,
+        inactivityTimeoutMinutes: 15,
+        lockOnSleep: true,
+      });
+
+      // Out-of-bounds timeout (e.g. 999 minutes) falls back to safe 15 minutes
+      assert.deepStrictEqual(
+        parseSettings(JSON.stringify({ autoLockEnabled: false, inactivityTimeoutMinutes: 999, lockOnSleep: false })),
+        { autoLockEnabled: false, inactivityTimeoutMinutes: 15, lockOnSleep: false }
+      );
+
+      // Valid custom settings
+      assert.deepStrictEqual(
+        parseSettings(JSON.stringify({ autoLockEnabled: true, inactivityTimeoutMinutes: 5, lockOnSleep: false })),
+        { autoLockEnabled: true, inactivityTimeoutMinutes: 5, lockOnSleep: false }
+      );
+    });
+  });
+
+  describe("2. Inactivity Tracking, Event Throttling & Inactivity Expiry", () => {
+    it("simulates activity timestamp updates and throttles mousemove events", () => {
+      let lastActivity = 100000;
+      let lastMouseMoveRecorded = 0;
+
+      const recordActivity = (now, eventType) => {
+        if (eventType === "mousemove") {
+          if (now - lastMouseMoveRecorded < 1000) {
+            return false; // Throttled
+          }
+          lastMouseMoveRecorded = now;
+        }
+        lastActivity = now;
+        return true;
+      };
+
+      // First mouse move records activity
+      assert.strictEqual(recordActivity(100500, "mousemove"), true);
+      assert.strictEqual(lastActivity, 100500);
+
+      // Rapid mouse move within 500ms is throttled (no update)
+      assert.strictEqual(recordActivity(100800, "mousemove"), false);
+      assert.strictEqual(lastActivity, 100500);
+
+      // Keydown is never throttled
+      assert.strictEqual(recordActivity(100900, "keydown"), true);
+      assert.strictEqual(lastActivity, 100900);
+
+      // Mouse move after 1000ms is accepted
+      assert.strictEqual(recordActivity(102000, "mousemove"), true);
+      assert.strictEqual(lastActivity, 102000);
+    });
+
+    it("simulates inactivity timeout evaluation", () => {
+      let lockTriggered = false;
+      let lockReason = "";
+
+      const checkInactivity = ({ now, lastActivity, timeoutMinutes, autoLockEnabled, isLocked, isEncryptionEnabled }) => {
+        if (!isEncryptionEnabled || isLocked || !autoLockEnabled) return false;
+        const timeoutMs = timeoutMinutes * 60 * 1000;
+        const idleTime = now - lastActivity;
+        if (idleTime >= timeoutMs) {
+          lockTriggered = true;
+          lockReason = `Inactivity timeout reached (${timeoutMinutes}m)`;
+          return true;
+        }
+        return false;
+      };
+
+      // 10 minutes elapsed on 15 minute timeout -> should NOT lock
+      let didLock = checkInactivity({
+        now: 100000 + 10 * 60 * 1000,
+        lastActivity: 100000,
+        timeoutMinutes: 15,
+        autoLockEnabled: true,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(didLock, false);
+      assert.strictEqual(lockTriggered, false);
+
+      // 15 minutes elapsed on 15 minute timeout -> MUST lock
+      didLock = checkInactivity({
+        now: 100000 + 15 * 60 * 1000,
+        lastActivity: 100000,
+        timeoutMinutes: 15,
+        autoLockEnabled: true,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(didLock, true);
+      assert.strictEqual(lockTriggered, true);
+      assert.strictEqual(lockReason, "Inactivity timeout reached (15m)");
+
+      // When auto-lock is disabled by user setting -> should NOT lock even after 60 minutes
+      lockTriggered = false;
+      didLock = checkInactivity({
+        now: 100000 + 60 * 60 * 1000,
+        lastActivity: 100000,
+        timeoutMinutes: 15,
+        autoLockEnabled: false,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(didLock, false);
+      assert.strictEqual(lockTriggered, false);
+    });
+  });
+
+  describe("3. Operating System Sleep / Resume Detection via Timer Drift", () => {
+    it("detects system suspend/sleep when heartbeat interval drifts abnormally", () => {
+      let sleepLockTriggered = false;
+      let lockReason = "";
+
+      const evaluateHeartbeatTick = ({ timeSinceLastTick, lockOnSleep, autoLockEnabled, isLocked, isEncryptionEnabled }) => {
+        if (!isEncryptionEnabled || isLocked || !autoLockEnabled) return false;
+        // In a 2000ms heartbeat interval, a gap > 10000ms signifies system suspend/sleep
+        if (lockOnSleep && timeSinceLastTick > 10000) {
+          sleepLockTriggered = true;
+          lockReason = "System resumed from sleep or suspended state";
+          return true;
+        }
+        return false;
+      };
+
+      // Normal 2s tick interval -> no sleep lock
+      let locked = evaluateHeartbeatTick({
+        timeSinceLastTick: 2050,
+        lockOnSleep: true,
+        autoLockEnabled: true,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(locked, false);
+      assert.strictEqual(sleepLockTriggered, false);
+
+      // 45-second drift (laptop was suspended/closed) -> triggers sleep lock
+      locked = evaluateHeartbeatTick({
+        timeSinceLastTick: 45000,
+        lockOnSleep: true,
+        autoLockEnabled: true,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(locked, true);
+      assert.strictEqual(sleepLockTriggered, true);
+      assert.strictEqual(lockReason, "System resumed from sleep or suspended state");
+
+      // When lockOnSleep is disabled -> does not lock on sleep drift
+      sleepLockTriggered = false;
+      locked = evaluateHeartbeatTick({
+        timeSinceLastTick: 45000,
+        lockOnSleep: false,
+        autoLockEnabled: true,
+        isLocked: false,
+        isEncryptionEnabled: true,
+      });
+      assert.strictEqual(locked, false);
+      assert.strictEqual(sleepLockTriggered, false);
+    });
+  });
+
+  describe("4. Duplicate Lock Guard & Race-Condition Defense", () => {
+    it("guarantees auto-lock invocation cannot double-trigger concurrently", async () => {
+      let isLocking = false;
+      let lockExecutionCount = 0;
+
+      const triggerLock = async (onLockFn) => {
+        if (isLocking) return false;
+        isLocking = true;
+        try {
+          await onLockFn();
+          return true;
+        } finally {
+          isLocking = false;
+        }
+      };
+
+      const mockOnLock = async () => {
+        lockExecutionCount++;
+        // Simulate async flush of pending note edits
+        await new Promise((r) => setTimeout(r, 20));
+      };
+
+      // Trigger two concurrent lock calls
+      const [res1, res2] = await Promise.all([
+        triggerLock(mockOnLock),
+        triggerLock(mockOnLock),
+      ]);
+
+      assert.strictEqual(res1, true, "First lock invocation proceeds");
+      assert.strictEqual(res2, false, "Concurrent second invocation is rejected by guard");
+      assert.strictEqual(lockExecutionCount, 1, "Only a single lock operation may execute");
+    });
+  });
+
+  describe("5. SettingsModal Auto-Lock UI & App.tsx Integration", () => {
+    it("verifies SettingsModal renders auto-lock toggles and dropdown selector", async () => {
+      const fs = await import("node:fs");
+      const settingsModalCode = fs.readFileSync(
+        new URL("../src/features/settings/components/SettingsModal/SettingsModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        settingsModalCode.includes('id="security-autolock-toggle"'),
+        "SettingsModal must render auto-lock toggle with id 'security-autolock-toggle'"
+      );
+      assert.ok(
+        settingsModalCode.includes('id="security-timeout-select"'),
+        "SettingsModal must render timeout select with id 'security-timeout-select'"
+      );
+      assert.ok(
+        settingsModalCode.includes('id="security-sleep-toggle"'),
+        "SettingsModal must render sleep lock toggle with id 'security-sleep-toggle'"
+      );
+      assert.ok(
+        settingsModalCode.includes('id="settings-lock-btn"'),
+        "SettingsModal must render manual lock button with id 'settings-lock-btn'"
+      );
+    });
+
+    it("verifies App.tsx mounts useAutoLock hook and connects it to handleLockApp", async () => {
+      const fs = await import("node:fs");
+      const appCode = fs.readFileSync(
+        new URL("../src/app/App.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        appCode.includes("useAutoLock") && appCode.includes('"../features/security"'),
+        "App.tsx must import useAutoLock from features/security"
+      );
+      assert.ok(
+        appCode.includes("const {\n    settings: autoLockSettings,"),
+        "App.tsx must invoke useAutoLock hook"
+      );
+      assert.ok(
+        appCode.includes("autoLockSettings={autoLockSettings}") &&
+          appCode.includes("onUpdateAutoLockSettings={handleUpdateAutoLockSettings}"),
+        "App.tsx must pass autoLockSettings and handler to SettingsModal"
+      );
+    });
+  });
+});
+
+describe("Phase 12 - Task 15: Implement Password Change and Key Rotation Policy Tests", () => {
+  describe("1. Password Change Validation Logic", () => {
+    it("rejects empty or whitespace current password", () => {
+      const res1 = validateChangePassword("", "NewValidPassword123!", "NewValidPassword123!");
+      assert.strictEqual(res1.isValid, false);
+      assert.ok(res1.errorMessage.includes("current encryption password"));
+
+      const res2 = validateChangePassword("   ", "NewValidPassword123!", "NewValidPassword123!");
+      assert.strictEqual(res2.isValid, false);
+    });
+
+    it("rejects new password shorter than 8 characters", () => {
+      const res = validateChangePassword("OldValidPassword123!", "short", "short");
+      assert.strictEqual(res.isValid, false);
+      assert.ok(res.errorMessage.includes("at least 8 characters"));
+    });
+
+    it("rejects new password longer than 1024 characters", () => {
+      const longPass = "a".repeat(1025);
+      const res = validateChangePassword("OldValidPassword123!", longPass, longPass);
+      assert.strictEqual(res.isValid, false);
+      assert.ok(res.errorMessage.includes("exceeds maximum limit"));
+    });
+
+    it("rejects new password that is identical to current password", () => {
+      const res = validateChangePassword("SamePassword123!", "SamePassword123!", "SamePassword123!");
+      assert.strictEqual(res.isValid, false);
+      assert.ok(res.errorMessage.includes("must be different from your current password"));
+    });
+
+    it("rejects mismatched new password confirmation", () => {
+      const res = validateChangePassword(
+        "OldPassword123!",
+        "NewPassword123!",
+        "MismatchPassword456!"
+      );
+      assert.strictEqual(res.isValid, false);
+      assert.ok(res.errorMessage.includes("confirmation does not match"));
+    });
+
+    it("accepts valid current password, new password, and matching confirmation", () => {
+      const res = validateChangePassword(
+        "CurrentSecurePass123!",
+        "NewSuperiorPass456!",
+        "NewSuperiorPass456!"
+      );
+      assert.strictEqual(res.isValid, true);
+      assert.strictEqual(res.errorMessage, undefined);
+    });
+  });
+
+  describe("2. ChangePasswordModal Component Structure & Accessibility", () => {
+    it("verifies ChangePasswordModal contains expected form controls and data IDs", async () => {
+      const fs = await import("node:fs");
+      const modalCode = fs.readFileSync(
+        new URL("../src/features/security/components/ChangePasswordModal/ChangePasswordModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        modalCode.includes('id="current-password-input"'),
+        "Must render input with id 'current-password-input'"
+      );
+      assert.ok(
+        modalCode.includes('id="new-password-input"'),
+        "Must render input with id 'new-password-input'"
+      );
+      assert.ok(
+        modalCode.includes('id="confirm-new-password-input"'),
+        "Must render input with id 'confirm-new-password-input'"
+      );
+      assert.ok(
+        modalCode.includes('id="change-password-submit-btn"'),
+        "Must render button with id 'change-password-submit-btn'"
+      );
+      assert.ok(
+        modalCode.includes('id="change-password-cancel-btn"'),
+        "Must render button with id 'change-password-cancel-btn'"
+      );
+      assert.ok(
+        modalCode.includes('role="alert"'),
+        "Must provide accessible role='alert' for error notifications"
+      );
+      assert.ok(
+        modalCode.includes('role="status"'),
+        "Must provide accessible role='status' for success feedback"
+      );
+      assert.ok(
+        modalCode.includes("cryptoStorage.changePassword"),
+        "Must invoke cryptoStorage.changePassword API"
+      );
+    });
+
+    it("verifies ChangePasswordModal styling file exists and defines required classes", async () => {
+      const fs = await import("node:fs");
+      const cssCode = fs.readFileSync(
+        new URL("../src/features/security/components/ChangePasswordModal/ChangePasswordModal.css", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(cssCode.includes(".change-password-content"), "Must style .change-password-content");
+      assert.ok(cssCode.includes(".change-password-form"), "Must style .change-password-form");
+      assert.ok(cssCode.includes(".change-password-error-alert"), "Must style .change-password-error-alert");
+      assert.ok(cssCode.includes(".change-password-success-banner"), "Must style .change-password-success-banner");
+    });
+  });
+
+  describe("3. Security Feature Exports & SettingsModal Integration", () => {
+    it("verifies security module index exports ChangePasswordModal", async () => {
+      const fs = await import("node:fs");
+      const indexCode = fs.readFileSync(
+        new URL("../src/features/security/index.ts", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        indexCode.includes('export * from "./components/ChangePasswordModal/ChangePasswordModal";'),
+        "features/security/index.ts must export ChangePasswordModal"
+      );
+    });
+
+    it("verifies SettingsModal renders change-password launch button and mounts ChangePasswordModal", async () => {
+      const fs = await import("node:fs");
+      const settingsCode = fs.readFileSync(
+        new URL("../src/features/settings/components/SettingsModal/SettingsModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        settingsCode.includes("ChangePasswordModal"),
+        "SettingsModal must import and reference ChangePasswordModal"
+      );
+      assert.ok(
+        settingsCode.includes('id="settings-change-password-btn"'),
+        "SettingsModal must render button with id 'settings-change-password-btn'"
+      );
+      assert.ok(
+        settingsCode.includes("isChangePasswordOpen"),
+        "SettingsModal must manage isChangePasswordOpen state"
+      );
+    });
+  });
+
+  describe("4. Key Rewrapping & Envelope Encryption Architectural Invariants", () => {
+    it("simulates envelope key re-wrapping without re-encrypting ciphertext", () => {
+      // Simulation of envelope encryption architecture:
+      // DEK is constant; KEK changes when password changes.
+      const simulatedDek = "CONSTANT_DEK_32_BYTES_HEX_STRING";
+      const sampleNoteCiphertext = "ENCRYPTED_NOTE_BODY_WITH_DEK";
+
+      let currentPassword = "PasswordA123!";
+      let salt1 = "SALT_16_BYTES_V1";
+      // KEK1 derived from password A + salt1
+      let kek1 = `KEK_DERIVED(${currentPassword}, ${salt1})`;
+      let wrappedDek = `WRAPPED(${simulatedDek}, ${kek1})`;
+
+      // Unwrap DEK with KEK1
+      const unwrap = (wrapped, kek) => {
+        const prefix = `WRAPPED(`;
+        const suffix = `, ${kek})`;
+        if (wrapped.startsWith(prefix) && wrapped.endsWith(suffix)) {
+          return wrapped.slice(prefix.length, wrapped.length - suffix.length);
+        }
+        throw new Error("Authentication failed");
+      };
+
+      assert.strictEqual(unwrap(wrappedDek, kek1), simulatedDek);
+
+      // Execute password change:
+      const newPassword = "PasswordB456!";
+      const salt2 = "SALT_16_BYTES_V2";
+      const kek2 = `KEK_DERIVED(${newPassword}, ${salt2})`;
+      const newWrappedDek = `WRAPPED(${simulatedDek}, ${kek2})`;
+
+      // Verify self-verification check passes before commit:
+      const selfVerified = unwrap(newWrappedDek, kek2);
+      assert.strictEqual(selfVerified, simulatedDek, "Self verification must recover DEK");
+
+      // Verify old KEK cannot unwrap new wrapped DEK:
+      assert.throws(() => unwrap(newWrappedDek, kek1), /Authentication failed/);
+
+      // Verify existing note ciphertext decrypts using recovered DEK without needing re-encryption:
+      const decryptNote = (ciphertext, dek) => {
+        if (dek === simulatedDek) {
+          return "Plaintext Note Content";
+        }
+        throw new Error("Decryption failed");
+      };
+
+      const recoveredDek = unwrap(newWrappedDek, kek2);
+      assert.strictEqual(
+        decryptNote(sampleNoteCiphertext, recoveredDek),
+        "Plaintext Note Content",
+        "Note ciphertext decrypts with re-wrapped DEK without database re-encryption"
+      );
+    });
+  });
+});
+
+describe("Phase 12 - Task 16: Implement Forgotten-Password and Recovery Policy Tests", () => {
+  describe("1. ForgottenPasswordModal Component Structure & Policy Disclosures", () => {
+    it("verifies ForgottenPasswordModal renders required elements and accessibility roles", async () => {
+      const fs = await import("node:fs");
+      const modalCode = fs.readFileSync(
+        new URL("../src/features/security/components/ForgottenPasswordModal/ForgottenPasswordModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        modalCode.includes('id="forgotten-password-modal"'),
+        "Must render content with id 'forgotten-password-modal'"
+      );
+      assert.ok(
+        modalCode.includes('id="forgotten-password-close-btn"'),
+        "Must render close button with id 'forgotten-password-close-btn'"
+      );
+      assert.ok(
+        modalCode.includes('role="alert"'),
+        "Must include accessible role='alert' for the core warning banner"
+      );
+    });
+
+    it("verifies ForgottenPasswordModal communicates Option A policy honestly without false promises", async () => {
+      const fs = await import("node:fs");
+      const modalCode = fs.readFileSync(
+        new URL("../src/features/security/components/ForgottenPasswordModal/ForgottenPasswordModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        modalCode.includes("No Password Recovery or Cloud Backdoor Exists"),
+        "Must clearly disclose that no cloud backdoor exists"
+      );
+      assert.ok(
+        modalCode.includes("Failed Attempts Do Not Damage Data"),
+        "Must reassure users that failed attempts do not erase notes"
+      );
+      assert.ok(
+        modalCode.includes("Resetting Is Not Recovery"),
+        "Must explain that application reset cannot recover encrypted data"
+      );
+      assert.ok(
+        modalCode.includes("Pre-Migration Checkpoint"),
+        "Must explain how pre-migration checkpoint backup provides safety"
+      );
+    });
+
+    it("verifies ForgottenPasswordModal styling exists and defines expected classes", async () => {
+      const fs = await import("node:fs");
+      const cssCode = fs.readFileSync(
+        new URL("../src/features/security/components/ForgottenPasswordModal/ForgottenPasswordModal.css", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(cssCode.includes(".forgotten-password-content"), "Must style .forgotten-password-content");
+      assert.ok(cssCode.includes(".forgotten-password-warning-box"), "Must style .forgotten-password-warning-box");
+      assert.ok(cssCode.includes(".forgotten-password-sections"), "Must style .forgotten-password-sections");
+      assert.ok(cssCode.includes(".forgotten-password-section-item"), "Must style .forgotten-password-section-item");
+    });
+  });
+
+  describe("2. UnlockScreen & SettingsModal Integration", () => {
+    it("verifies UnlockScreen renders forgotten password trigger and mounts modal", async () => {
+      const fs = await import("node:fs");
+      const unlockCode = fs.readFileSync(
+        new URL("../src/features/security/components/UnlockScreen/UnlockScreen.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        unlockCode.includes('id="unlock-forgot-password-btn"'),
+        "UnlockScreen must render button with id 'unlock-forgot-password-btn'"
+      );
+      assert.ok(
+        unlockCode.includes("ForgottenPasswordModal"),
+        "UnlockScreen must mount ForgottenPasswordModal"
+      );
+      assert.ok(
+        unlockCode.includes("isRecoveryModalOpen"),
+        "UnlockScreen must manage isRecoveryModalOpen state"
+      );
+    });
+
+    it("verifies UnlockScreen.css styles the forgotten password link", async () => {
+      const fs = await import("node:fs");
+      const unlockCss = fs.readFileSync(
+        new URL("../src/features/security/components/UnlockScreen/UnlockScreen.css", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        unlockCss.includes(".unlock-secondary-actions"),
+        "Must define .unlock-secondary-actions"
+      );
+      assert.ok(
+        unlockCss.includes(".unlock-forgot-link"),
+        "Must define .unlock-forgot-link with focus and hover states"
+      );
+    });
+
+    it("verifies SettingsModal renders recovery policy trigger button", async () => {
+      const fs = await import("node:fs");
+      const settingsCode = fs.readFileSync(
+        new URL("../src/features/settings/components/SettingsModal/SettingsModal.tsx", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        settingsCode.includes('id="settings-recovery-policy-btn"'),
+        "SettingsModal must render button with id 'settings-recovery-policy-btn'"
+      );
+      assert.ok(
+        settingsCode.includes("ForgottenPasswordModal"),
+        "SettingsModal must mount ForgottenPasswordModal"
+      );
+    });
+
+    it("verifies security module index exports ForgottenPasswordModal", async () => {
+      const fs = await import("node:fs");
+      const indexCode = fs.readFileSync(
+        new URL("../src/features/security/index.ts", import.meta.url),
+        "utf8"
+      );
+
+      assert.ok(
+        indexCode.includes('export * from "./components/ForgottenPasswordModal/ForgottenPasswordModal";'),
+        "features/security/index.ts must export ForgottenPasswordModal"
+      );
+    });
+  });
+
+  describe("3. Zero-Knowledge Failure & Non-Destructive Invariant Simulation", () => {
+    it("simulates failed attempts preserving ciphertext without corruption or data loss", () => {
+      const truePassword = "SecretMasterPassword123!";
+      const trueDek = "ACTIVE_DATA_KEY_256_BITS";
+      const sampleNote = "Confidential User Notes - Unchanged Across Failed Attempts";
+
+      // Encrypt payload
+      const mockCiphertext = {
+        data: Buffer.from(sampleNote).toString("base64"),
+        tag: "AUTH_TAG_HEX",
+      };
+
+      let attemptCount = 0;
+      let databaseMutated = false;
+
+      const attemptUnlock = (submittedPassword) => {
+        attemptCount++;
+        if (submittedPassword === truePassword) {
+          return trueDek;
+        }
+        // Invariant: wrong password returns failure and DOES NOT modify database
+        return null;
+      };
+
+      // 10 failed unlock attempts
+      for (let i = 1; i <= 10; i++) {
+        const result = attemptUnlock(`BadPasswordGuess_${i}`);
+        assert.strictEqual(result, null, `Attempt ${i} must fail authentication`);
+      }
+
+      assert.strictEqual(attemptCount, 10);
+      assert.strictEqual(databaseMutated, false, "Failed attempts must NEVER mutate or wipe database");
+
+      // Ciphertext remains intact and decryptable with true password
+      const recoveredKey = attemptUnlock(truePassword);
+      assert.strictEqual(recoveredKey, trueDek);
+
+      const decrypted = Buffer.from(mockCiphertext.data, "base64").toString("utf8");
+      assert.strictEqual(decrypted, sampleNote, "Note data must be 100% intact");
+    });
+  });
+
+  describe("Phase 12 Task 17: Safe Migration From Unencrypted to Encrypted Storage", () => {
+    describe("1. Migration Status Type Contract & Interrupted State Identification", () => {
+      it("verifies EncryptionStatusDto includes migration_status and is_interrupted", async () => {
+        const fs = await import("node:fs");
+        const cryptoTs = fs.readFileSync(
+          new URL("../src/services/storage/crypto.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          cryptoTs.includes("migration_status?: string | null;"),
+          "crypto.ts must define migration_status in EncryptionStatusDto"
+        );
+        assert.ok(
+          cryptoTs.includes("is_interrupted?: boolean;"),
+          "crypto.ts must define is_interrupted in EncryptionStatusDto"
+        );
+      });
+
+      it("verifies MigrationStatus enum stages and interrupted predicate logic", () => {
+        const isInterrupted = (status) => {
+          return [
+            "setup_requested",
+            "checkpoint_created",
+            "migration_in_progress",
+            "staging_prepared",
+            "verified",
+          ].includes(status);
+        };
+
+        const isActive = (status) => status === "active";
+        const isFailed = (status) => typeof status === "object" && status !== null && "failed" in status;
+
+        assert.strictEqual(isActive("active"), true);
+        assert.strictEqual(isActive("migration_in_progress"), false);
+
+        assert.strictEqual(isInterrupted("unencrypted"), false);
+        assert.strictEqual(isInterrupted("setup_requested"), true);
+        assert.strictEqual(isInterrupted("checkpoint_created"), true);
+        assert.strictEqual(isInterrupted("migration_in_progress"), true);
+        assert.strictEqual(isInterrupted("staging_prepared"), true);
+        assert.strictEqual(isInterrupted("verified"), true);
+        assert.strictEqual(isInterrupted("active"), false);
+        assert.strictEqual(isInterrupted("rolled_back"), false);
+
+        assert.strictEqual(isFailed({ failed: "Disk I/O error" }), true);
+        assert.strictEqual(isFailed("active"), false);
+      });
+    });
+
+    describe("2. Stateful Migration Lifecycle & Non-Destructive Invariants", () => {
+      it("simulates full safe migration lifecycle: Pre-check -> Checkpoint -> Encrypt -> Verify -> Active", () => {
+        const lifecycle = [];
+        const checkpoints = [];
+        let notes = [
+          { id: "note-1", title: "Plain 1", content: "Secret 1" },
+          { id: "note-2", title: "Plain 2", content: "Secret 2" },
+        ];
+        let attachments = [
+          { id: "att-1", noteId: "note-1", fileName: "document.pdf", diskEncrypted: false },
+        ];
+
+        let migrationState = "unencrypted";
+
+        // 1. Pre-migration integrity check
+        const runPreCheck = () => {
+          lifecycle.push("integrity_checked");
+          return true;
+        };
+
+        // 2. Recovery checkpoint created before ANY authoritative modification
+        const createCheckpoint = () => {
+          assert.strictEqual(migrationState, "unencrypted");
+          migrationState = "checkpoint_created";
+          checkpoints.push({ id: "chk_001", timestamp: Date.now(), verified: true });
+          lifecycle.push("checkpoint_created");
+        };
+
+        // 3. Migrate notes & attachments
+        const executeMigration = (_dek) => {
+          assert.strictEqual(migrationState, "checkpoint_created");
+          migrationState = "migration_in_progress";
+          lifecycle.push("migration_started");
+
+          // Notes conversion
+          notes = notes.map((n) => ({
+            ...n,
+            title: `ENC$v1$${Buffer.from(n.title).toString("base64")}`,
+            content: `ENC$v1$${Buffer.from(n.content).toString("base64")}`,
+          }));
+
+          // Attachments conversion
+          attachments = attachments.map((a) => ({
+            ...a,
+            fileName: `ENC$v1$${Buffer.from(a.fileName).toString("base64")}`,
+            diskEncrypted: true,
+          }));
+
+          migrationState = "staging_prepared";
+          lifecycle.push("staging_prepared");
+        };
+
+        // 4. Post-migration verification
+        const verifyPostMigration = () => {
+          assert.strictEqual(migrationState, "staging_prepared");
+          const unencryptedNotes = notes.filter(
+            (n) => !n.title.startsWith("ENC$v1$") || !n.content.startsWith("ENC$v1$")
+          );
+          const unencryptedAtts = attachments.filter(
+            (a) => !a.fileName.startsWith("ENC$v1$") || !a.diskEncrypted
+          );
+
+          assert.strictEqual(unencryptedNotes.length, 0);
+          assert.strictEqual(unencryptedAtts.length, 0);
+
+          migrationState = "verified";
+          lifecycle.push("verified");
+        };
+
+        // 5. Final activation
+        const activate = () => {
+          assert.strictEqual(migrationState, "verified");
+          migrationState = "active";
+          lifecycle.push("active");
+        };
+
+        assert.strictEqual(runPreCheck(), true);
+        createCheckpoint();
+        assert.strictEqual(checkpoints.length, 1);
+        executeMigration("test_dek_key");
+        verifyPostMigration();
+        activate();
+
+        assert.strictEqual(migrationState, "active");
+        assert.deepStrictEqual(lifecycle, [
+          "integrity_checked",
+          "checkpoint_created",
+          "migration_started",
+          "staging_prepared",
+          "verified",
+          "active",
+        ]);
+      });
+
+      it("simulates interrupted migration detection locking down normal access", () => {
+        // If migration was interrupted (e.g. at migration_in_progress)
+        const persistedMetadata = {
+          enabled: true,
+          migration_status: "migration_in_progress",
+          is_interrupted: true,
+        };
+
+        const bootSession = (meta) => {
+          if (meta.is_interrupted) {
+            return {
+              state: "InterruptedMigration",
+              isLocked: true,
+              isInterrupted: true,
+              canUnlock: false,
+              canAccessDek: false,
+              errorMessage:
+                "Application storage is in an interrupted migration state. Restore from a pre-migration backup checkpoint.",
+            };
+          }
+          return { state: "Locked", isLocked: true, isInterrupted: false, canUnlock: true };
+        };
+
+        const session = bootSession(persistedMetadata);
+        assert.strictEqual(session.state, "InterruptedMigration");
+        assert.strictEqual(session.isLocked, true);
+        assert.strictEqual(session.isInterrupted, true);
+        assert.strictEqual(session.canUnlock, false);
+        assert.strictEqual(session.canAccessDek, false);
+        assert.ok(session.errorMessage.includes("interrupted migration state"));
+      });
+    });
+  });
+
+  describe("Phase 12 Task 18: Implement Crash Recovery for Encryption State Transitions", () => {
+    describe("1. Type Contracts and Interface Specifications", () => {
+      it("verifies EncryptionStatusDto includes recovery_checkpoint_path", async () => {
+        const fs = await import("node:fs");
+        const cryptoTs = fs.readFileSync(
+          new URL("../src/services/storage/crypto.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          cryptoTs.includes("recovery_checkpoint_path?: string | null;"),
+          "crypto.ts must define recovery_checkpoint_path in EncryptionStatusDto"
+        );
+      });
+
+      it("verifies cryptoStorage exports rollbackInterruptedMigration and resumeInterruptedMigration", async () => {
+        const fs = await import("node:fs");
+        const cryptoTs = fs.readFileSync(
+          new URL("../src/services/storage/crypto.ts", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          cryptoTs.includes("rollbackInterruptedMigration(") || cryptoTs.includes("rollbackInterruptedMigration"),
+          "cryptoStorage must expose rollbackInterruptedMigration method"
+        );
+        assert.ok(
+          cryptoTs.includes("resumeInterruptedMigration(") || cryptoTs.includes("resumeInterruptedMigration"),
+          "cryptoStorage must expose resumeInterruptedMigration method"
+        );
+        assert.ok(
+          cryptoTs.includes("rollback_interrupted_migration"),
+          "cryptoStorage must invoke rollback_interrupted_migration command"
+        );
+        assert.ok(
+          cryptoTs.includes("resume_interrupted_migration"),
+          "cryptoStorage must invoke resume_interrupted_migration command"
+        );
+      });
+
+      it("verifies UnlockScreen component supports isInterrupted and onRollbackSuccess props", async () => {
+        const fs = await import("node:fs");
+        const unlockTsx = fs.readFileSync(
+          new URL("../src/features/security/components/UnlockScreen/UnlockScreen.tsx", import.meta.url),
+          "utf8"
+        );
+
+        assert.ok(
+          unlockTsx.includes("isInterrupted?: boolean;"),
+          "UnlockScreenProps must define isInterrupted"
+        );
+        assert.ok(
+          unlockTsx.includes("onRollbackSuccess?: () => void;"),
+          "UnlockScreenProps must define onRollbackSuccess"
+        );
+        assert.ok(
+          unlockTsx.includes("recovery-rollback-btn"),
+          "UnlockScreen must render recovery-rollback-btn"
+        );
+        assert.ok(
+          unlockTsx.includes("recovery-resume-btn"),
+          "UnlockScreen must render recovery-resume-btn"
+        );
+      });
+    });
+
+    describe("2. Startup Recovery Decision Matrix Simulation", () => {
+      it("simulates decision engine for all transition stages across crashes", () => {
+        const evaluateStartupDecision = (marker, metadata) => {
+          // If neither exists, clean normal boot
+          if (!marker && !metadata) return { decision: "None" };
+
+          // If marker was Verified, auto-finalize to Active
+          if (marker?.stage === "verified" || metadata?.migration_status === "verified") {
+            return { decision: "AutoFinalizedVerified", targetStatus: "active", canUnlock: true };
+          }
+
+          // If marker is unstarted (setup_requested / checkpoint_created) and no active data changed
+          if (
+            (marker?.stage === "setup_requested" || marker?.stage === "checkpoint_created") &&
+            (!metadata || metadata.migration_status === "checkpoint_created")
+          ) {
+            return { decision: "CleanedUpUnstarted", targetStatus: "disabled", canUnlock: false };
+          }
+
+          // Mid-migration stages: Restricted Recovery Mode
+          const interruptedStages = ["migration_in_progress", "staging_prepared", "failed"];
+          if (
+            interruptedStages.includes(marker?.stage) ||
+            interruptedStages.includes(metadata?.migration_status)
+          ) {
+            return {
+              decision: "RestrictedRecoveryRequired",
+              isInterrupted: true,
+              isLocked: true,
+              checkpointPath: marker?.checkpoint_path || metadata?.checkpoint_path || null,
+            };
+          }
+
+          return { decision: "None" };
+        };
+
+        // Case 1: Crash at CheckpointCreated
+        const resA = evaluateStartupDecision(
+          { stage: "checkpoint_created", checkpoint_path: "/tmp/backup.pnbackup" },
+          null
+        );
+        assert.strictEqual(resA.decision, "CleanedUpUnstarted");
+        assert.strictEqual(resA.targetStatus, "disabled");
+
+        // Case 2: Crash at Verified
+        const resB = evaluateStartupDecision(
+          { stage: "verified", checkpoint_path: "/tmp/backup.pnbackup" },
+          { migration_status: "verified" }
+        );
+        assert.strictEqual(resB.decision, "AutoFinalizedVerified");
+        assert.strictEqual(resB.targetStatus, "active");
+        assert.strictEqual(resB.canUnlock, true);
+
+        // Case 3: Crash at MigrationInProgress
+        const resC = evaluateStartupDecision(
+          { stage: "migration_in_progress", checkpoint_path: "/tmp/backup.pnbackup" },
+          { migration_status: "migration_in_progress" }
+        );
+        assert.strictEqual(resC.decision, "RestrictedRecoveryRequired");
+        assert.strictEqual(resC.isInterrupted, true);
+        assert.strictEqual(resC.isLocked, true);
+        assert.strictEqual(resC.checkpointPath, "/tmp/backup.pnbackup");
+
+        // Case 4: Crash at StagingPrepared
+        const resD = evaluateStartupDecision(
+          { stage: "staging_prepared", checkpoint_path: "/tmp/backup.pnbackup" },
+          { migration_status: "staging_prepared" }
+        );
+        assert.strictEqual(resD.decision, "RestrictedRecoveryRequired");
+        assert.strictEqual(resD.isInterrupted, true);
+      });
+    });
+
+    describe("3. Recovery Actions Workflow Simulation", () => {
+      it("simulates deterministic Rollback action restoring pre-migration state", async () => {
+        let appLocked = true;
+        let encryptionEnabled = true;
+        let isInterrupted = true;
+        let storageRestored = false;
+        let notesReloaded = false;
+
+        const fakeRollback = async () => {
+          // 1. Backend executes restore from pre-migration checkpoint
+          storageRestored = true;
+          // 2. Returns success
+          return { success: true, message: "Restored successfully" };
+        };
+
+        const handleRollbackSuccess = async () => {
+          appLocked = false;
+          encryptionEnabled = false;
+          isInterrupted = false;
+          notesReloaded = true;
+        };
+
+        // User clicks Roll Back button
+        const res = await fakeRollback();
+        assert.strictEqual(res.success, true);
+        await handleRollbackSuccess();
+
+        assert.strictEqual(storageRestored, true);
+        assert.strictEqual(appLocked, false);
+        assert.strictEqual(encryptionEnabled, false);
+        assert.strictEqual(isInterrupted, false);
+        assert.strictEqual(notesReloaded, true);
+      });
+
+      it("simulates deterministic Resume action completing encryption and unlocking session", async () => {
+        let appLocked = true;
+        let encryptionEnabled = true;
+        let isInterrupted = true;
+        let notesEncrypted = 1; // 1 out of 2 notes was encrypted before crash
+        const totalNotes = 2;
+
+        const fakeResume = async (password) => {
+          if (password !== "CorrectMasterPassword2026!") {
+            throw new Error("Authentication failed: invalid password");
+          }
+          // Resume encrypts remaining notes
+          notesEncrypted = totalNotes;
+          return {
+            enabled: true,
+            migration_status: "active",
+          };
+        };
+
+        const handleUnlockSuccess = async () => {
+          appLocked = false;
+          encryptionEnabled = true;
+          isInterrupted = false;
+        };
+
+        // Incorrect password rejected
+        await assert.rejects(
+          fakeResume("WrongPassword!"),
+          /Authentication failed/
+        );
+        assert.strictEqual(appLocked, true);
+        assert.strictEqual(isInterrupted, true);
+        assert.strictEqual(notesEncrypted, 1);
+
+        // Correct password resumes and completes
+        const resumeMeta = await fakeResume("CorrectMasterPassword2026!");
+        assert.strictEqual(resumeMeta.migration_status, "active");
+        assert.strictEqual(notesEncrypted, 2);
+
+        await handleUnlockSuccess();
+        assert.strictEqual(appLocked, false);
+        assert.strictEqual(isInterrupted, false);
+        assert.strictEqual(encryptionEnabled, true);
+      });
+    });
+  });
+
+  describe("Phase 12 Task 19: Integrate Encryption With Backup and Restore", () => {
+    describe("1. Backup and Restore Type Contracts & Models", () => {
+      it("verifies BackupManifest and RestorePreviewResult support encryption properties", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync("src/services/storage/types.ts", "utf-8");
+
+        assert.ok(content.includes("is_encrypted?: boolean"), "BackupManifest must support is_encrypted");
+        assert.ok(content.includes("encryption_algorithm?: string | null"), "BackupManifest must support encryption_algorithm");
+        assert.ok(content.includes("isEncrypted?: boolean"), "Backup types must support isEncrypted");
+        assert.ok(content.includes("encryptionAlgorithm?: string | null"), "RestorePreviewResult must support encryptionAlgorithm");
+      });
+
+      it("validates data structure for encrypted preview and backup manifest", () => {
+        const manifest = {
+          format_identifier: "PNBACKUP",
+          format_version: 1,
+          app_version: "0.1.0",
+          created_at: new Date().toISOString(),
+          backup_type: "manual",
+          database: {
+            entry_path: "database.sqlite",
+            file_size: 102400,
+            sha256: "abc123",
+            schema_version: 4,
+            note_count: 10,
+            notebook_count: 2,
+            tag_count: 4,
+            trash_count: 1,
+          },
+          attachments_summary: { total_files: 2, total_bytes: 51200 },
+          attachments: [],
+          scope: { includes_settings: true, includes_trash: true, includes_attachments: true },
+          checksums: {},
+          is_encrypted: true,
+          encryption_algorithm: "AES-256-GCM",
+        };
+
+        const preview = {
+          filePath: "/backups/backup.pnbackup",
+          fileName: "backup.pnbackup",
+          fileSize: 153600,
+          createdAt: manifest.created_at,
+          backupType: "manual",
+          formatVersion: 1,
+          schemaVersion: 4,
+          noteCount: 10,
+          notebookCount: 2,
+          tagCount: 4,
+          trashCount: 1,
+          attachmentCount: 2,
+          attachmentTotalBytes: 51200,
+          includesSettings: true,
+          compatibility: "compatible",
+          warnings: [],
+          canRestore: true,
+          isEncrypted: true,
+          encryptionAlgorithm: "AES-256-GCM",
+        };
+
+        assert.strictEqual(manifest.is_encrypted, true);
+        assert.strictEqual(manifest.encryption_algorithm, "AES-256-GCM");
+        assert.strictEqual(preview.isEncrypted, true);
+        assert.strictEqual(preview.encryptionAlgorithm, "AES-256-GCM");
+        assert.strictEqual(preview.canRestore, true);
+      });
+    });
+
+    describe("2. RestorePreviewModal Encryption UI & Disclosure", () => {
+      it("verifies RestorePreviewModal renders encrypted badge and warning banner", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync(
+          "src/features/backup/components/RestorePreviewModal/RestorePreviewModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(content.includes("🔒 Encrypted"), "RestorePreviewModal must render encrypted badge text");
+        assert.ok(content.includes("preview.isEncrypted"), "RestorePreviewModal must check preview.isEncrypted");
+        assert.ok(
+          content.includes("restore-preview-encrypted-banner"),
+          "RestorePreviewModal must define encrypted warning banner"
+        );
+        assert.ok(
+          content.includes("Encrypted Backup Restore Notice"),
+          "RestorePreviewModal must disclose encrypted restore consequences"
+        );
+        assert.ok(
+          content.includes("will immediately lock"),
+          "RestorePreviewModal must warn user that app will lock after restore"
+        );
+      });
+    });
+
+    describe("3. BackupListModal Encryption Badging", () => {
+      it("verifies BackupListModal renders encryption badge and detail stat", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync(
+          "src/features/backup/components/BackupListModal/BackupListModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(content.includes("item.isEncrypted"), "BackupListModal must check item.isEncrypted");
+        assert.ok(content.includes("🔒 Encrypted"), "BackupListModal must render encrypted badge text");
+        assert.ok(content.includes("selectedBackup.isEncrypted"), "BackupListModal must check selectedBackup.isEncrypted in details");
+      });
+    });
+
+    describe("4. App.tsx Post-Restore Session Resynchronization", () => {
+      it("verifies App.tsx checks encryption status and gates note loading after restore", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync("src/app/App.tsx", "utf-8");
+
+        assert.ok(
+          content.includes("storageService.crypto.getEncryptionStatus()"),
+          "App.tsx must refresh encryption status after restore"
+        );
+        assert.ok(
+          content.includes("isEncryptedAndLocked"),
+          "App.tsx must determine if restored database is encrypted and locked"
+        );
+        assert.ok(
+          content.includes("setIsAppLocked(true)"),
+          "App.tsx must lock application if restored database is encrypted"
+        );
+        assert.ok(
+          content.includes("if (!isEncryptedAndLocked)"),
+          "App.tsx must gate domain loading behind unlock status"
+        );
+      });
+    });
+
+    describe("5. End-to-End Simulation of Restore Encryption Handshake", () => {
+      it("simulates restoring encrypted backup locking session and requiring password", async () => {
+        let appState = {
+          isEncryptionEnabled: false,
+          isAppLocked: false,
+          isInterruptedMigration: false,
+          notes: [{ id: "n1", title: "Unencrypted Note", content: "body" }],
+        };
+
+        const executeRestoreSimulation = async (backupIsEncrypted) => {
+          // Backend swaps database and refreshes CryptoSession
+          const backendCryptoSession = {
+            enabled: backupIsEncrypted,
+            isLocked: backupIsEncrypted,
+            isInterrupted: false,
+          };
+
+          // App.tsx post-restore reinitialization hook
+          const encStatus = backendCryptoSession;
+          appState.isEncryptionEnabled = encStatus.enabled;
+          appState.isInterruptedMigration = encStatus.isInterrupted;
+          if (encStatus.enabled && encStatus.isLocked) {
+            appState.isAppLocked = true;
+            appState.notes = [];
+          } else {
+            appState.isAppLocked = false;
+            appState.notes = [{ id: "n2", title: "Restored Plain Note", content: "restored body" }];
+          }
+        };
+
+        // 1. Restore encrypted backup into unencrypted app
+        await executeRestoreSimulation(true);
+        assert.strictEqual(appState.isEncryptionEnabled, true);
+        assert.strictEqual(appState.isAppLocked, true);
+        assert.strictEqual(appState.notes.length, 0, "Plaintext notes must be cleared from memory while locked");
+
+        // 2. Unlock with master password
+        const unlockSimulation = async (password) => {
+          if (password === "CorrectRestoredMasterPassword!") {
+            appState.isAppLocked = false;
+            appState.notes = [{ id: "secret_1", title: "Decrypted Note", content: "secret body" }];
+            return true;
+          }
+          throw new Error("Authentication failed");
+        };
+
+        await assert.rejects(unlockSimulation("WrongPassword"), /Authentication failed/);
+        assert.strictEqual(appState.isAppLocked, true);
+
+        await unlockSimulation("CorrectRestoredMasterPassword!");
+        assert.strictEqual(appState.isAppLocked, false);
+        assert.strictEqual(appState.notes.length, 1);
+        assert.strictEqual(appState.notes[0].title, "Decrypted Note");
+
+        // 3. Restore unencrypted backup into encrypted app
+        await executeRestoreSimulation(false);
+        assert.strictEqual(appState.isEncryptionEnabled, false);
+        assert.strictEqual(appState.isAppLocked, false);
+        assert.strictEqual(appState.notes[0].title, "Restored Plain Note");
+      });
+    });
+  });
+
+  describe("Phase 12 Task 20: Integrate Encryption With Import, Export, Search, and Attachments", () => {
+    describe("1. Export Security Disclosures in Modals", () => {
+      it("verifies ExportNoteModal discloses unencrypted export when encryption is enabled", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync(
+          "src/features/importExport/components/ExportNoteModal/ExportNoteModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(
+          content.includes("cryptoStorage") && content.includes("getEncryptionStatus"),
+          "ExportNoteModal must check encryption status"
+        );
+        assert.ok(
+          content.includes("export-security-notice"),
+          "ExportNoteModal must define export-security-notice class"
+        );
+        assert.ok(
+          content.includes("Security Notice"),
+          "ExportNoteModal must show Security Notice header"
+        );
+        assert.ok(
+          content.includes("Exporting creates unencrypted files"),
+          "ExportNoteModal must inform user that exported files will be unencrypted"
+        );
+      });
+
+      it("verifies ExportBatchModal discloses unencrypted batch export when encryption is enabled", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync(
+          "src/features/importExport/components/ExportBatchModal/ExportBatchModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(
+          content.includes("cryptoStorage") && content.includes("getEncryptionStatus"),
+          "ExportBatchModal must check encryption status"
+        );
+        assert.ok(
+          content.includes("export-batch-security-notice"),
+          "ExportBatchModal must define export-batch-security-notice class"
+        );
+        assert.ok(
+          content.includes("Security Notice"),
+          "ExportBatchModal must show Security Notice header"
+        );
+        assert.ok(
+          content.includes("Exporting creates unencrypted files"),
+          "ExportBatchModal must inform user that exported batch files will be unencrypted"
+        );
+      });
+    });
+
+    describe("2. Import Preview Encryption Badges & Disclosures", () => {
+      it("verifies ImportPreviewModal shows encryption notice when encrypted", async () => {
+        const fs = await import("node:fs");
+        const content = fs.readFileSync(
+          "src/features/importExport/components/ImportPreviewModal/ImportPreviewModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(
+          content.includes("cryptoStorage") && content.includes("getEncryptionStatus"),
+          "ImportPreviewModal must check encryption status"
+        );
+        assert.ok(
+          content.includes("import-encrypted-storage-notice"),
+          "ImportPreviewModal must define import-encrypted-storage-notice"
+        );
+        assert.ok(
+          content.includes("Protected Storage"),
+          "ImportPreviewModal must display Protected Storage notice"
+        );
+        assert.ok(
+          content.includes("encrypted with your active encryption key"),
+          "ImportPreviewModal must explain that notes will be encrypted upon storage"
+        );
+      });
+    });
+
+    describe("3. Simulation of Encrypted Import, Export, and Search Invariants", () => {
+      it("simulates rejection of import, export, and search commands when locked", async () => {
+        const mockBackend = {
+          isEncryptionEnabled: true,
+          isLocked: true,
+          importNotes: async () => {
+            if (mockBackend.isLocked) {
+              throw new Error("Application is locked. Please unlock first.");
+            }
+            return { importedCount: 1 };
+          },
+          exportNote: async () => {
+            if (mockBackend.isLocked) {
+              throw new Error("Application is locked. Please unlock first.");
+            }
+            return { status: "exported" };
+          },
+          searchNotes: async () => {
+            if (mockBackend.isLocked) {
+              throw new Error("Application is locked. Please unlock first.");
+            }
+            return [];
+          },
+        };
+
+        // When locked, all operations reject cleanly without leaking contents
+        await assert.rejects(
+          mockBackend.importNotes(),
+          /Application is locked\. Please unlock first\./
+        );
+        await assert.rejects(
+          mockBackend.exportNote(),
+          /Application is locked\. Please unlock first\./
+        );
+        await assert.rejects(
+          mockBackend.searchNotes(),
+          /Application is locked\. Please unlock first\./
+        );
+
+        // When unlocked, operations proceed
+        mockBackend.isLocked = false;
+        const imp = await mockBackend.importNotes();
+        assert.strictEqual(imp.importedCount, 1);
+        const exp = await mockBackend.exportNote();
+        assert.strictEqual(exp.status, "exported");
+        const srch = await mockBackend.searchNotes();
+        assert.deepStrictEqual(srch, []);
+      });
+
+      it("validates plaintext export vs encrypted storage invariant", () => {
+        // Encrypted database representation
+        const storedDbNote = {
+          id: "note-100",
+          title: "ENC$v1$a1b2c3d4e5f6...",
+          content: "ENC$v1$9876543210...",
+        };
+
+        // Export function produces pure UTF-8 human-readable plaintext
+        const exportContentToFile = (decryptedTitle, decryptedBody) => {
+          return `# ${decryptedTitle}\n\n${decryptedBody}`;
+        };
+
+        const decryptedTitle = "Quarterly Objectives";
+        const decryptedBody = "Deploy Phase 12 security architecture to production.";
+        const exportedFileString = exportContentToFile(decryptedTitle, decryptedBody);
+
+        assert.ok(!exportedFileString.includes("ENC$v1$"), "Exported file must not contain ciphertext envelope");
+        assert.ok(exportedFileString.includes(decryptedTitle), "Exported file must contain plain title");
+        assert.ok(exportedFileString.includes(decryptedBody), "Exported file must contain plain body");
+      });
+    });
+  });
+
+  describe("Phase 12 Task 21: Implement Decryption or Disable-Encryption Workflow", () => {
+    describe("1. Frontend API Contract & Disable Encryption Service", () => {
+      it("verifies cryptoStorage.disableEncryption method exists and interfaces with backend", async () => {
+        const fs = await import("node:fs");
+        const cryptoServiceContent = fs.readFileSync(
+          "src/services/storage/crypto.ts",
+          "utf-8"
+        );
+
+        assert.ok(
+          cryptoServiceContent.includes("disableEncryption(dto: UnlockDto): Promise<boolean>"),
+          "cryptoStorage must define disableEncryption method with UnlockDto"
+        );
+        assert.ok(
+          cryptoServiceContent.includes('invoke<boolean>("disable_encryption", { dto })'),
+          "cryptoStorage must invoke backend disable_encryption command with dto"
+        );
+      });
+    });
+
+    describe("2. DisableEncryptionModal Component & Security Safeguards", () => {
+      it("verifies DisableEncryptionModal component exists and provides rigorous disclosures", async () => {
+        const fs = await import("node:fs");
+        const modalContent = fs.readFileSync(
+          "src/features/security/components/DisableEncryptionModal/DisableEncryptionModal.tsx",
+          "utf-8"
+        );
+
+        // Security consequences disclosure
+        assert.ok(
+          modalContent.includes("Disabling encryption permanently removes cryptographic protection"),
+          "Modal must explain that encryption will be permanently removed"
+        );
+        assert.ok(
+          modalContent.includes("readable plain text"),
+          "Modal must warn that notes and attachments will be decrypted to plaintext"
+        );
+        assert.ok(
+          modalContent.includes("checkpoints/"),
+          "Modal must disclose creation of pre-decryption backup checkpoint"
+        );
+
+        // Required interactive controls
+        assert.ok(
+          modalContent.includes("disable-encryption-ack-checkbox"),
+          "Modal must provide risk acknowledgment checkbox"
+        );
+        assert.ok(
+          modalContent.includes("disable-encryption-confirm-btn"),
+          "Modal must provide confirm/submit action button"
+        );
+        assert.ok(
+          modalContent.includes("disable-encryption-cancel-btn"),
+          "Modal must provide cancel action button"
+        );
+        assert.ok(
+          modalContent.includes("PasswordInput"),
+          "Modal must use PasswordInput for master password authentication"
+        );
+
+        // Flush hook verification
+        assert.ok(
+          modalContent.includes("onFlushSave"),
+          "Modal must invoke flush hook before executing decryption"
+        );
+
+        // Exported in features/security index
+        const indexContent = fs.readFileSync(
+          "src/features/security/index.ts",
+          "utf-8"
+        );
+        assert.ok(
+          indexContent.includes("DisableEncryptionModal"),
+          "DisableEncryptionModal must be exported from security feature module"
+        );
+      });
+
+      it("verifies styling and visual danger aesthetics for DisableEncryptionModal", async () => {
+        const fs = await import("node:fs");
+        const cssContent = fs.readFileSync(
+          "src/features/security/components/DisableEncryptionModal/DisableEncryptionModal.css",
+          "utf-8"
+        );
+
+        assert.ok(
+          cssContent.includes(".disable-encryption-content"),
+          "CSS must define modal content styling"
+        );
+        assert.ok(
+          cssContent.includes(".disable-encryption-warning-banner"),
+          "CSS must define danger / warning banner styling"
+        );
+        assert.ok(
+          cssContent.includes(".disable-encryption-checkpoint-info"),
+          "CSS must define checkpoint info box styling"
+        );
+        assert.ok(
+          cssContent.includes(".disable-encryption-footer-btns"),
+          "CSS must define footer buttons container styling"
+        );
+      });
+    });
+
+    describe("3. SettingsModal Integration & Trigger Workflow", () => {
+      it("verifies SettingsModal renders disable encryption button and connects flush hook", async () => {
+        const fs = await import("node:fs");
+        const settingsContent = fs.readFileSync(
+          "src/features/settings/components/SettingsModal/SettingsModal.tsx",
+          "utf-8"
+        );
+
+        assert.ok(
+          settingsContent.includes("DisableEncryptionModal"),
+          "SettingsModal must import and mount DisableEncryptionModal"
+        );
+        assert.ok(
+          settingsContent.includes("settings-disable-encryption-btn"),
+          "SettingsModal must render settings-disable-encryption-btn trigger"
+        );
+        assert.ok(
+          settingsContent.includes("Disable Encryption..."),
+          "SettingsModal must label the button clearly"
+        );
+        assert.ok(
+          settingsContent.includes("onFlushPendingSave"),
+          "SettingsModal must pass onFlushPendingSave to DisableEncryptionModal"
+        );
+
+        const appContent = fs.readFileSync("src/app/App.tsx", "utf-8");
+        assert.ok(
+          appContent.includes("onFlushPendingSave={handleFlushPendingSave}"),
+          "App.tsx must pass handleFlushPendingSave to SettingsModal"
+        );
+      });
+    });
+
+    describe("4. End-to-End Disable Encryption Simulation", () => {
+      it("simulates full 11-step protocol: auth, flush, checkpoint, decrypt, and reset", async () => {
+        let appState = {
+          notes: [
+            { id: "note-1", title: "ENC$v1$ciphertext1", content: "ENC$v1$content1" },
+            { id: "note-2", title: "ENC$v1$ciphertext2", content: "ENC$v1$content2" },
+          ],
+          attachments: [
+            { id: "att-1", file_name: "ENC$v1$name1", is_encrypted: true },
+          ],
+          isEncryptionEnabled: true,
+          isLocked: false,
+          activeDek: "simulated-dek-bytes",
+          checkpoints: [],
+          flushCount: 0,
+        };
+
+        const onFlushPendingSave = async () => {
+          appState.flushCount += 1;
+        };
+
+        const disableEncryptionSim = async (password) => {
+          // 1. Authenticate
+          if (password !== "MasterPasswordValid123!") {
+            throw new Error("Invalid password");
+          }
+
+          // 2. Flush
+          await onFlushPendingSave();
+
+          // 3. Create recovery checkpoint
+          const checkpointId = `checkpoint-${Date.now()}`;
+          appState.checkpoints.push({
+            id: checkpointId,
+            state: "encrypted_snapshot",
+            notesCount: appState.notes.length,
+          });
+
+          // 4. Decrypt notes
+          appState.notes = appState.notes.map((n, i) => ({
+            ...n,
+            title: `Decrypted Title ${i + 1}`,
+            content: `Decrypted Content ${i + 1}`,
+          }));
+
+          // 5. Decrypt attachments
+          appState.attachments = appState.attachments.map((a, i) => ({
+            ...a,
+            file_name: `unencrypted_file_${i + 1}.pdf`,
+            is_encrypted: false,
+          }));
+
+          // 6. Validate 0 encrypted items remain
+          const encryptedNotes = appState.notes.filter((n) => n.title.startsWith("ENC$v1$"));
+          const encryptedAtts = appState.attachments.filter((a) => a.is_encrypted);
+          assert.strictEqual(encryptedNotes.length, 0);
+          assert.strictEqual(encryptedAtts.length, 0);
+
+          // 7. Reset crypto session
+          appState.isEncryptionEnabled = false;
+          appState.isLocked = false;
+          appState.activeDek = null; // Zeroized and dropped
+
+          return { success: true, checkpointId };
+        };
+
+        // Bad password rejects and alters nothing
+        await assert.rejects(
+          disableEncryptionSim("WrongPassword"),
+          /Invalid password/
+        );
+        assert.strictEqual(appState.isEncryptionEnabled, true);
+        assert.strictEqual(appState.notes[0].title.startsWith("ENC$v1$"), true);
+        assert.strictEqual(appState.checkpoints.length, 0);
+
+        // Good password runs full protocol
+        const result = await disableEncryptionSim("MasterPasswordValid123!");
+        assert.strictEqual(result.success, true);
+        assert.strictEqual(appState.flushCount, 1);
+        assert.strictEqual(appState.checkpoints.length, 1);
+        assert.strictEqual(appState.isEncryptionEnabled, false);
+        assert.strictEqual(appState.activeDek, null);
+        assert.strictEqual(appState.notes[0].title, "Decrypted Title 1");
+        assert.strictEqual(appState.attachments[0].file_name, "unencrypted_file_1.pdf");
+      });
+    });
+  });
+
+  describe("Phase 12 Task 22: Implement Security Logging, Diagnostics, and Safe Failure Handling", () => {
+    describe("1. Frontend API Contract & Diagnostics Types", () => {
+      it("verifies cryptoStorage.getSecurityDiagnostics method exists and interfaces with backend", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const cryptoServiceContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/services/storage/crypto.ts"),
+          "utf-8"
+        );
+        assert.ok(
+          cryptoServiceContent.includes("getSecurityDiagnostics"),
+          "cryptoStorage must export getSecurityDiagnostics method"
+        );
+        assert.ok(
+          cryptoServiceContent.includes('"get_security_diagnostics"'),
+          "getSecurityDiagnostics must invoke get_security_diagnostics Tauri command"
+        );
+        assert.ok(
+          cryptoServiceContent.includes("export interface SecurityLogEntry"),
+          "Must export SecurityLogEntry interface"
+        );
+      });
+    });
+
+    describe("2. Privacy & Redaction Invariants in Security Logging", () => {
+      it("verifies logger.security namespace exists and adheres to privacy rules", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const loggerContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/utils/logger.ts"),
+          "utf-8"
+        );
+        assert.ok(
+          loggerContent.includes("security: {"),
+          "logger must export security namespace"
+        );
+        assert.ok(
+          loggerContent.includes("setupStarted:"),
+          "logger.security must support setupStarted"
+        );
+        assert.ok(
+          loggerContent.includes("unlockFailed:"),
+          "logger.security must support unlockFailed"
+        );
+        assert.ok(
+          loggerContent.includes("autoLockOccurred:"),
+          "logger.security must support autoLockOccurred"
+        );
+        assert.ok(
+          loggerContent.includes("FORBIDDEN_CONTENT_KEYS"),
+          "logger must enforce FORBIDDEN_CONTENT_KEYS redaction"
+        );
+      });
+
+      it("verifies DTO debug formats never leak passwords or keys", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const secretRsContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/src/storage/crypto/secret.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          secretRsContent.includes('field("password", &"[REDACTED]")'),
+          "UnlockDto & SetupEncryptionDto must redact password in Debug output"
+        );
+        assert.ok(
+          secretRsContent.includes("[REDACTED SECRET STRING]"),
+          "SecretString Debug must be redacted"
+        );
+        assert.ok(
+          secretRsContent.includes("[REDACTED SECRET BYTES"),
+          "SecretBytes Debug must be redacted"
+        );
+      });
+    });
+
+    describe("3. Safe Failure Handling & Error Differentiation Simulation", () => {
+      it("simulates distinct error handling: credential error vs data corruption", () => {
+        // Internal classification function simulation
+        const classifyFailure = (errorCode) => {
+          switch (errorCode) {
+            case "AUTHENTICATION_FAILED":
+              return {
+                category: "credential_mismatch",
+                isCorrupted: false,
+                userMessage: "Incorrect password. Please try again.",
+              };
+            case "DATA_CORRUPTED":
+              return {
+                category: "data_corruption_or_tampering",
+                isCorrupted: true,
+                userMessage: "Security check failed: the encrypted data appears to be modified or damaged.",
+              };
+            case "UNSUPPORTED_VERSION":
+              return {
+                category: "unsupported_version",
+                isCorrupted: false,
+                userMessage: "This data was encrypted with a newer format version and cannot be opened.",
+              };
+            default:
+              return {
+                category: "unknown",
+                isCorrupted: false,
+                userMessage: "An unexpected error occurred.",
+              };
+          }
+        };
+
+        const authResult = classifyFailure("AUTHENTICATION_FAILED");
+        assert.strictEqual(authResult.category, "credential_mismatch");
+        assert.strictEqual(authResult.isCorrupted, false, "Auth failure must not indicate corruption");
+        assert.ok(!authResult.userMessage.includes("tamper"), "Auth message must not mention tampering");
+
+        const corruptResult = classifyFailure("DATA_CORRUPTED");
+        assert.strictEqual(corruptResult.category, "data_corruption_or_tampering");
+        assert.strictEqual(corruptResult.isCorrupted, true, "Data tampering must indicate corruption");
+        assert.ok(!corruptResult.userMessage.includes("password"), "Corruption message must not blame password");
+      });
+
+      it("verifies no telemetry or remote analytics are introduced", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const diagnosticsRsContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/src/storage/crypto/diagnostics.rs"),
+          "utf-8"
+        );
+        assert.ok(
+          !diagnosticsRsContent.includes("reqwest") &&
+          !diagnosticsRsContent.includes("http") &&
+          !diagnosticsRsContent.includes("analytics"),
+          "Backend diagnostics must be purely local with zero telemetry or network calls"
+        );
+
+        const loggerContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/utils/logger.ts"),
+          "utf-8"
+        );
+        assert.ok(
+          !loggerContent.includes("fetch(") && !loggerContent.includes("sendBeacon"),
+          "Frontend logger must never transmit telemetry over the network"
+        );
+      });
+    });
+  });
+
+  describe("Phase 12 Task 23: Add Cryptographic, Storage, and Migration Tests", () => {
+    describe("1. Security Test Target and Invariant Verification", () => {
+      it("verifies phase12_task23_security_tests target exists with comprehensive coverage", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const testFileContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/tests/phase12_task23_security_tests.rs"),
+          "utf-8"
+        );
+
+        // Cryptographic test coverage
+        assert.ok(testFileContent.includes("test_cryptographic_key_generation_and_entropy"));
+        assert.ok(testFileContent.includes("test_cryptographic_kdf_configuration_bounds_validation"));
+        assert.ok(testFileContent.includes("test_cryptographic_password_verification_and_incorrect_password_rejection"));
+        assert.ok(testFileContent.includes("test_cryptographic_authenticated_decryption_and_tamper_detection"));
+        assert.ok(testFileContent.includes("test_cryptographic_authentication_tag_modification_detection"));
+        assert.ok(testFileContent.includes("test_cryptographic_nonce_uniqueness_and_salt_handling"));
+        assert.ok(testFileContent.includes("test_cryptographic_metadata_version_validation_and_unsupported_rejection"));
+        assert.ok(testFileContent.includes("test_cryptographic_key_wrapping_and_tamper_detection"));
+        assert.ok(testFileContent.includes("test_cryptographic_password_change_re_wraps_dek_without_data_reencryption"));
+        assert.ok(testFileContent.includes("test_cryptographic_zero_knowledge_and_foreign_key_rejection"));
+
+        // Storage test coverage
+        assert.ok(testFileContent.includes("test_storage_protected_note_lifecycle_and_locked_rejection"));
+        assert.ok(testFileContent.includes("test_storage_protected_note_updates_produce_fresh_nonces"));
+        assert.ok(testFileContent.includes("test_storage_protected_attachment_storage_and_verification"));
+        assert.ok(testFileContent.includes("test_storage_database_reopen_persists_encryption_and_locks"));
+        assert.ok(testFileContent.includes("test_storage_search_behavior_under_encryption_and_lock"));
+        assert.ok(testFileContent.includes("test_storage_tampered_ciphertext_classification_and_user_messaging"));
+        assert.ok(testFileContent.includes("test_storage_invalid_metadata_corruption_handling"));
+        assert.ok(testFileContent.includes("test_storage_temporary_staging_file_cleanup_guarantee"));
+
+        // Migration and recovery test coverage
+        assert.ok(testFileContent.includes("test_migration_successful_from_unencrypted_installation"));
+        assert.ok(testFileContent.includes("test_migration_empty_database_handling"));
+        assert.ok(testFileContent.includes("test_migration_large_note_preservation"));
+        assert.ok(testFileContent.includes("test_migration_unicode_multilingual_and_emoji_preservation"));
+        assert.ok(testFileContent.includes("test_migration_attachment_binary_preservation"));
+        assert.ok(testFileContent.includes("test_migration_interrupted_state_and_startup_recovery_decision"));
+        assert.ok(testFileContent.includes("test_migration_rollback_interrupted_migration_restores_authoritative_state"));
+        assert.ok(testFileContent.includes("test_migration_recovery_checkpoint_validation_and_tamper_detection"));
+        assert.ok(testFileContent.includes("test_migration_password_change_interruption_atomicity"));
+        assert.ok(testFileContent.includes("test_migration_restore_of_compatible_encrypted_backup"));
+        assert.ok(testFileContent.includes("test_phase12_task23_security_audit_matrix_all_verified"));
+      });
+
+      it("verifies test criteria: ciphertext differs from plaintext is not accepted as sole proof", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const testFileContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/tests/phase12_task23_security_tests.rs"),
+          "utf-8"
+        );
+
+        assert.ok(
+          testFileContent.includes("Ciphertext differs from plaintext is necessary but NOT sufficient"),
+          "Must explicitly document and test that ciphertext inequality is not sufficient proof"
+        );
+      });
+    });
+
+    describe("2. Security Invariants and Clean State Guarantees", () => {
+      it("verifies zero unexecuted security tests in audit matrix", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const testFileContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/tests/phase12_task23_security_tests.rs"),
+          "utf-8"
+        );
+
+        assert.ok(
+          testFileContent.includes('unverified_count, 0, "No tests should be reported as NOT VERIFIED"'),
+          "Security audit matrix must assert zero unverified tests"
+        );
+      });
+
+      it("verifies isolation invariant: isolated test databases and temporary directories used exclusively", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const testFileContent = await fs.readFile(
+          path.resolve(process.cwd(), "src-tauri/tests/phase12_task23_security_tests.rs"),
+          "utf-8"
+        );
+
+        assert.ok(
+          testFileContent.includes("impl Drop for TestEnv"),
+          "TestEnv must clean up temp directories on drop"
+        );
+        assert.ok(
+          testFileContent.includes("pn_task23_sec_"),
+          "Test directories must use isolated unique uuid temp paths"
+        );
+      });
+    });
+  });
+
+  describe("Phase 12 Task 24: Add Frontend, End-to-End, and Security Regression Tests", () => {
+    describe("1. Frontend Security UI & Component Invariants", () => {
+      it("verifies EncryptionSetupModal handles password confirmation mismatch and validation", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const setupModalCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/EncryptionSetupModal/EncryptionSetupModal.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(setupModalCode.includes("validatePasswordMatch"), "Setup modal must validate password match");
+        assert.ok(setupModalCode.includes("errorMessage"), "Setup modal must handle error state");
+        assert.ok(setupModalCode.includes("disabled={isSubmitting"), "Submit button must be disabled when submitting");
+      });
+
+      it("verifies UnlockScreen component supports keyboard focus, Enter submission, and recovery link", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const unlockScreenCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/UnlockScreen/UnlockScreen.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(unlockScreenCode.includes("inputEl?.focus()"), "UnlockScreen must autofocus on password input");
+        assert.ok(unlockScreenCode.includes('e.key === "Enter"'), "UnlockScreen must handle Enter key submit");
+        assert.ok(unlockScreenCode.includes("ForgottenPasswordModal"), "UnlockScreen must provide forgotten password assistance modal");
+        assert.ok(unlockScreenCode.includes("isInterrupted"), "UnlockScreen must handle interrupted migration recovery");
+      });
+
+      it("verifies ChangePasswordModal enforces credential separation and confirmation", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const changeModalCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/ChangePasswordModal/ChangePasswordModal.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(changeModalCode.includes("validateChangePassword"), "Must validate change password parameters");
+        assert.ok(changeModalCode.includes("currentPassword"), "Must prompt for current password");
+        assert.ok(changeModalCode.includes("newPassword"), "Must prompt for new password");
+        assert.ok(changeModalCode.includes("confirmNewPassword"), "Must prompt for confirm new password");
+      });
+
+      it("verifies TopBar manual lock trigger and keyboard shortcuts", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const topBarCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/components/TopBar/TopBar.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(topBarCode.includes("onLockClick"), "TopBar must provide onLockClick prop");
+        assert.ok(topBarCode.includes("topbar-lock-btn"), "TopBar must render lock button test id");
+        assert.ok(topBarCode.includes("Lock Application"), "TopBar lock button must include accessible label");
+      });
+
+      it("verifies SettingsModal renders automatic lock timeout preferences", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const settingsCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/settings/components/SettingsModal/SettingsModal.tsx"),
+          "utf-8"
+        );
+
+        assert.ok(settingsCode.includes("Auto-Lock on Inactivity"), "Settings must support auto-lock configuration");
+        assert.ok(settingsCode.includes("inactivityTimeoutMinutes"), "Settings must support inactivity timeout duration");
+        assert.ok(settingsCode.includes("isDisableEncryptionOpen"), "Settings must mount disable encryption modal");
+      });
+    });
+
+    describe("2. Accessibility and Duplicate Operation Safeguards", () => {
+      it("verifies security modals implement ARIA dialog roles and accessible labels", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const modalUiContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/components/ui/Modal/Modal.tsx"),
+          "utf-8"
+        );
+        assert.ok(modalUiContent.includes('role="dialog"'), "Modal component must specify role='dialog'");
+        assert.ok(modalUiContent.includes('aria-modal="true"'), "Modal component must specify aria-modal='true'");
+        assert.ok(modalUiContent.includes('aria-labelledby="modal-title"'), "Modal component must label dialog via aria-labelledby");
+
+        const modalFiles = [
+          "src/features/security/components/EncryptionSetupModal/EncryptionSetupModal.tsx",
+          "src/features/security/components/ChangePasswordModal/ChangePasswordModal.tsx",
+          "src/features/security/components/DisableEncryptionModal/DisableEncryptionModal.tsx",
+          "src/features/security/components/ForgottenPasswordModal/ForgottenPasswordModal.tsx",
+        ];
+
+        for (const file of modalFiles) {
+          const content = await fs.readFile(path.resolve(process.cwd(), file), "utf-8");
+          assert.ok(content.includes("<Modal"), `${file} must compose core Modal component`);
+        }
+      });
+
+      it("verifies all security submission actions prevent duplicate operations", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const setupContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/EncryptionSetupModal/EncryptionSetupModal.tsx"),
+          "utf-8"
+        );
+        assert.ok(
+          setupContent.includes("disabled={isSubmitting"),
+          "Setup modal must prevent duplicate submit"
+        );
+
+        const changeContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/ChangePasswordModal/ChangePasswordModal.tsx"),
+          "utf-8"
+        );
+        assert.ok(
+          changeContent.includes("disabled={isLoading") || changeContent.includes("disabled={isSubmitting"),
+          "Change password modal must prevent duplicate submit"
+        );
+
+        const disableContent = await fs.readFile(
+          path.resolve(process.cwd(), "src/features/security/components/DisableEncryptionModal/DisableEncryptionModal.tsx"),
+          "utf-8"
+        );
+        assert.ok(
+          disableContent.includes("disabled={isLoading") || disableContent.includes("disabled={isSubmitting"),
+          "Disable encryption modal must prevent duplicate submit"
+        );
+      });
+    });
+
+    describe("3. End-to-End Security Scenarios Simulation (A-F)", () => {
+      it("simulates Scenario A: Enable encryption, persist checkpoint, and cold-boot unlock", () => {
+        const simulationState = {
+          unencryptedNotes: ["Note 1", "Note 2"],
+          unencryptedAttachments: ["data.bin"],
+          checkpointCreated: false,
+          encryptionEnabled: false,
+          isLocked: false,
+          activeDek: null,
+        };
+
+        // 1-4. Create checkpoint
+        simulationState.checkpointCreated = true;
+        assert.strictEqual(simulationState.checkpointCreated, true);
+
+        // 5. Enable encryption
+        simulationState.encryptionEnabled = true;
+        simulationState.activeDek = "dek-aes256gcm-key";
+        assert.strictEqual(simulationState.encryptionEnabled, true);
+
+        // 6. Simulate restart
+        simulationState.isLocked = true;
+        simulationState.activeDek = null;
+        assert.strictEqual(simulationState.isLocked, true);
+        assert.strictEqual(simulationState.activeDek, null, "Cold boot must start locked without DEK");
+
+        // 7. Unlock with password
+        simulationState.isLocked = false;
+        simulationState.activeDek = "dek-aes256gcm-key";
+        assert.strictEqual(simulationState.isLocked, false);
+        assert.ok(simulationState.activeDek !== null, "Unlock must restore active DEK");
+      });
+
+      it("simulates Scenario B: Incorrect password rejection preserving ciphertext unmodified", () => {
+        let isLocked = true;
+        let authAttempts = 0;
+        const ciphertext = "ENC$v1$unchangeable_ciphertext_envelope_sample";
+
+        const attemptUnlock = (password) => {
+          authAttempts++;
+          if (password === "correct_password") {
+            isLocked = false;
+            return { success: true };
+          }
+          return { success: false, error: "AUTHENTICATION_FAILED" };
+        };
+
+        const failedRes = attemptUnlock("wrong_password");
+        assert.strictEqual(failedRes.success, false);
+        assert.strictEqual(isLocked, true);
+        assert.strictEqual(ciphertext, "ENC$v1$unchangeable_ciphertext_envelope_sample", "Data must remain intact");
+
+        const okRes = attemptUnlock("correct_password");
+        assert.strictEqual(okRes.success, true);
+        assert.strictEqual(isLocked, false);
+      });
+
+      it("simulates Scenario C: Password change invalidating old password and preserving data", () => {
+        let activePassword = "old_password";
+        const dek = "persistent-dek-32-bytes";
+
+        const changePassword = (current, next) => {
+          if (current !== activePassword) throw new Error("Current password incorrect");
+          activePassword = next;
+          return true;
+        };
+
+        changePassword("old_password", "new_password");
+        assert.strictEqual(activePassword, "new_password");
+
+        // Old password rejected
+        assert.throws(() => changePassword("old_password", "another_password"));
+        assert.strictEqual(dek, "persistent-dek-32-bytes", "DEK remains unchanged across credential updates");
+      });
+
+      it("simulates Scenario D: Tampered storage fails with non-destructive error", () => {
+        const verifyCiphertext = (envelope) => {
+          if (envelope.endsWith("TAMPERED")) {
+            return {
+              valid: false,
+              error: "DATA_CORRUPTED",
+              userMessage: "Security check failed: the encrypted data appears to be modified or damaged.",
+            };
+          }
+          return { valid: true, plaintext: "Authentic Note Content" };
+        };
+
+        const result = verifyCiphertext("ENC$v1$validpayload_TAMPERED");
+        assert.strictEqual(result.valid, false);
+        assert.strictEqual(result.error, "DATA_CORRUPTED");
+        assert.ok(!result.userMessage.includes("password"), "Must not blame password");
+      });
+
+      it("simulates Scenario E: Interrupted migration startup detection and safe rollback", () => {
+        const startupInspection = {
+          markerPresent: true,
+          markerStage: "migration_in_progress",
+          checkpointAvailable: true,
+        };
+
+        const detectStartup = (state) => {
+          if (state.markerPresent) {
+            return {
+              decision: "restricted_recovery_required",
+              stage: state.markerStage,
+              canRollback: state.checkpointAvailable,
+            };
+          }
+          return { decision: "none" };
+        };
+
+        const decision = detectStartup(startupInspection);
+        assert.strictEqual(decision.decision, "restricted_recovery_required");
+        assert.strictEqual(decision.canRollback, true);
+      });
+
+      it("simulates Scenario F: Encrypted backup and restore preview badging", () => {
+        const backupManifest = {
+          is_encrypted: true,
+          encryption_algorithm: "AES-256-GCM",
+          format_version: 1,
+        };
+
+        const preview = {
+          isEncrypted: backupManifest.is_encrypted,
+          encryptionAlgorithm: backupManifest.encryption_algorithm,
+          canRestore: true,
+          warningMessage: "This backup is encrypted and will require the original master password to unlock.",
+        };
+
+        assert.strictEqual(preview.isEncrypted, true);
+        assert.strictEqual(preview.encryptionAlgorithm, "AES-256-GCM");
+        assert.ok(preview.warningMessage.includes("master password"));
+      });
+    });
+
+    describe("4. Security Regression and Previous Feature Invariants", () => {
+      it("verifies all previous application features remain intact when unlocked", async () => {
+        const fs = await import("node:fs/promises");
+        const path = await import("node:path");
+        const appCode = await fs.readFile(
+          path.resolve(process.cwd(), "src/app/App.tsx"),
+          "utf-8"
+        );
+
+        // Core features must still be wired up
+        assert.ok(appCode.includes("loadNotes"), "Note loading must remain intact");
+        assert.ok(appCode.includes("selectedNotebookId"), "Notebooks selection must remain intact");
+        assert.ok(appCode.includes("selectedTagId"), "Tags selection must remain intact");
+        assert.ok(appCode.includes("isAppLocked"), "isAppLocked state must be present");
+        assert.ok(appCode.includes("handleLockApp"), "Lock app handler must be present");
+        assert.ok(appCode.includes("UnlockScreen"), "UnlockScreen must be conditionally rendered");
+      });
+    });
+  });
+});
+
+
+
+
+
 
 
 

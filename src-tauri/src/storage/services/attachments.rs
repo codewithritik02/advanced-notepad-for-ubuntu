@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 
-use crate::storage::attachment_storage::{AttachmentStorage, ManagedFileInfo};
+use crate::storage::attachment_storage::{
+    sanitize_original_filename, AttachmentStorage, ManagedFileInfo,
+};
+use crate::storage::crypto::SecretBytes;
 use crate::storage::errors::AttachmentError;
 use crate::storage::models::{
     Attachment, AttachmentConsistencyReport, CreateAttachmentDto, MissingManagedFileIssue,
@@ -11,32 +14,25 @@ use crate::storage::repositories::AttachmentRepository;
 
 /// High-level domain service that coordinates attachment lifecycle operations between
 /// Tauri IPC commands, managed filesystem storage, and SQLite metadata.
-///
-/// Implements Phase 7, Task 7 requirements:
-/// 1. Note validation
-/// 2. Source-file validation
-/// 3. Storage-name generation
-/// 4. Managed file copying
-/// 5. File-size and metadata verification
-/// 6. Database insertion
-/// 7. Error handling and cleanup (rollback on partial failure)
 pub struct AttachmentService;
 
 impl AttachmentService {
     /// Adds a file as an attachment to an existing active note.
-    ///
-    /// Pipeline:
-    /// 1. Note validation: Ensures note exists and is not soft-deleted.
-    /// 2. Storage operations: Inspects source file, validates bounds, generates collision-resistant
-    ///    storage name, writes staged temporary copy, verifies written size, atomically renames.
-    /// 3. Database insertion: Persists metadata linking attachment to note.
-    /// 4. Rollback safety: If database insert fails, automatically removes the newly created
-    ///    managed file to prevent storage leaks and orphans.
     pub fn add_attachment(
         conn: &Connection,
         storage: &AttachmentStorage,
         note_id: &str,
         source_path: &Path,
+    ) -> Result<Attachment, AttachmentError> {
+        Self::add_attachment_with_key(conn, storage, note_id, source_path, None)
+    }
+
+    pub fn add_attachment_with_key(
+        conn: &Connection,
+        storage: &AttachmentStorage,
+        note_id: &str,
+        source_path: &Path,
+        dek: Option<&SecretBytes>,
     ) -> Result<Attachment, AttachmentError> {
         let trimmed_note_id = note_id.trim();
         if trimmed_note_id.is_empty() {
@@ -48,8 +44,8 @@ impl AttachmentService {
         // 1. Note validation: Verify the note exists and is active
         AttachmentRepository::verify_note_eligible(conn, trimmed_note_id)?;
 
-        // 2-5. Source validation & managed storage copy
-        let stored = storage.store_file(trimmed_note_id, source_path)?;
+        // 2-5. Source validation & managed storage copy (encrypted if DEK present)
+        let stored = storage.store_file_with_key(trimmed_note_id, source_path, dek)?;
 
         // 6. Database insertion
         let create_dto = CreateAttachmentDto {
@@ -60,7 +56,7 @@ impl AttachmentService {
             file_size: stored.file_size as i64,
         };
 
-        match AttachmentRepository::create(conn, create_dto) {
+        match AttachmentRepository::create_with_key(conn, create_dto, dek) {
             Ok(attachment) => Ok(attachment),
             Err(db_err) => {
                 // 7. Rollback safety: remove newly created managed file if DB insertion failed
@@ -76,10 +72,17 @@ impl AttachmentService {
     }
 
     /// Lists attachments for a specific note, verifying the note exists.
-    /// Returns results ordered deterministically by creation timestamp and ID.
     pub fn list_attachments(
         conn: &Connection,
         note_id: &str,
+    ) -> Result<Vec<Attachment>, AttachmentError> {
+        Self::list_attachments_with_key(conn, note_id, None)
+    }
+
+    pub fn list_attachments_with_key(
+        conn: &Connection,
+        note_id: &str,
+        dek: Option<&SecretBytes>,
     ) -> Result<Vec<Attachment>, AttachmentError> {
         let trimmed_note_id = note_id.trim();
         if trimmed_note_id.is_empty() {
@@ -95,12 +98,20 @@ impl AttachmentService {
             )));
         }
 
-        let attachments = AttachmentRepository::list_by_note_id(conn, trimmed_note_id)?;
+        let attachments = AttachmentRepository::list_by_note_id_with_key(conn, trimmed_note_id, dek)?;
         Ok(attachments)
     }
 
     /// Retrieves attachment metadata by ID.
     pub fn get_attachment(conn: &Connection, id: &str) -> Result<Attachment, AttachmentError> {
+        Self::get_attachment_with_key(conn, id, None)
+    }
+
+    pub fn get_attachment_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Attachment, AttachmentError> {
         let trimmed_id = id.trim();
         if trimmed_id.is_empty() {
             return Err(AttachmentError::InvalidRequest(
@@ -108,7 +119,7 @@ impl AttachmentService {
             ));
         }
 
-        match AttachmentRepository::get_by_id(conn, trimmed_id)? {
+        match AttachmentRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
             Some(attachment) => Ok(attachment),
             None => Err(AttachmentError::AttachmentNotFound(format!(
                 "Attachment with id '{trimmed_id}' not found"
@@ -120,8 +131,6 @@ impl AttachmentService {
     /// 1. Verifies attachment metadata exists.
     /// 2. Deletes database record.
     /// 3. Removes managed file from storage.
-    ///
-    /// If the file was already missing from storage, the database deletion still succeeds cleanly.
     pub fn remove_attachment(
         conn: &Connection,
         storage: &AttachmentStorage,
@@ -158,9 +167,6 @@ impl AttachmentService {
         }
 
         // 1. Remove managed file from storage first.
-        // If the file is already missing from storage, remove_file returns Ok(()) so stale records can be cleaned up.
-        // If filesystem errors (e.g. permission denied) occur, we fail fast without deleting the database record,
-        // preserving metadata for retry and diagnostics.
         storage.remove_file(&attachment.relative_path)?;
 
         // 2. Remove from database
@@ -170,11 +176,19 @@ impl AttachmentService {
     }
 
     /// Resolves and verifies the safe filesystem path for an attachment so it can be opened.
-    /// Confirms that the file actually exists in managed storage before returning.
     pub fn get_attachment_for_open(
         conn: &Connection,
         storage: &AttachmentStorage,
         id: &str,
+    ) -> Result<PathBuf, AttachmentError> {
+        Self::get_attachment_for_open_with_key(conn, storage, id, None)
+    }
+
+    pub fn get_attachment_for_open_with_key(
+        conn: &Connection,
+        storage: &AttachmentStorage,
+        id: &str,
+        dek: Option<&SecretBytes>,
     ) -> Result<PathBuf, AttachmentError> {
         let trimmed_id = id.trim();
         if trimmed_id.is_empty() {
@@ -183,7 +197,7 @@ impl AttachmentService {
             ));
         }
 
-        let attachment = match AttachmentRepository::get_by_id(conn, trimmed_id)? {
+        let attachment = match AttachmentRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
             Some(att) => att,
             None => {
                 return Err(AttachmentError::AttachmentNotFound(format!(
@@ -197,24 +211,47 @@ impl AttachmentService {
             return Err(AttachmentError::ManagedFileMissing(attachment.relative_path));
         }
 
-        // Verify that the file exists, is a regular file, and is accessible for reading
-        match std::fs::File::open(&safe_path) {
-            Ok(_) => Ok(safe_path),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                Err(AttachmentError::PermissionDenied(attachment.relative_path))
+        // Determine whether file is encrypted (without relying on file extensions)
+        if AttachmentStorage::is_encrypted_file(&safe_path) {
+            let key = match dek {
+                Some(k) => k,
+                None => {
+                    return Err(AttachmentError::InvalidRequest(
+                        "Application is locked. Cannot open encrypted attachment without active key.".to_string(),
+                    ));
+                }
+            };
+
+            let decrypted_dir = storage.decrypted_attachments_dir();
+            std::fs::create_dir_all(&decrypted_dir).map_err(|e| {
+                AttachmentError::FileOperationFailed(format!("Failed to create decrypted temporary directory: {e}"))
+            })?;
+
+            let stored_name = attachment.relative_path.split('/').last().unwrap_or(&attachment.relative_path);
+            let aad = format!("attachments:{}:{stored_name}", attachment.note_id.trim());
+
+            let temp_file_name = format!("{}_{}", uuid::Uuid::new_v4(), sanitize_original_filename(&attachment.file_name));
+            let temp_decrypted_path = decrypted_dir.join(temp_file_name);
+
+            crate::storage::crypto::decrypt_file_to_file(&safe_path, &temp_decrypted_path, key, aad.as_bytes())
+                .map_err(|e| AttachmentError::FileOperationFailed(format!("Attachment decryption failed: {e}")))?;
+
+            Ok(temp_decrypted_path)
+        } else {
+            // Verify that the file exists, is a regular file, and is accessible for reading
+            match std::fs::File::open(&safe_path) {
+                Ok(_) => Ok(safe_path),
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    Err(AttachmentError::PermissionDenied(attachment.relative_path))
+                }
+                Err(e) => Err(AttachmentError::FileOperationFailed(format!(
+                    "Failed to access attachment file: {e}"
+                ))),
             }
-            Err(e) => Err(AttachmentError::FileOperationFailed(format!(
-                "Failed to access attachment file: {e}"
-            ))),
         }
     }
 
     /// Checks storage consistency across database attachment records and managed disk files (Phase 7, Task 21).
-    /// Detects:
-    /// - Missing managed files: DB record references a file not present on disk.
-    /// - Unreferenced managed files: File exists on disk without any matching DB record.
-    /// - Abandoned temporary staging files: Staging files (`.tmp.`) left behind by interrupted operations.
-    /// - Size mismatches: Recorded file size in SQLite differs from byte size on disk.
     pub fn check_consistency(
         conn: &Connection,
         storage: &AttachmentStorage,
@@ -251,7 +288,11 @@ impl AttachmentService {
                     });
                 }
                 Some(disk_file) => {
-                    if disk_file.file_size != att.file_size as u64 {
+                    let expected_size = att.file_size as u64;
+                    let matches_plaintext = disk_file.file_size == expected_size;
+                    let matches_encrypted = disk_file.file_size == expected_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
+
+                    if !matches_plaintext && !matches_encrypted {
                         size_mismatches.push(SizeMismatchIssue {
                             attachment_id: att.id.clone(),
                             note_id: att.note_id.clone(),
@@ -709,5 +750,159 @@ mod tests {
             Err(AttachmentError::AttachmentNotFound(_)) => {}
             other => panic!("Expected AttachmentNotFound, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_task_10_attachment_encryption_lifecycle_and_security() {
+        use crate::storage::crypto::SecretBytes;
+
+        let (conn, storage, sources_dir, _guard) = setup_test_env();
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Secure Note for Attachments".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let src_file = sources_dir.join("financial_statement.pdf");
+        let plaintext_payload = b"%PDF-1.4 Confidentially encrypted financial payload for Q3 2026!";
+        fs::write(&src_file, plaintext_payload).unwrap();
+
+        let dek = SecretBytes::new(vec![0x7A; 32]);
+
+        // 1. Add attachment with DEK
+        let attachment = AttachmentService::add_attachment_with_key(
+            &conn,
+            &storage,
+            &note.id,
+            &src_file,
+            Some(&dek),
+        )
+        .expect("Encrypted attachment creation should succeed");
+
+        assert_eq!(attachment.file_name, "financial_statement.pdf");
+        assert_eq!(attachment.file_size, plaintext_payload.len() as i64);
+        assert_eq!(attachment.mime_type, Some("application/pdf".to_string()));
+
+        // 2. Verify SQLite encryption at rest
+        let raw_db_filename: String = conn
+            .query_row(
+                "SELECT file_name FROM attachments WHERE id = ?",
+                [&attachment.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            raw_db_filename.starts_with("ENC$v1$"),
+            "SQLite file_name column MUST be encrypted with ENC$v1$, but got: {raw_db_filename}"
+        );
+        assert!(
+            !raw_db_filename.contains("financial_statement.pdf"),
+            "SQLite file_name column MUST NOT leak plaintext filename!"
+        );
+
+        // 3. Verify disk file encryption at rest
+        let stored_path = storage.resolve_safe_path(&attachment.relative_path).unwrap();
+        assert!(stored_path.exists());
+        let disk_bytes = fs::read(&stored_path).unwrap();
+
+        assert_eq!(disk_bytes[0], crate::storage::crypto::cipher::ENVELOPE_VERSION_V1);
+        assert_eq!(disk_bytes.len(), plaintext_payload.len() + 29);
+        assert!(!disk_bytes.windows(plaintext_payload.len()).any(|w| w == plaintext_payload));
+        assert!(AttachmentStorage::is_encrypted_file(&stored_path));
+
+        // 4. Listing attachments
+        // With DEK
+        let list_unlocked = AttachmentService::list_attachments_with_key(&conn, &note.id, Some(&dek)).unwrap();
+        assert_eq!(list_unlocked.len(), 1);
+        assert_eq!(list_unlocked[0].file_name, "financial_statement.pdf");
+
+        // Without DEK (locked) - must reject with locked error
+        let list_locked_err = AttachmentService::list_attachments_with_key(&conn, &note.id, None).unwrap_err();
+        match list_locked_err {
+            AttachmentError::FileOperationFailed(msg) => {
+                assert!(msg.contains("locked"), "Expected locked error message, got: {msg}");
+            }
+            other => panic!("Expected locked error, got: {other:?}"),
+        }
+
+        // 5. Opening attachment when locked vs unlocked
+        // Locked
+        let locked_res = AttachmentService::get_attachment_for_open_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            None,
+        );
+        let locked_err = locked_res.unwrap_err();
+        let err_msg = format!("{locked_err:?}");
+        assert!(err_msg.contains("locked"), "Expected locked error message, got: {err_msg}");
+
+        // Unlocked
+        let opened_path = AttachmentService::get_attachment_for_open_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            Some(&dek),
+        )
+        .expect("Unlocked get_attachment_for_open should succeed");
+
+        assert!(opened_path.exists());
+        assert!(opened_path.starts_with(storage.decrypted_attachments_dir()));
+        let opened_bytes = fs::read(&opened_path).unwrap();
+        assert_eq!(opened_bytes, plaintext_payload);
+
+        // 6. Tamper detection on disk
+        let mut tampered_bytes = disk_bytes.clone();
+        tampered_bytes[15] ^= 0xFF; // Flip bit in ciphertext
+        fs::write(&stored_path, &tampered_bytes).unwrap();
+
+        let tamper_res = AttachmentService::get_attachment_for_open_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            Some(&dek),
+        );
+        assert!(tamper_res.is_err(), "Tampered ciphertext must fail tag validation!");
+        // Restore original valid ciphertext
+        fs::write(&stored_path, &disk_bytes).unwrap();
+
+        // 7. AAD Splicing Defense (Note context binding)
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Victim Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Tamper note_id in DB to point to note2
+        conn.execute("UPDATE attachments SET note_id = ? WHERE id = ?", [&note2.id, &attachment.id]).unwrap();
+
+        let splice_res = AttachmentService::get_attachment_for_open_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            Some(&dek),
+        );
+        assert!(splice_res.is_err(), "Splicing attachment to a different note must fail AAD validation!");
+        // Restore note_id
+        conn.execute("UPDATE attachments SET note_id = ? WHERE id = ?", [&note.id, &attachment.id]).unwrap();
+
+        // 8. Consistency check tolerates encrypted file size
+        let report = AttachmentService::check_consistency(&conn, &storage).unwrap();
+        assert!(
+            report.is_consistent,
+            "Check consistency should pass for encrypted attachments (report: {report:?})"
+        );
+
+        // 9. Cleanup temporary decrypted attachments
+        assert!(opened_path.exists());
+        storage.cleanup_decrypted_attachments().unwrap();
+        assert!(!opened_path.exists(), "Decrypted temp file should be deleted after cleanup");
     }
 }

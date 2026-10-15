@@ -1,6 +1,7 @@
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension};
 use crate::storage::attachment_storage::AttachmentStorage;
-use crate::storage::errors::TrashError;
+use crate::storage::crypto::SecretBytes;
+use crate::storage::errors::{StorageError, TrashError};
 use crate::storage::models::{EmptyTrashResult, Note, PermanentDeleteResult};
 use crate::storage::repositories::NoteRepository;
 
@@ -9,14 +10,6 @@ pub struct TrashService;
 
 impl TrashService {
     /// Moves an active note into Trash (Phase 8, Task 5: Soft-Delete Service).
-    ///
-    /// Pipeline & Invariants:
-    /// 1. Validates note ID is non-empty.
-    /// 2. Verifies note exists in database.
-    /// 3. Verifies note is currently active (rejects repeated soft deletion with InvalidState).
-    /// 4. Sets is_deleted = true and records ISO RFC3339 deletion timestamp.
-    /// 5. Preserves stable note ID, content, creation timestamp, notebooks, tags, and attachments.
-    /// 6. Returns typed updated Note.
     pub fn soft_delete(conn: &Connection, note_id: &str) -> Result<Note, TrashError> {
         let trimmed_id = note_id.trim();
         if trimmed_id.is_empty() {
@@ -42,16 +35,36 @@ impl TrashService {
         Ok(updated)
     }
 
+    pub fn soft_delete_with_key(
+        conn: &Connection,
+        note_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, TrashError> {
+        let trimmed_id = note_id.trim();
+        if trimmed_id.is_empty() {
+            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
+        }
+
+        let existing = match NoteRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
+            Some(n) => n,
+            None => {
+                return Err(TrashError::NoteNotFound(format!(
+                    "Note with id '{trimmed_id}' not found"
+                )))
+            }
+        };
+
+        if existing.is_deleted {
+            return Err(TrashError::InvalidState(format!(
+                "Note with id '{trimmed_id}' is already in Trash"
+            )));
+        }
+
+        let updated = NoteRepository::soft_delete_with_key(conn, trimmed_id, dek)?;
+        Ok(updated)
+    }
+
     /// Restores a trashed note back to active state (Phase 8, Task 6: Restore Service).
-    ///
-    /// Pipeline & Invariants:
-    /// 1. Validates note ID is non-empty.
-    /// 2. Confirms note exists.
-    /// 3. Confirms note is currently trashed (rejects active notes with InvalidState).
-    /// 4. Handles deleted notebook relationships defensively (unfiles if parent notebook was removed).
-    /// 5. Clears deletion timestamp and sets is_deleted = false.
-    /// 6. Preserves stable note ID, content, creation timestamp, tags, favorites, and attachments.
-    /// 7. Returns typed restored Note.
     pub fn restore(conn: &Connection, note_id: &str) -> Result<Note, TrashError> {
         let trimmed_id = note_id.trim();
         if trimmed_id.is_empty() {
@@ -77,18 +90,36 @@ impl TrashService {
         Ok(restored)
     }
 
+    pub fn restore_with_key(
+        conn: &Connection,
+        note_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, TrashError> {
+        let trimmed_id = note_id.trim();
+        if trimmed_id.is_empty() {
+            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
+        }
+
+        let existing = match NoteRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
+            Some(n) => n,
+            None => {
+                return Err(TrashError::NoteNotFound(format!(
+                    "Note with id '{trimmed_id}' not found"
+                )))
+            }
+        };
+
+        if !existing.is_deleted {
+            return Err(TrashError::InvalidState(format!(
+                "Note with id '{trimmed_id}' is not in Trash"
+            )));
+        }
+
+        let restored = NoteRepository::restore_with_key(conn, trimmed_id, dek)?;
+        Ok(restored)
+    }
+
     /// Permanently removes a note, its cascade associations, and managed attachment files (Phase 8, Task 7: Safe Permanent Deletion).
-    ///
-    /// Validations and Invariants:
-    /// 1. Validates note ID (rejects empty or whitespace IDs with TrashError::InvalidRequest).
-    /// 2. Verifies note exists in database (rejects with TrashError::NoteNotFound).
-    /// 3. Confirms that note is currently in Trash (is_deleted == true). Rejects active notes with
-    ///    TrashError::InvalidState to guarantee normal delete cannot accidentally bypass Trash.
-    /// 4. Coordinates attachment-file cleanup via `AttachmentStorage::remove_note_directory`
-    ///    using the trusted storage abstraction (prevents path traversal and constructing paths from user strings).
-    /// 5. Removes note and related database rows (cascading note_tags, attachments metadata, FTS rows).
-    /// 6. Preserves unrelated notes, tags, notebooks, and attachments.
-    /// 7. Reports filesystem cleanup failures honestly via typed `PermanentDeleteResult`.
     pub fn permanently_delete_note(
         conn: &Connection,
         storage: &AttachmentStorage,
@@ -99,8 +130,17 @@ impl TrashService {
             return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
         }
 
-        let existing = match NoteRepository::get_by_id(conn, trimmed_id)? {
-            Some(n) => n,
+        let is_deleted: Option<bool> = conn
+            .query_row(
+                "SELECT is_deleted FROM notes WHERE id = ?1",
+                params![trimmed_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StorageError::Database)?;
+
+        let is_deleted = match is_deleted {
+            Some(d) => d,
             None => {
                 return Err(TrashError::NoteNotFound(format!(
                     "Note with id '{trimmed_id}' not found"
@@ -108,7 +148,7 @@ impl TrashService {
             }
         };
 
-        if !existing.is_deleted {
+        if !is_deleted {
             return Err(TrashError::InvalidState(format!(
                 "Note with id '{trimmed_id}' is active. Only trashed notes can be permanently deleted."
             )));
@@ -137,25 +177,40 @@ impl TrashService {
     }
 
     /// Permanently removes all notes currently in Trash (Phase 8, Task 8: Empty-Trash Service).
-    ///
-    /// Validations & Invariants:
-    /// 1. Finds all notes currently confirmed in Trash (`is_deleted = true`).
-    /// 2. If Trash is empty, immediately returns a zero-count successful result (safe no-op).
-    /// 3. Never deletes active notes.
-    /// 4. Processes each trashed note sequentially without holding an unnecessarily long transaction
-    ///    over filesystem I/O operations.
-    /// 5. For each note, coordinates attachment file cleanup via trusted storage abstraction and cascades database rows.
-    /// 6. Truthfully tracks and reports:
-    ///    - deleted_count (notes whose DB records were permanently removed)
-    ///    - failed_count (notes that failed DB removal or encountered unexpected errors)
-    ///    - attachment_cleanup_failures (note IDs where filesystem cleanup had errors)
-    ///    - errors (descriptive messages of any encountered errors)
-    /// 7. Returns typed EmptyTrashResult.
     pub fn empty_trash(
         conn: &Connection,
         storage: &AttachmentStorage,
     ) -> Result<EmptyTrashResult, TrashError> {
-        let trashed_notes = NoteRepository::list_trashed(conn)?;
+        let trashed_notes = match NoteRepository::list_trashed(conn) {
+            Ok(notes) => notes,
+            Err(_) => {
+                // If encrypted and locked, query trashed notes IDs safely
+                let mut stmt = conn
+                    .prepare("SELECT id, title, content, format, notebook_id, created_at, modified_at, is_favorite, is_pinned, is_deleted, deleted_at FROM notes WHERE is_deleted = 1")
+                    .map_err(StorageError::Database)?;
+                let stub_notes: Vec<Note> = stmt
+                    .query_map([], |row| {
+                        Ok(Note {
+                            id: row.get(0)?,
+                            title: String::new(),
+                            content: String::new(),
+                            format: row.get(3)?,
+                            notebook_id: row.get(4)?,
+                            created_at: row.get(5)?,
+                            modified_at: row.get(6)?,
+                            is_favorite: row.get::<_, i64>(7)? != 0,
+                            is_pinned: row.get::<_, i64>(8)? != 0,
+                            is_deleted: true,
+                            deleted_at: row.get(10)?,
+                        })
+                    })
+                    .map_err(StorageError::Database)?
+                    .collect::<Result<Vec<Note>, _>>()
+                    .map_err(StorageError::Database)?;
+                stub_notes
+            }
+        };
+
         if trashed_notes.is_empty() {
             return Ok(EmptyTrashResult {
                 deleted_count: 0,

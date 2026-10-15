@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection};
+use crate::storage::crypto::SecretBytes;
 use crate::storage::errors::InternalLinkError;
 use crate::storage::models::{BacklinkItem, LinkTargetLifecycle, ParsedInternalLink, ResolvedLinkTarget};
+use crate::storage::repositories::NoteRepository;
 
 pub const INTERNAL_LINK_PROTOCOL_PREFIX: &str = "notepad://note/";
 
@@ -227,6 +229,16 @@ impl InternalLinkService {
         conn: &Connection,
         target_id: &str,
     ) -> Result<ResolvedLinkTarget, InternalLinkError> {
+        Self::resolve_link_target_with_key(conn, target_id, None)
+    }
+
+    /// Resolves an internal link target by its stable note ID with optional DEK (Phase 9, Task 9; Phase 12, Task 12).
+    /// Decrypts note title if encrypted and DEK is provided.
+    pub fn resolve_link_target_with_key(
+        conn: &Connection,
+        target_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ResolvedLinkTarget, InternalLinkError> {
         let trimmed_id = target_id.trim();
         if trimmed_id.is_empty() {
             return Ok(ResolvedLinkTarget {
@@ -248,7 +260,9 @@ impl InternalLinkService {
         let mut rows = stmt.query(params![trimmed_id])?;
         if let Some(row) = rows.next()? {
             let note_id: String = row.get(0)?;
-            let title: String = row.get(1)?;
+            let raw_title: String = row.get(1)?;
+            let title = NoteRepository::decrypt_field_if_encrypted(&raw_title, &note_id, "title", dek)
+                .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
             let notebook_id: Option<String> = row.get(2)?;
             let notebook_name: Option<String> = row.get(3)?;
             let is_deleted: i64 = row.get(4)?;
@@ -294,50 +308,104 @@ impl InternalLinkService {
         conn: &Connection,
         target_note_id: &str,
     ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
+        Self::get_backlinks_with_key(conn, target_note_id, None)
+    }
+
+    /// Finds all incoming links / backlinks pointing to target note ID with optional DEK (Phase 12, Task 12).
+    /// If DEK is provided, decrypts titles and contents in memory to find backlinks and extract previews.
+    pub fn get_backlinks_with_key(
+        conn: &Connection,
+        target_note_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
         let trimmed_id = target_note_id.trim();
         if trimmed_id.is_empty() {
             return Ok(Vec::new());
         }
 
-        let like_pattern = format!("%notepad://note/{}%", trimmed_id);
-
-        let mut stmt = conn.prepare(
-            "SELECT n.id, n.title, n.content, n.notebook_id, nb.name, n.modified_at
-             FROM notes n
-             LEFT JOIN notebooks nb ON n.notebook_id = nb.id
-             WHERE n.is_deleted = 0
-               AND n.id != ?1
-               AND n.content LIKE ?2
-             ORDER BY n.modified_at DESC",
-        )?;
-
-        let mut rows = stmt.query(params![trimmed_id, like_pattern])?;
         let mut backlinks = Vec::new();
 
-        while let Some(row) = rows.next()? {
-            let source_id: String = row.get(0)?;
-            let source_title: String = row.get(1)?;
-            let content: String = row.get(2)?;
-            let notebook_id: Option<String> = row.get(3)?;
-            let notebook_name: Option<String> = row.get(4)?;
-            let modified_at: String = row.get(5)?;
+        if let Some(key) = dek {
+            let mut stmt = conn.prepare(
+                "SELECT n.id, n.title, n.content, n.notebook_id, nb.name, n.modified_at
+                 FROM notes n
+                 LEFT JOIN notebooks nb ON n.notebook_id = nb.id
+                 WHERE n.is_deleted = 0
+                   AND n.id != ?1
+                 ORDER BY n.modified_at DESC",
+            )?;
 
-            // Verify with canonical LinkParser
-            let parsed_links = LinkParser::parse_internal_links(&content);
-            if let Some(matching_link) = parsed_links.into_iter().find(|l| l.target_id == trimmed_id) {
-                let snippet = Self::extract_snippet(&content, matching_link.start_index, matching_link.end_index);
-                backlinks.push(BacklinkItem {
-                    source_note_id: source_id,
-                    source_note_title: if source_title.trim().is_empty() {
-                        "Untitled Note".to_string()
-                    } else {
-                        source_title
-                    },
-                    source_notebook_id: notebook_id,
-                    source_notebook_name: notebook_name,
-                    label_snippet: Some(snippet),
-                    modified_at,
-                });
+            let mut rows = stmt.query(params![trimmed_id])?;
+            while let Some(row) = rows.next()? {
+                let source_id: String = row.get(0)?;
+                let raw_title: String = row.get(1)?;
+                let raw_content: String = row.get(2)?;
+                let notebook_id: Option<String> = row.get(3)?;
+                let notebook_name: Option<String> = row.get(4)?;
+                let modified_at: String = row.get(5)?;
+
+                let title = NoteRepository::decrypt_field_if_encrypted(&raw_title, &source_id, "title", Some(key))
+                    .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
+                let content = NoteRepository::decrypt_field_if_encrypted(&raw_content, &source_id, "content", Some(key))
+                    .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
+
+                let parsed_links = LinkParser::parse_internal_links(&content);
+                if let Some(matching_link) = parsed_links.into_iter().find(|l| l.target_id == trimmed_id) {
+                    let snippet = Self::extract_snippet(&content, matching_link.start_index, matching_link.end_index);
+                    backlinks.push(BacklinkItem {
+                        source_note_id: source_id,
+                        source_note_title: if title.trim().is_empty() {
+                            "Untitled Note".to_string()
+                        } else {
+                            title
+                        },
+                        source_notebook_id: notebook_id,
+                        source_notebook_name: notebook_name,
+                        label_snippet: Some(snippet),
+                        modified_at,
+                    });
+                }
+            }
+        } else {
+            let like_pattern = format!("%notepad://note/{}%", trimmed_id);
+
+            let mut stmt = conn.prepare(
+                "SELECT n.id, n.title, n.content, n.notebook_id, nb.name, n.modified_at
+                 FROM notes n
+                 LEFT JOIN notebooks nb ON n.notebook_id = nb.id
+                 WHERE n.is_deleted = 0
+                   AND n.id != ?1
+                   AND n.content LIKE ?2
+                 ORDER BY n.modified_at DESC",
+            )?;
+
+            let mut rows = stmt.query(params![trimmed_id, like_pattern])?;
+
+            while let Some(row) = rows.next()? {
+                let source_id: String = row.get(0)?;
+                let source_title: String = row.get(1)?;
+                let content: String = row.get(2)?;
+                let notebook_id: Option<String> = row.get(3)?;
+                let notebook_name: Option<String> = row.get(4)?;
+                let modified_at: String = row.get(5)?;
+
+                // Verify with canonical LinkParser
+                let parsed_links = LinkParser::parse_internal_links(&content);
+                if let Some(matching_link) = parsed_links.into_iter().find(|l| l.target_id == trimmed_id) {
+                    let snippet = Self::extract_snippet(&content, matching_link.start_index, matching_link.end_index);
+                    backlinks.push(BacklinkItem {
+                        source_note_id: source_id,
+                        source_note_title: if source_title.trim().is_empty() {
+                            "Untitled Note".to_string()
+                        } else {
+                            source_title
+                        },
+                        source_notebook_id: notebook_id,
+                        source_notebook_name: notebook_name,
+                        label_snippet: Some(snippet),
+                        modified_at,
+                    });
+                }
             }
         }
 
@@ -1462,6 +1530,71 @@ mod tests {
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_shared.id).unwrap();
         assert_eq!(backlinks.len(), 15, "All 15 source notes must be indexed as backlinks");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_internal_links_encrypted_resolution_and_backlinks() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_links_enc_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = crate::storage::database::init_connection(&db_path).unwrap();
+        crate::storage::migrations::run_migrations(&mut conn).unwrap();
+
+        let dek = crate::storage::crypto::generate_dek();
+
+        // 1. Create target note with encryption
+        let target_note = NoteRepository::create_with_key(
+            &conn,
+            crate::storage::models::CreateNoteDto {
+                title: Some("Top Secret Target".to_string()),
+                content: Some("Target secret body".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        ).unwrap();
+
+        // 2. Resolve link target WITH DEK -> resolves decrypted title
+        let resolved_unlocked = InternalLinkService::resolve_link_target_with_key(
+            &conn,
+            &target_note.id,
+            Some(&dek),
+        ).unwrap();
+        assert_eq!(resolved_unlocked.title.as_deref(), Some("Top Secret Target"));
+        assert_eq!(resolved_unlocked.lifecycle, LinkTargetLifecycle::Active);
+
+        // 3. Resolve link target WITHOUT DEK -> rejects because note title is encrypted
+        let resolved_locked_err = InternalLinkService::resolve_link_target_with_key(
+            &conn,
+            &target_note.id,
+            None,
+        ).unwrap_err();
+        assert!(matches!(resolved_locked_err, InternalLinkError::Crypto(_)));
+
+        // 4. Create source note with encrypted content pointing to target
+        let link_uri = format!("notepad://note/{}", target_note.id);
+        let _source_note = NoteRepository::create_with_key(
+            &conn,
+            crate::storage::models::CreateNoteDto {
+                title: Some("Source Document".to_string()),
+                content: Some(format!("Please see confidential document [Target Note]({}) for details.", link_uri)),
+                ..Default::default()
+            },
+            Some(&dek),
+        ).unwrap();
+
+        // 5. Discover backlinks WITH DEK -> decrypts content and extracts snippet
+        let backlinks = InternalLinkService::get_backlinks_with_key(
+            &conn,
+            &target_note.id,
+            Some(&dek),
+        ).unwrap();
+        assert_eq!(backlinks.len(), 1);
+        assert_eq!(backlinks[0].source_note_title, "Source Document");
+        assert!(backlinks[0].label_snippet.is_some());
+        assert!(backlinks[0].label_snippet.as_ref().unwrap().contains("confidential document"));
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

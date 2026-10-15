@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { ExportFormat } from "../../../../services/storage/types";
 import { importExportStorage } from "../../../../services/storage/importExport";
+import { cryptoStorage } from "../../../../services/storage/crypto";
 import { pickExportDestinationFile } from "../../services/fileDialog";
 import "./ExportNoteModal.css";
 
@@ -48,6 +49,16 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
   const [selectedFormat, setSelectedFormat] = useState<ExportFormat>(defaultFormat);
   const [isExporting, setIsExporting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isEncryptionActive, setIsEncryptionActive] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      cryptoStorage
+        .getEncryptionStatus()
+        .then((st) => setIsEncryptionActive(st.enabled))
+        .catch(() => setIsEncryptionActive(false));
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -176,6 +187,15 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
           <div className="export-destination-preview">
             <span className="export-note-info-label">Target Filename</span>
             <span className="export-filename-badge">{defaultFileName}</span>
+          </div>
+
+          <div className="export-security-notice" role="note">
+            <span className="export-security-icon">ℹ️</span>
+            <span>
+              {isEncryptionActive
+                ? "Security Notice: Database encryption is active. Exporting creates unencrypted files at the chosen destination. Ensure destination folders are properly secured."
+                : "Security Notice: Exporting creates unencrypted files at the chosen destination."}
+            </span>
           </div>
 
           {errorMessage && (

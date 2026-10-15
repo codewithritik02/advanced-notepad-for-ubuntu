@@ -65,6 +65,8 @@ import {
   ImportPreview,
   ImportRequest,
 } from "../services/storage/types";
+import { UnlockScreen } from "../features/security";
+import { useAutoLock } from "../features/security";
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
@@ -100,6 +102,9 @@ export function App() {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const navigationHistory = useNoteNavigationHistory(selectedNoteId);
   const [isStorageReady, setIsStorageReady] = useState(false);
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(false);
+  const [isEncryptionEnabled, setIsEncryptionEnabled] = useState<boolean>(false);
+  const [isInterruptedMigration, setIsInterruptedMigration] = useState<boolean>(false);
   const [status, setStatus] = useState<NotesListStatus>("loading");
   const [errorMessage, setErrorMessage] = useState("Unable to load notes.");
   const [noteCounts, setNoteCounts] = useState<Record<string, number>>({});
@@ -140,6 +145,48 @@ export function App() {
     scope: ExportScope;
     notebookName?: string;
   } | null>(null);
+
+  const handleLockApp = useCallback(async () => {
+    // 1. Flush pending note edits to persistent encrypted store BEFORE purging keys (Task 13)
+    try {
+      await handleFlushPendingSave();
+    } catch (saveErr) {
+      logger.warn("Failed to flush pending save before locking:", { error: String(saveErr) });
+    }
+
+    // 2. Call backend lock command to purge DEK from memory and remove decrypted staging files
+    try {
+      await storageService.crypto.lockApplication();
+    } catch (err) {
+      logger.warn("Failed to lock backend session:", { error: String(err) });
+    }
+
+    // 3. Cancel debounced search and wipe active search queries/results
+    cancelPendingDebounce();
+    clearSearch();
+
+    // 4. Close any open dialogs/modals
+    setIsSettingsOpen(false);
+    setIsCreateBackupOpen(false);
+    setIsBackupListOpen(false);
+    setIsManageTagsOpen(false);
+
+    // 5. Clear sensitive in-memory note selection and cached notes
+    setSelectedNoteId(null);
+    setNotes([]);
+
+    // 6. Transition to dedicated UnlockScreen
+    setIsAppLocked(true);
+  }, [handleFlushPendingSave, cancelPendingDebounce, clearSearch]);
+
+  const {
+    settings: autoLockSettings,
+    updateSettings: handleUpdateAutoLockSettings,
+  } = useAutoLock({
+    isEncryptionEnabled,
+    isAppLocked,
+    onLock: handleLockApp,
+  });
 
   const [importModalState, setImportModalState] = useState<{
     isOpen: boolean;
@@ -336,6 +383,23 @@ export function App() {
       const info = await storageService.getInfo();
       if (info.is_initialized) {
         setIsStorageReady(true);
+        try {
+          const encStatus = await storageService.crypto.getEncryptionStatus();
+          setIsEncryptionEnabled(encStatus.enabled);
+          setIsInterruptedMigration(Boolean(encStatus.is_interrupted));
+          if ((encStatus.enabled && encStatus.is_locked) || encStatus.is_interrupted) {
+            setIsAppLocked(true);
+            setNotes([]);
+            setSelectedNoteId(null);
+          } else {
+            setIsAppLocked(false);
+          }
+        } catch (encErr) {
+          logger.warn("Could not retrieve encryption status:", { error: String(encErr) });
+          setIsEncryptionEnabled(false);
+          setIsInterruptedMigration(false);
+          setIsAppLocked(false);
+        }
       } else {
         setErrorMessage(
           "Unable to initialize local storage. Please check disk permissions."
@@ -357,7 +421,7 @@ export function App() {
 
   // Automatic backup lifecycle: evaluate on startup and on routine interval (Phase 11, Task 11 & Task 22)
   useEffect(() => {
-    if (!isStorageReady) return;
+    if (!isStorageReady || isAppLocked) return;
 
     const evaluateBackupHealthAndRun = async (isStartup: boolean) => {
       try {
@@ -413,11 +477,11 @@ export function App() {
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [isStorageReady, dismissedBackupCodes]);
+  }, [isStorageReady, isAppLocked, dismissedBackupCodes]);
 
   // Load global notebook, section, and tag note counts
   const refreshNoteCounts = useCallback(async () => {
-    if (!isStorageReady) return;
+    if (!isStorageReady || isAppLocked) return;
     try {
       const allActiveNotes = await storageService.notes.list();
       const counts: Record<string, number> = {};
@@ -490,7 +554,7 @@ export function App() {
       overrideNotebookId?: string | null,
       overrideTagId?: string | null
     ) => {
-      if (!isStorageReady) return;
+      if (!isStorageReady || isAppLocked) return;
       const requestId = ++activeLoadRequestIdRef.current;
       setStatus("loading");
       try {
@@ -560,15 +624,15 @@ export function App() {
         setStatus("error");
       }
     },
-    [activeNavId, selectedNotebookId, selectedTagId, isStorageReady]
+    [activeNavId, selectedNotebookId, selectedTagId, isStorageReady, isAppLocked]
   );
 
   useEffect(() => {
-    if (isStorageReady) {
+    if (isStorageReady && !isAppLocked) {
       loadNotes();
       refreshNoteCounts();
     }
-  }, [isStorageReady, loadNotes, refreshNoteCounts]);
+  }, [isStorageReady, isAppLocked, loadNotes, refreshNoteCounts]);
 
   const handleConfirmImport = useCallback(
     async (request: ImportRequest) => {
@@ -927,6 +991,7 @@ export function App() {
   );
 
   useKeyboardShortcuts({
+    enabled: !isAppLocked,
     onNewNote: handleNewNoteAction,
     onFocusSearch: handleFocusSearch,
     onOpenSettings: handleOpenSettings,
@@ -944,6 +1009,11 @@ export function App() {
     },
     onNavigateForward: () => {
       handleNavigateForward();
+    },
+    onLockApp: () => {
+      if (isEncryptionEnabled && !isAppLocked) {
+        handleLockApp();
+      }
     },
   });
 
@@ -1700,6 +1770,42 @@ export function App() {
 
   const emptyState = getEmptyStateContent();
 
+  const handleUnlockSuccess = useCallback(async () => {
+    setIsAppLocked(false);
+    setIsEncryptionEnabled(true);
+    setIsInterruptedMigration(false);
+    await loadNotes();
+    await refreshNoteCounts();
+    await loadNotebooks();
+    await loadTags();
+  }, [loadNotes, refreshNoteCounts, loadNotebooks, loadTags]);
+
+  const handleRollbackSuccess = useCallback(async () => {
+    setIsAppLocked(false);
+    setIsEncryptionEnabled(false);
+    setIsInterruptedMigration(false);
+    await loadNotes();
+    await refreshNoteCounts();
+    await loadNotebooks();
+    await loadTags();
+  }, [loadNotes, refreshNoteCounts, loadNotebooks, loadTags]);
+
+  if (isAppLocked) {
+    return (
+      <div className="app-locked-wrapper" data-theme={theme}>
+        {isInterruptedMigration ? (
+          <UnlockScreen
+            onUnlockSuccess={handleUnlockSuccess}
+            isInterrupted={isInterruptedMigration}
+            onRollbackSuccess={handleRollbackSuccess}
+          />
+        ) : (
+          <UnlockScreen onUnlockSuccess={handleUnlockSuccess} />
+        )}
+      </div>
+    );
+  }
+
   return (
     <>
       <MainLayout
@@ -1720,6 +1826,8 @@ export function App() {
             canGoForward={navigationHistory.canGoForward}
             onNavigateBack={handleNavigateBack}
             onNavigateForward={handleNavigateForward}
+            isEncryptionEnabled={isEncryptionEnabled}
+            onLockClick={handleLockApp}
           />
         }
         sidebar={
@@ -1936,6 +2044,11 @@ export function App() {
           setIsSettingsOpen(false);
           setIsBackupListOpen(true);
         }}
+        onLock={handleLockApp}
+        onFlushPendingSave={handleFlushPendingSave}
+        onEncryptionStatusChange={setIsEncryptionEnabled}
+        autoLockSettings={autoLockSettings}
+        onUpdateAutoLockSettings={handleUpdateAutoLockSettings}
       />
 
       <CreateNotebookDialog
@@ -2263,13 +2376,33 @@ export function App() {
               setActiveNavId("all-notes");
               selectAllNotes();
 
-              // 4. Reload all domain data from the newly restored database
-              await Promise.all([
-                loadNotes("all-notes", null, null),
-                loadNotebooks(),
-                loadTags(),
-                refreshNoteCounts(),
-              ]);
+              // Phase 12, Task 19: Resynchronize runtime encryption status after restore
+              let isEncryptedAndLocked = false;
+              try {
+                const encStatus = await storageService.crypto.getEncryptionStatus();
+                setIsEncryptionEnabled(encStatus.enabled);
+                setIsInterruptedMigration(Boolean(encStatus.is_interrupted));
+                if ((encStatus.enabled && encStatus.is_locked) || encStatus.is_interrupted) {
+                  setIsAppLocked(true);
+                  setNotes([]);
+                  setSelectedNoteId(null);
+                  isEncryptedAndLocked = true;
+                } else {
+                  setIsAppLocked(false);
+                }
+              } catch (encErr) {
+                logger.warn("Could not retrieve encryption status after restore:", { error: String(encErr) });
+              }
+
+              // 4. Reload domain data if app is not locked
+              if (!isEncryptedAndLocked) {
+                await Promise.all([
+                  loadNotes("all-notes", null, null),
+                  loadNotebooks(),
+                  loadTags(),
+                  refreshNoteCounts(),
+                ]);
+              }
 
               // 5. Refresh application settings (e.g. theme) from restored database
               try {
@@ -2302,12 +2435,31 @@ export function App() {
               setActiveNavId("all-notes");
               selectAllNotes();
 
-              await Promise.all([
-                loadNotes("all-notes", null, null),
-                loadNotebooks(),
-                loadTags(),
-                refreshNoteCounts(),
-              ]);
+              let rollbackLocked = false;
+              try {
+                const encStatus = await storageService.crypto.getEncryptionStatus();
+                setIsEncryptionEnabled(encStatus.enabled);
+                setIsInterruptedMigration(Boolean(encStatus.is_interrupted));
+                if ((encStatus.enabled && encStatus.is_locked) || encStatus.is_interrupted) {
+                  setIsAppLocked(true);
+                  setNotes([]);
+                  setSelectedNoteId(null);
+                  rollbackLocked = true;
+                } else {
+                  setIsAppLocked(false);
+                }
+              } catch {
+                // Ignore
+              }
+
+              if (!rollbackLocked) {
+                await Promise.all([
+                  loadNotes("all-notes", null, null),
+                  loadNotebooks(),
+                  loadTags(),
+                  refreshNoteCounts(),
+                ]);
+              }
             } finally {
               setIsRestoringBackup(false);
               setIsCancellingRestore(false);

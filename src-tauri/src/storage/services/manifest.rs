@@ -28,12 +28,34 @@ pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 pub struct ManifestManager;
 
 impl ManifestManager {
+    /// Detects whether encryption is configured and active in the given SQLite database (Phase 12, Task 19).
+    pub fn detect_encryption_from_db(conn: &rusqlite::Connection) -> (bool, Option<String>) {
+        let meta_str: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [crate::storage::crypto::metadata::ENCRYPTION_METADATA_KEY],
+                |r| r.get(0),
+            )
+            .ok();
+
+        if let Some(s) = meta_str {
+            if let Ok(meta) = crate::storage::crypto::EncryptionMetadata::from_json(&s) {
+                if meta.enabled {
+                    return (true, Some(meta.cipher_algorithm));
+                }
+            }
+        }
+        (false, None)
+    }
+
     /// Constructs an authoritative `BackupManifest` from consistent database snapshot metadata and captured attachments.
     pub fn build_manifest(
         backup_type: BackupType,
         database: BackupDatabaseInfo,
         captured_attachments: &[CapturedAttachment],
         attachments_summary: BackupAttachmentsSummary,
+        is_encrypted: bool,
+        encryption_algorithm: Option<String>,
     ) -> BackupManifest {
         let app_version = env!("CARGO_PKG_VERSION").to_string();
         let created_at = chrono::Utc::now().to_rfc3339();
@@ -65,6 +87,8 @@ impl ManifestManager {
                 includes_attachments: true,
             },
             checksums,
+            is_encrypted,
+            encryption_algorithm,
         }
     }
 
@@ -485,6 +509,8 @@ mod tests {
             db_info,
             &captured,
             summary,
+            false,
+            None,
         );
 
         assert_eq!(manifest.format_identifier, BACKUP_FORMAT_IDENTIFIER);

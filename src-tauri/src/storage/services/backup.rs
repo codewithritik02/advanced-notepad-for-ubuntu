@@ -137,14 +137,18 @@ impl BackupService {
             }
         };
 
-        // 4. Build Authoritative Backup Manifest (Task 7)
+        // 4. Build Authoritative Backup Manifest (Task 7 & Task 19)
         report_progress(BackupProgressStage::GeneratingManifest, "Generating backup manifest and cryptographic integrity inventory...", None, None, Some(50.0));
+
+        let (is_encrypted, encryption_algorithm) = ManifestManager::detect_encryption_from_db(conn);
 
         let manifest = ManifestManager::build_manifest(
             backup_type,
             db_info.clone(),
             &captured_attachments,
             attachments_summary,
+            is_encrypted,
+            encryption_algorithm,
         );
 
         // 5. Stream and write ZIP archive
@@ -282,6 +286,7 @@ impl BackupService {
             note_count: db_info.note_count + db_info.trash_count,
             attachment_count: captured_attachments.len(),
             warning_message: cleanup_warning,
+            is_encrypted,
         })
     }
 }

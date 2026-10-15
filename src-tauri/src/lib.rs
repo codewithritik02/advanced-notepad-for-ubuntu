@@ -25,7 +25,11 @@ pub fn run() {
             // Execute all pending migrations in order
             run_migrations(&mut conn).map_err(|e| e.to_string())?;
 
+            let crypto_session = storage::crypto::CryptoSession::init_and_recover(&conn, &storage_paths)
+                .map_err(|e| e.to_string())?;
+
             app.manage(storage_paths);
+            app.manage(crypto_session);
             app.manage(Database::new(conn));
             Ok(())
         })
@@ -103,6 +107,15 @@ pub fn run() {
             commands::check_and_recover_interrupted_restore,
             commands::validate_post_restore_state,
             commands::get_backup_health_status,
+            commands::get_encryption_status,
+            commands::setup_encryption,
+            commands::unlock_application,
+            commands::lock_application,
+            commands::change_encryption_password,
+            commands::rollback_interrupted_migration,
+            commands::resume_interrupted_migration,
+            commands::disable_encryption,
+            commands::get_security_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

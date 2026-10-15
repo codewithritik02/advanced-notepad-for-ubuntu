@@ -1,7 +1,15 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Modal, Button, Badge, Divider } from "../../../../components/ui";
 import { ThemeMode } from "../../../../types";
 import { BackupSettingsPanel } from "../../../backup";
+import { cryptoStorage, EncryptionStatusDto, EncryptionSetupResult } from "../../../../services/storage";
+import {
+  EncryptionSetupModal,
+  AutoLockSettings,
+  ChangePasswordModal,
+  ForgottenPasswordModal,
+  DisableEncryptionModal,
+} from "../../../security";
 import "./SettingsModal.css";
 
 export interface SettingsModalProps {
@@ -11,6 +19,11 @@ export interface SettingsModalProps {
   onSelectTheme: (theme: ThemeMode) => void;
   onCreateBackup?: () => void;
   onViewBackups?: () => void;
+  onLock?: () => Promise<void> | void;
+  onFlushPendingSave?: () => Promise<void>;
+  onEncryptionStatusChange?: (enabled: boolean) => void;
+  autoLockSettings?: AutoLockSettings;
+  onUpdateAutoLockSettings?: (settings: Partial<AutoLockSettings>) => Promise<void>;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -20,66 +33,308 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSelectTheme,
   onCreateBackup,
   onViewBackups,
+  onLock,
+  onFlushPendingSave,
+  onEncryptionStatusChange,
+  autoLockSettings,
+  onUpdateAutoLockSettings,
 }) => {
-  return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Settings & Application Info"
-      maxWidth="540px"
-      footer={
-        <Button variant="secondary" size="sm" onClick={onClose}>
-          Done
-        </Button>
+  const [encryptionStatus, setEncryptionStatus] = useState<EncryptionStatusDto | null>(null);
+  const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
+  const [isRecoveryPolicyOpen, setIsRecoveryPolicyOpen] = useState(false);
+  const [isDisableEncryptionOpen, setIsDisableEncryptionOpen] = useState(false);
+  const [isLocking, setIsLocking] = useState(false);
+  const [encryptionMessage, setEncryptionMessage] = useState<string | null>(null);
+
+  const fetchEncryptionStatus = async () => {
+    try {
+      const status = await cryptoStorage.getEncryptionStatus();
+      setEncryptionStatus(status);
+      onEncryptionStatusChange?.(status.enabled);
+    } catch {
+      // In mock/test environments or if backend not initialized, keep default
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchEncryptionStatus();
+    }
+  }, [isOpen]);
+
+  const handleLock = async () => {
+    setIsLocking(true);
+    setEncryptionMessage(null);
+    try {
+      if (onLock) {
+        await onLock();
+      } else {
+        await cryptoStorage.lockApplication();
+        await fetchEncryptionStatus();
       }
-    >
-      <div className="settings-content">
-        {/* Appearance Section */}
-        <div className="settings-section">
-          <h4 className="settings-section-title">Appearance</h4>
-          <p className="settings-section-desc">
-            Choose your preferred interface theme.
-          </p>
-          <div className="theme-toggle-group">
-            <Button
-              variant={currentTheme === "light" ? "primary" : "secondary"}
-              size="sm"
-              onClick={() => onSelectTheme("light")}
-            >
-              Light
-            </Button>
-            <Button
-              variant={currentTheme === "dark" ? "primary" : "secondary"}
-              size="sm"
-              onClick={() => onSelectTheme("dark")}
-            >
-              Dark
-            </Button>
-            <Button
-              variant={currentTheme === "system" ? "primary" : "secondary"}
-              size="sm"
-              onClick={() => onSelectTheme("system")}
-            >
-              System Default
-            </Button>
+      setEncryptionMessage("Application locked successfully.");
+      onClose();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setEncryptionMessage(`Failed to lock: ${msg}`);
+    } finally {
+      setIsLocking(false);
+    }
+  };
+
+  const handleSetupSuccess = async (_result: EncryptionSetupResult) => {
+    await fetchEncryptionStatus();
+    setEncryptionMessage("Encryption successfully configured and unlocked.");
+    onEncryptionStatusChange?.(true);
+  };
+
+  return (
+    <>
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Settings & Application Info"
+        maxWidth="540px"
+        footer={
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            Done
+          </Button>
+        }
+      >
+        <div className="settings-content">
+          {/* Appearance Section */}
+          <div className="settings-section">
+            <h4 className="settings-section-title">Appearance</h4>
+            <p className="settings-section-desc">
+              Choose your preferred interface theme.
+            </p>
+            <div className="theme-toggle-group">
+              <Button
+                variant={currentTheme === "light" ? "primary" : "secondary"}
+                size="sm"
+                onClick={() => onSelectTheme("light")}
+              >
+                Light
+              </Button>
+              <Button
+                variant={currentTheme === "dark" ? "primary" : "secondary"}
+                size="sm"
+                onClick={() => onSelectTheme("dark")}
+              >
+                Dark
+              </Button>
+              <Button
+                variant={currentTheme === "system" ? "primary" : "secondary"}
+                size="sm"
+                onClick={() => onSelectTheme("system")}
+              >
+                System Default
+              </Button>
+            </div>
           </div>
-        </div>
 
-        <Divider spacing="md" />
+          <Divider spacing="md" />
 
-        {/* Backup & Data Safety Section */}
-        <div className="settings-section">
-          <h4 className="settings-section-title">Backup & Data Safety</h4>
-          <p className="settings-section-desc">
-            Configure automatic scheduled snapshots and create on-demand manual archives.
-          </p>
-          <BackupSettingsPanel
-            onCreateManualBackup={onCreateBackup}
-            onViewBackups={onViewBackups}
-          />
-        </div>
+          {/* Backup & Data Safety Section */}
+          <div className="settings-section">
+            <h4 className="settings-section-title">Backup & Data Safety</h4>
+            <p className="settings-section-desc">
+              Configure automatic scheduled snapshots and create on-demand manual archives.
+            </p>
+            <BackupSettingsPanel
+              onCreateManualBackup={onCreateBackup}
+              onViewBackups={onViewBackups}
+            />
+          </div>
 
-        <Divider spacing="md" />
+          <Divider spacing="md" />
+
+          {/* Security & Encryption Section */}
+          <div className="settings-section">
+            <div className="settings-section-header">
+              <h4 className="settings-section-title">Security & Encryption</h4>
+              {encryptionStatus && (
+                <Badge
+                  variant={
+                    !encryptionStatus.enabled
+                      ? "default"
+                      : !encryptionStatus.is_locked
+                      ? "success"
+                      : "warning"
+                  }
+                  size="sm"
+                >
+                  {!encryptionStatus.enabled
+                    ? "Plaintext (Not Encrypted)"
+                    : !encryptionStatus.is_locked
+                    ? "Enabled & Unlocked"
+                    : "Enabled & Locked"}
+                </Badge>
+              )}
+            </div>
+            <p className="settings-section-desc">
+              Protect notes, attachments, notebooks, and tags at rest using authenticated
+              AES-256-GCM encryption with Argon2id key derivation.
+            </p>
+
+            {encryptionMessage && (
+              <p
+                style={{
+                  fontSize: "12px",
+                  color: "var(--color-accent-primary, #3b82f6)",
+                  marginBottom: "8px",
+                }}
+              >
+                {encryptionMessage}
+              </p>
+            )}
+
+            {!encryptionStatus?.enabled ? (
+              <div className="encryption-settings-actions">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setIsSetupModalOpen(true)}
+                >
+                  Enable Encryption...
+                </Button>
+              </div>
+            ) : (
+              <div className="encryption-active-panel">
+                <div className="encryption-spec-info">
+                  <span>
+                    <strong>Cipher:</strong> {encryptionStatus.algorithm || "AES-256-GCM"}
+                  </span>
+                  <span>
+                    <strong>KDF:</strong> {encryptionStatus.kdf_algorithm || "Argon2id"}
+                  </span>
+                  <span>
+                    <strong>State:</strong>{" "}
+                    {!encryptionStatus.is_locked ? "Active Session (Unlocked)" : "Locked"}
+                  </span>
+                </div>
+
+                {autoLockSettings && onUpdateAutoLockSettings && (
+                  <div className="security-autolock-config">
+                    <div className="security-autolock-divider" />
+
+                    {/* Auto-Lock Toggle */}
+                    <div className="security-toggle-row">
+                      <div className="security-toggle-label">
+                        <span className="security-toggle-title">Auto-Lock on Inactivity</span>
+                        <p className="security-toggle-desc">
+                          Automatically lock application and scrub encryption keys when inactive.
+                        </p>
+                      </div>
+                      <label className="security-switch">
+                        <input
+                          type="checkbox"
+                          id="security-autolock-toggle"
+                          checked={autoLockSettings.autoLockEnabled}
+                          onChange={(e) =>
+                            onUpdateAutoLockSettings({ autoLockEnabled: e.target.checked })
+                          }
+                        />
+                        <span className="security-slider" />
+                      </label>
+                    </div>
+
+                    {/* Timeout Duration */}
+                    <div className="security-config-row">
+                      <div className="security-config-label">
+                        <span className="security-config-title">Inactivity Timeout</span>
+                        <p className="security-config-desc">
+                          Duration of inactivity before automatically locking the workspace.
+                        </p>
+                      </div>
+                      <select
+                        id="security-timeout-select"
+                        className="security-select"
+                        value={autoLockSettings.inactivityTimeoutMinutes}
+                        disabled={!autoLockSettings.autoLockEnabled}
+                        onChange={(e) =>
+                          onUpdateAutoLockSettings({
+                            inactivityTimeoutMinutes: Number(e.target.value),
+                          })
+                        }
+                      >
+                        <option value="1">1 minute (Strict)</option>
+                        <option value="5">5 minutes</option>
+                        <option value="15">15 minutes (Default)</option>
+                        <option value="30">30 minutes</option>
+                        <option value="60">60 minutes (1 hour)</option>
+                      </select>
+                    </div>
+
+                    {/* Lock on Sleep / Resume */}
+                    <div className="security-toggle-row">
+                      <div className="security-toggle-label">
+                        <span className="security-toggle-title">Lock on System Sleep / Resume</span>
+                        <p className="security-toggle-desc">
+                          Lock immediately when the operating system enters or wakes from sleep.
+                        </p>
+                      </div>
+                      <label className="security-switch">
+                        <input
+                          type="checkbox"
+                          id="security-sleep-toggle"
+                          checked={autoLockSettings.lockOnSleep}
+                          disabled={!autoLockSettings.autoLockEnabled}
+                          onChange={(e) =>
+                            onUpdateAutoLockSettings({ lockOnSleep: e.target.checked })
+                          }
+                        />
+                        <span className="security-slider" />
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                <div className="encryption-active-actions">
+                  {!encryptionStatus.is_locked && (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        id="settings-change-password-btn"
+                        onClick={() => setIsChangePasswordOpen(true)}
+                      >
+                        Change Password...
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        id="settings-recovery-policy-btn"
+                        onClick={() => setIsRecoveryPolicyOpen(true)}
+                      >
+                        Recovery Policy...
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        id="settings-disable-encryption-btn"
+                        onClick={() => setIsDisableEncryptionOpen(true)}
+                      >
+                        Disable Encryption...
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        id="settings-lock-btn"
+                        onClick={handleLock}
+                        disabled={isLocking}
+                      >
+                        {isLocking ? "Locking..." : "Lock Application"}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Divider spacing="md" />
 
         {/* Application Info Section */}
         <div className="settings-section">
@@ -113,6 +368,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
       </div>
     </Modal>
+
+    <EncryptionSetupModal
+      isOpen={isSetupModalOpen}
+      onClose={() => setIsSetupModalOpen(false)}
+      onSuccess={handleSetupSuccess}
+    />
+
+    <ChangePasswordModal
+      isOpen={isChangePasswordOpen}
+      onClose={() => setIsChangePasswordOpen(false)}
+      onSuccess={async () => {
+        await fetchEncryptionStatus();
+        setEncryptionMessage("Password changed successfully.");
+      }}
+    />
+
+    <ForgottenPasswordModal
+      isOpen={isRecoveryPolicyOpen}
+      onClose={() => setIsRecoveryPolicyOpen(false)}
+    />
+
+    <DisableEncryptionModal
+      isOpen={isDisableEncryptionOpen}
+      onClose={() => setIsDisableEncryptionOpen(false)}
+      onFlushSave={onFlushPendingSave}
+      onSuccess={async () => {
+        setEncryptionMessage("Encryption has been successfully disabled. Storage is now stored as plain text.");
+        await fetchEncryptionStatus();
+      }}
+    />
+  </>
   );
 };
 

@@ -40,8 +40,29 @@ impl StoragePaths {
         std::fs::create_dir_all(&self.attachments_dir)?;
         std::fs::create_dir_all(&self.backups_dir)?;
         std::fs::create_dir_all(self.checkpoints_dir())?;
+        std::fs::create_dir_all(self.logs_dir())?;
         std::fs::create_dir_all(&self.config_dir)?;
+        let decrypted_dir = self.decrypted_attachments_dir();
+        if decrypted_dir.exists() {
+            let _ = std::fs::remove_dir_all(&decrypted_dir);
+        }
+        std::fs::create_dir_all(&decrypted_dir)?;
         Ok(())
+    }
+
+    /// Dedicated directory for security audit logs and diagnostics (Phase 12, Task 22).
+    pub fn logs_dir(&self) -> PathBuf {
+        self.root.join("logs")
+    }
+
+    /// Path to local security audit log file (strictly privacy-preserving, zero-telemetry).
+    pub fn security_log_file(&self) -> PathBuf {
+        self.logs_dir().join("security_audit.log")
+    }
+
+    /// Dedicated directory for temporary decrypted attachment files viewed during active unlocked sessions.
+    pub fn decrypted_attachments_dir(&self) -> PathBuf {
+        self.root.join("temp").join("decrypted_attachments")
     }
 
     /// Dedicated directory for pre-restore recovery checkpoints (Phase 11, Task 16).
@@ -52,6 +73,11 @@ impl StoragePaths {
     /// Path to marker file tracking in-progress multi-component restore activation (Phase 11, Task 19).
     pub fn restore_marker_file(&self) -> PathBuf {
         self.root.join(".restore_in_progress.json")
+    }
+
+    /// Path to marker file tracking in-progress encryption migration or state transition (Phase 12, Task 18).
+    pub fn encryption_migration_marker_file(&self) -> PathBuf {
+        self.root.join(".encryption_migration_marker.json")
     }
 
     /// Resolves and ensures the attachments directory for a specific note (`attachments/<note_id>/`).

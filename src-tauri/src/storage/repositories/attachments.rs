@@ -2,6 +2,9 @@ use chrono::Utc;
 use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
+use crate::storage::crypto::{
+    decrypt_string, encrypt_string, is_encrypted_string, SecretBytes,
+};
 use crate::storage::errors::{AttachmentError, StorageError};
 use crate::storage::models::{Attachment, CreateAttachmentDto};
 
@@ -13,7 +16,40 @@ use crate::storage::models::{Attachment, CreateAttachmentDto};
 pub struct AttachmentRepository;
 
 impl AttachmentRepository {
-    /// Maps a database row into an `Attachment` domain model.
+    fn decrypt_field_if_encrypted(
+        raw_value: &str,
+        attachment_id: &str,
+        field: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<String, StorageError> {
+        if !is_encrypted_string(raw_value) {
+            return Ok(raw_value.to_string());
+        }
+        let key = dek.ok_or_else(|| {
+            StorageError::Crypto("Application is locked. Cannot decrypt attachment metadata without active key.".to_string())
+        })?;
+        let aad = format!("attachments:{attachment_id}:{field}");
+        decrypt_string(raw_value, key, aad.as_bytes())
+            .map_err(|e| StorageError::Crypto(format!("Decryption failed for attachment {attachment_id} field {field}: {e}")))
+    }
+
+    fn encrypt_field_if_needed(
+        plain_value: &str,
+        attachment_id: &str,
+        field: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<String, StorageError> {
+        match dek {
+            Some(key) => {
+                let aad = format!("attachments:{attachment_id}:{field}");
+                encrypt_string(plain_value, key, aad.as_bytes())
+                    .map_err(|e| StorageError::Crypto(e.to_string()))
+            }
+            None => Ok(plain_value.to_string()),
+        }
+    }
+
+    /// Maps a database row into an `Attachment` domain model (raw/legacy mapping).
     fn map_row(row: &Row) -> rusqlite::Result<Attachment> {
         Ok(Attachment {
             id: row.get(0)?,
@@ -24,6 +60,23 @@ impl AttachmentRepository {
             file_size: row.get(5)?,
             created_at: row.get(6)?,
             modified_at: row.get(7)?,
+        })
+    }
+
+    fn map_row_with_key(row: &Row, dek: Option<&SecretBytes>) -> Result<Attachment, StorageError> {
+        let id: String = row.get(0).map_err(StorageError::Database)?;
+        let raw_file_name: String = row.get(2).map_err(StorageError::Database)?;
+        let file_name = Self::decrypt_field_if_encrypted(&raw_file_name, &id, "file_name", dek)?;
+
+        Ok(Attachment {
+            id,
+            note_id: row.get(1).map_err(StorageError::Database)?,
+            file_name,
+            relative_path: row.get(3).map_err(StorageError::Database)?,
+            mime_type: row.get(4).map_err(StorageError::Database)?,
+            file_size: row.get(5).map_err(StorageError::Database)?,
+            created_at: row.get(6).map_err(StorageError::Database)?,
+            modified_at: row.get(7).map_err(StorageError::Database)?,
         })
     }
 
@@ -69,6 +122,14 @@ impl AttachmentRepository {
 
     /// Inserts a new attachment record into the database.
     pub fn create(conn: &Connection, dto: CreateAttachmentDto) -> Result<Attachment, StorageError> {
+        Self::create_with_key(conn, dto, None)
+    }
+
+    pub fn create_with_key(
+        conn: &Connection,
+        dto: CreateAttachmentDto,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Attachment, StorageError> {
         if dto.note_id.trim().is_empty() {
             return Err(StorageError::Validation("note_id cannot be empty".to_string()));
         }
@@ -88,6 +149,8 @@ impl AttachmentRepository {
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let plain_file_name = dto.file_name.trim().to_string();
+        let stored_file_name = Self::encrypt_field_if_needed(&plain_file_name, &id, "file_name", dek)?;
 
         conn.execute(
             "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
@@ -95,7 +158,7 @@ impl AttachmentRepository {
             params![
                 id,
                 dto.note_id.trim(),
-                dto.file_name.trim(),
+                stored_file_name,
                 dto.relative_path.trim(),
                 dto.mime_type,
                 dto.file_size,
@@ -107,7 +170,7 @@ impl AttachmentRepository {
         Ok(Attachment {
             id,
             note_id: dto.note_id.trim().to_string(),
-            file_name: dto.file_name.trim().to_string(),
+            file_name: plain_file_name,
             relative_path: dto.relative_path.trim().to_string(),
             mime_type: dto.mime_type,
             file_size: dto.file_size,
@@ -118,6 +181,14 @@ impl AttachmentRepository {
 
     /// Retrieves an attachment record by its unique identifier.
     pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<Attachment>, StorageError> {
+        Self::get_by_id_with_key(conn, id, None)
+    }
+
+    pub fn get_by_id_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Option<Attachment>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at
              FROM attachments
@@ -126,7 +197,7 @@ impl AttachmentRepository {
 
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(Self::map_row(row)?))
+            Ok(Some(Self::map_row_with_key(row, dek)?))
         } else {
             Ok(None)
         }
@@ -136,6 +207,14 @@ impl AttachmentRepository {
     pub fn list_by_note_id(
         conn: &Connection,
         note_id: &str,
+    ) -> Result<Vec<Attachment>, StorageError> {
+        Self::list_by_note_id_with_key(conn, note_id, None)
+    }
+
+    pub fn list_by_note_id_with_key(
+        conn: &Connection,
+        note_id: &str,
+        dek: Option<&SecretBytes>,
     ) -> Result<Vec<Attachment>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at
@@ -147,7 +226,7 @@ impl AttachmentRepository {
         let mut rows = stmt.query(params![note_id.trim()])?;
         let mut attachments = Vec::new();
         while let Some(row) = rows.next()? {
-            attachments.push(Self::map_row(row)?);
+            attachments.push(Self::map_row_with_key(row, dek)?);
         }
 
         Ok(attachments)
@@ -636,5 +715,103 @@ mod tests {
             }
             other => panic!("Expected InvalidRequest for deleted note, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_task_10_attachment_repository_encryption() {
+        use crate::storage::crypto::SecretBytes;
+
+        let (conn, _guard) = setup_test_db();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Repo Encrypted Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let dek = SecretBytes::new(vec![0x33; 32]);
+
+        // 1. Create encrypted attachment record
+        let created = AttachmentRepository::create_with_key(
+            &conn,
+            CreateAttachmentDto {
+                note_id: note.id.clone(),
+                file_name: "confidential_document.pdf".to_string(),
+                relative_path: format!("{}/confidential_document.pdf", note.id),
+                mime_type: Some("application/pdf".to_string()),
+                file_size: 2048,
+            },
+            Some(&dek),
+        )
+        .unwrap();
+
+        assert_eq!(created.file_name, "confidential_document.pdf");
+
+        // Verify SQLite table stores ENC$v1$ ciphertext
+        let raw_sql_name: String = conn
+            .query_row(
+                "SELECT file_name FROM attachments WHERE id = ?",
+                [&created.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(raw_sql_name.starts_with("ENC$v1$"));
+        assert!(!raw_sql_name.contains("confidential_document"));
+
+        // 2. get_by_id_with_key
+        // Unlocked with DEK
+        let fetched_unlocked = AttachmentRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
+            .unwrap()
+            .expect("Attachment must exist");
+        assert_eq!(fetched_unlocked.file_name, "confidential_document.pdf");
+
+        // Locked without DEK fails
+        let fetched_locked = AttachmentRepository::get_by_id_with_key(&conn, &created.id, None);
+        assert!(fetched_locked.is_err(), "Reading encrypted metadata without DEK must fail");
+
+        // 3. list_by_note_id_with_key
+        let list_unlocked = AttachmentRepository::list_by_note_id_with_key(&conn, &note.id, Some(&dek)).unwrap();
+        assert_eq!(list_unlocked.len(), 1);
+        assert_eq!(list_unlocked[0].file_name, "confidential_document.pdf");
+
+        let list_locked = AttachmentRepository::list_by_note_id_with_key(&conn, &note.id, None);
+        assert!(list_locked.is_err(), "Listing encrypted metadata without DEK must fail");
+
+        // 4. Backward compatibility: Unencrypted attachment
+        let legacy = AttachmentRepository::create_with_key(
+            &conn,
+            CreateAttachmentDto {
+                note_id: note.id.clone(),
+                file_name: "legacy_unencrypted.txt".to_string(),
+                relative_path: format!("{}/legacy_unencrypted.txt", note.id),
+                mime_type: Some("text/plain".to_string()),
+                file_size: 512,
+            },
+            None,
+        )
+        .unwrap();
+
+        // Verify SQLite table stores plaintext
+        let raw_legacy_name: String = conn
+            .query_row(
+                "SELECT file_name FROM attachments WHERE id = ?",
+                [&legacy.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw_legacy_name, "legacy_unencrypted.txt");
+
+        // Read legacy attachment with or without DEK succeeds seamlessly
+        let read_legacy_no_key = AttachmentRepository::get_by_id_with_key(&conn, &legacy.id, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(read_legacy_no_key.file_name, "legacy_unencrypted.txt");
+
+        let read_legacy_with_key = AttachmentRepository::get_by_id_with_key(&conn, &legacy.id, Some(&dek))
+            .unwrap()
+            .unwrap();
+        assert_eq!(read_legacy_with_key.file_name, "legacy_unencrypted.txt");
     }
 }

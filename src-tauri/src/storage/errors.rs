@@ -46,6 +46,9 @@ pub enum StorageError {
 
     #[error("Backup error: {0}")]
     Backup(String),
+
+    #[error("Crypto error: {0}")]
+    Crypto(String),
 }
 
 #[derive(Debug, Error)]
@@ -233,6 +236,9 @@ pub enum InternalLinkError {
 
     #[error("Malformed internal link syntax: {0}")]
     MalformedLink(String),
+
+    #[error("Encryption error: {0}")]
+    Crypto(String),
 }
 
 impl InternalLinkError {
@@ -244,6 +250,7 @@ impl InternalLinkError {
             InternalLinkError::SourceNotFound(_) => "The source note could not be found.".to_string(),
             InternalLinkError::MalformedLink(_) => "Malformed internal note link.".to_string(),
             InternalLinkError::Database(_) => "A database error occurred while resolving the link.".to_string(),
+            InternalLinkError::Crypto(msg) => msg.clone(),
         }
     }
 }
@@ -496,11 +503,85 @@ impl From<BackupError> for StorageError {
     }
 }
 
+/// Strongly-typed cryptographic, encryption, and key-management errors (Phase 12, Task 6).
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CryptoError {
+    #[error("Encryption is not enabled on this installation")]
+    NotEnabled,
+
+    #[error("Unsupported encryption metadata format version: {version} (maximum supported: {max_supported})")]
+    UnsupportedFormatVersion { version: u32, max_supported: u32 },
+
+    #[error("Invalid encryption metadata: {0}")]
+    InvalidMetadata(String),
+
+    #[error("Invalid KDF configuration: {0}")]
+    InvalidKdfConfig(String),
+
+    #[error("Authentication failed: incorrect password or damaged key material")]
+    AuthenticationFailed,
+
+    #[error("Data tampering detected or corrupted ciphertext: {0}")]
+    TamperedOrCorrupted(String),
+
+    #[error("Encryption operation failed: {0}")]
+    EncryptionFailed(String),
+
+    #[error("Decryption operation failed: {0}")]
+    DecryptionFailed(String),
+
+    #[error("Application is locked. Access to protected data is restricted.")]
+    AppLocked,
+
+    #[error("Key management error: {0}")]
+    KeyManagement(String),
+
+    #[error("Migration error: {0}")]
+    MigrationError(String),
+}
+
+impl CryptoError {
+    pub fn user_friendly_message(&self) -> String {
+        match self {
+            CryptoError::NotEnabled => "Encryption is not enabled on this application.".to_string(),
+            CryptoError::UnsupportedFormatVersion { version, .. } => {
+                format!("This data was encrypted with a newer format version ({version}) and cannot be opened by this version of Personal Notepad.")
+            }
+            CryptoError::InvalidMetadata(_) => {
+                "The encryption configuration for this application is invalid or corrupted.".to_string()
+            }
+            CryptoError::InvalidKdfConfig(msg) => {
+                format!("Invalid encryption key derivation parameters: {msg}")
+            }
+            CryptoError::AuthenticationFailed => {
+                "Incorrect password. Please try again.".to_string()
+            }
+            CryptoError::TamperedOrCorrupted(_) => {
+                "Security check failed: the encrypted data appears to be modified or damaged.".to_string()
+            }
+            CryptoError::EncryptionFailed(_) => "Failed to encrypt data.".to_string(),
+            CryptoError::DecryptionFailed(_) => "Failed to decrypt protected content.".to_string(),
+            CryptoError::AppLocked => {
+                "Personal Notepad is locked. Please enter your password to unlock.".to_string()
+            }
+            CryptoError::KeyManagement(_) => "Key management error occurred.".to_string(),
+            CryptoError::MigrationError(msg) => format!("Encryption migration failed: {msg}"),
+        }
+    }
+}
+
+impl From<CryptoError> for StorageError {
+    fn from(err: CryptoError) -> Self {
+        StorageError::Crypto(err.user_friendly_message())
+    }
+}
+
 impl StorageError {
     /// Transforms technical database and IO errors into clean, user-friendly messages
     /// suitable for presentation in the UI without exposing internal SQL implementation details.
     pub fn user_friendly_message(&self) -> String {
         match self {
+            StorageError::Crypto(msg) => msg.clone(),
             StorageError::SearchError(_) => "Unable to search notes.".to_string(),
             StorageError::AttachmentError(msg) => msg.clone(),
             StorageError::InternalLink(msg) => msg.clone(),

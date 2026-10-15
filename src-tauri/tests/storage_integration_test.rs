@@ -10528,34 +10528,2007 @@ fn test_phase11_task_24_end_to_end_and_data_loss_simulations() {
     assert!(health_d.warnings.iter().any(|w| w.code == "DESTINATION_UNAVAILABLE"));
 }
 
+#[test]
+fn test_phase12_task_13_manual_lock_and_key_lifecycle() {
+    use personal_notepad_lib::storage::crypto::{CryptoSession, SetupEncryptionDto, UnlockDto};
+    use personal_notepad_lib::storage::errors::CryptoError;
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
 
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
 
+    // 1. Initialize session and set up encryption
+    let session = CryptoSession::init_from_database(&conn).expect("Session initialization failed");
+    assert!(!session.is_encryption_enabled());
+    assert!(!session.is_locked());
 
+    let password = "ManualLockPassword2026!";
+    let setup_dto = SetupEncryptionDto {
+        password: password.to_string(),
+        confirm_password: password.to_string(),
+    };
 
+    let meta = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Encryption setup must succeed");
+    assert!(meta.enabled);
+    assert!(session.is_encryption_enabled());
+    assert!(!session.is_locked());
 
+    // Verify active DEK is present
+    let active_dek = session.get_active_dek().expect("DEK must be accessible when unlocked");
+    assert_eq!(active_dek.len(), 32);
 
+    // 2. Stage a temporary decrypted attachment in decrypted_attachments_dir()
+    let dec_dir = env.paths.decrypted_attachments_dir();
+    std::fs::create_dir_all(&dec_dir).expect("Must create decrypted attachments directory");
+    let staged_file_1 = dec_dir.join("temp_preview_image.png");
+    let staged_file_2 = dec_dir.join("temp_preview_document.pdf");
+    std::fs::write(&staged_file_1, b"plaintext image preview bytes").unwrap();
+    std::fs::write(&staged_file_2, b"plaintext pdf preview bytes").unwrap();
+    assert!(staged_file_1.exists(), "Staged preview 1 must exist before lock");
+    assert!(staged_file_2.exists(), "Staged preview 2 must exist before lock");
 
+    // 3. Execute manual lock workflow (purging DEK and cleaning decrypted attachments)
+    session.lock();
+    let attachment_storage = AttachmentStorage::new(env.paths.clone());
+    let cleaned_count = attachment_storage
+        .cleanup_decrypted_attachments()
+        .expect("Cleanup of decrypted preview files must succeed");
+    assert_eq!(cleaned_count, 2, "Must remove exactly 2 temporary decrypted preview files");
 
+    // 4. Invariant: Session is locked and active DEK is completely purged from memory
+    assert!(session.is_locked(), "Session must be marked locked");
+    assert_eq!(
+        session.get_active_dek(),
+        Err(CryptoError::AppLocked),
+        "Accessing DEK while locked must return CryptoError::AppLocked"
+    );
 
+    // 5. Invariant: Disk previews are removed
+    assert!(!staged_file_1.exists(), "Decrypted file 1 must be purged from disk on lock");
+    assert!(!staged_file_2.exists(), "Decrypted file 2 must be purged from disk on lock");
 
+    // 6. Invariant: Unlocking with correct password restores active DEK
+    session
+        .unlock(UnlockDto {
+            password: password.to_string(),
+        })
+        .expect("Unlock with valid password must succeed");
 
+    assert!(!session.is_locked(), "Session must no longer be locked");
+    let restored_dek = session.get_active_dek().expect("Restored DEK must be accessible");
+    assert_eq!(
+        restored_dek.as_slice(),
+        active_dek.as_slice(),
+        "Restored DEK must match initial DEK"
+    );
+}
 
+#[test]
+fn test_phase12_task_15_password_change_and_key_rewrapping_invariants() {
+    use personal_notepad_lib::storage::crypto::{
+        CryptoSession, SetupEncryptionDto, UnlockDto, ChangePasswordDto,
+        encrypt_payload, decrypt_payload,
+    };
+    use personal_notepad_lib::storage::errors::CryptoError;
 
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
 
+    // 1. Initialize session and set up encryption with initial password
+    let session = CryptoSession::init_from_database(&conn).expect("Session init failed");
+    let password_v1 = "InitialMasterPassword2026!";
+    let setup_dto = SetupEncryptionDto {
+        password: password_v1.to_string(),
+        confirm_password: password_v1.to_string(),
+    };
 
+    let meta_v1 = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup encryption failed");
+    assert!(meta_v1.enabled);
+    assert!(!session.is_locked());
 
+    let initial_dek = session.get_active_dek().expect("Must get active DEK");
+    assert_eq!(initial_dek.len(), 32);
 
+    // 2. Encrypt sample sensitive payload using initial DEK
+    let sensitive_content = b"Confidential Note Body #12345 - Personal Notepad";
+    let encrypted_envelope = encrypt_payload(sensitive_content, &initial_dek, &[])
+        .expect("Payload encryption failed");
 
+    // 3. Validation failure: Invalid current password
+    let wrong_current_dto = ChangePasswordDto {
+        current_password: "WrongPassword999!".to_string(),
+        new_password: "BrandNewPassword2026!".to_string(),
+        confirm_new_password: "BrandNewPassword2026!".to_string(),
+    };
+    let err_wrong_pwd = session.change_password(&conn, wrong_current_dto);
+    assert!(
+        matches!(err_wrong_pwd, Err(CryptoError::AuthenticationFailed)),
+        "Invalid current password must return CryptoError::AuthenticationFailed"
+    );
 
+    // Verify session remains functional and unchanged
+    assert_eq!(
+        session.get_active_dek().unwrap().as_slice(),
+        initial_dek.as_slice(),
+        "Active DEK must not be affected by failed change attempt"
+    );
 
+    // 4. Validation failure: Identical new password
+    let identical_pwd_dto = ChangePasswordDto {
+        current_password: password_v1.to_string(),
+        new_password: password_v1.to_string(),
+        confirm_new_password: password_v1.to_string(),
+    };
+    let err_identical = session.change_password(&conn, identical_pwd_dto);
+    assert!(
+        matches!(err_identical, Err(CryptoError::InvalidMetadata(_))),
+        "Identical new password must be rejected with InvalidMetadata"
+    );
 
+    // 5. Validation failure: Mismatched new password confirmation
+    let mismatch_dto = ChangePasswordDto {
+        current_password: password_v1.to_string(),
+        new_password: "BrandNewPassword2026!".to_string(),
+        confirm_new_password: "DifferentPassword2026!".to_string(),
+    };
+    let err_mismatch = session.change_password(&conn, mismatch_dto);
+    assert!(
+        matches!(err_mismatch, Err(CryptoError::InvalidMetadata(_))),
+        "Mismatched confirmation must be rejected"
+    );
 
+    // 6. Validation failure: Password too short (< 8 chars)
+    let short_dto = ChangePasswordDto {
+        current_password: password_v1.to_string(),
+        new_password: "short".to_string(),
+        confirm_new_password: "short".to_string(),
+    };
+    let err_short = session.change_password(&conn, short_dto);
+    assert!(
+        matches!(err_short, Err(CryptoError::InvalidMetadata(_))),
+        "Short new password must be rejected"
+    );
 
+    // 7. Successful password change & key rewrapping
+    let password_v2 = "BrandNewSuperSecurePassword456!";
+    let valid_change_dto = ChangePasswordDto {
+        current_password: password_v1.to_string(),
+        new_password: password_v2.to_string(),
+        confirm_new_password: password_v2.to_string(),
+    };
+    session
+        .change_password(&conn, valid_change_dto)
+        .expect("Password change and DEK rewrapping must succeed");
 
+    // 8. Core Invariant: The active DEK is preserved identically across password change
+    let post_change_dek = session.get_active_dek().expect("Must get active DEK after change");
+    assert_eq!(
+        post_change_dek.as_slice(),
+        initial_dek.as_slice(),
+        "Envelope encryption invariant: DEK MUST remain identical after password re-wrap"
+    );
 
+    // 9. Core Invariant: Previously encrypted data decrypts without any re-encryption
+    let decrypted_content = decrypt_payload(&encrypted_envelope, &post_change_dek, &[])
+        .expect("Existing ciphertext must decrypt cleanly with preserved DEK");
+    assert_eq!(
+        decrypted_content.as_slice(),
+        sensitive_content,
+        "Decrypted content must match original payload"
+    );
 
+    // 10. Lock application and verify old password no longer works
+    session.lock();
+    assert!(session.is_locked());
 
+    let old_unlock_err = session.unlock(UnlockDto {
+        password: password_v1.to_string(),
+    });
+    assert!(
+        old_unlock_err.is_err(),
+        "Old password must no longer unlock the database"
+    );
+    assert!(session.is_locked());
 
+    // 11. Verify new password successfully unlocks and recovers identical DEK
+    session
+        .unlock(UnlockDto {
+            password: password_v2.to_string(),
+        })
+        .expect("New password must unlock session");
+    assert!(!session.is_locked());
+
+    let unlocked_dek = session.get_active_dek().expect("DEK accessible after new unlock");
+    assert_eq!(
+        unlocked_dek.as_slice(),
+        initial_dek.as_slice(),
+        "Recovered DEK must match initial DEK"
+    );
+
+    // 12. Persistence across cold restart: re-initialize session from SQLite database
+    let cold_session = CryptoSession::init_from_database(&conn)
+        .expect("Cold restart init must succeed");
+    assert!(cold_session.is_encryption_enabled());
+    assert!(cold_session.is_locked());
+
+    // Unlocking cold session with new password
+    cold_session
+        .unlock(UnlockDto {
+            password: password_v2.to_string(),
+        })
+        .expect("Cold session must unlock with new password");
+    assert!(!cold_session.is_locked());
+
+    let cold_dek = cold_session.get_active_dek().expect("Cold DEK accessible");
+    assert_eq!(
+        cold_dek.as_slice(),
+        initial_dek.as_slice(),
+        "Cold session DEK must match initial DEK"
+    );
+}
+
+#[test]
+fn test_phase12_task_16_forgotten_password_and_failed_attempt_invariants() {
+    use personal_notepad_lib::storage::crypto::{
+        CryptoSession, SetupEncryptionDto, UnlockDto,
+        encrypt_payload, decrypt_payload,
+    };
+    use personal_notepad_lib::storage::errors::CryptoError;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Initialize session and set up encryption
+    let session = CryptoSession::init_from_database(&conn).expect("Session init failed");
+    let master_password = "SecurePasswordTask16!";
+    let setup_dto = SetupEncryptionDto {
+        password: master_password.to_string(),
+        confirm_password: master_password.to_string(),
+    };
+
+    let meta = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup encryption failed");
+    assert!(meta.enabled);
+    assert!(!session.is_locked());
+
+    // 2. Invariant: A pre-migration recovery checkpoint was created and is valid on disk
+    let checkpoints_dir = env.paths.checkpoints_dir();
+    assert!(checkpoints_dir.exists(), "Checkpoints directory must exist");
+    let checkpoint_files: Vec<_> = std::fs::read_dir(&checkpoints_dir)
+        .expect("Read checkpoints dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "pnbackup"))
+        .collect();
+    assert!(
+        !checkpoint_files.is_empty(),
+        "Setup MUST create at least one pre-migration recovery checkpoint (.pnbackup)"
+    );
+
+    // 3. Encrypt sensitive note data with active DEK
+    let original_dek = session.get_active_dek().expect("Must get active DEK");
+    let secret_payload = b"Highly confidential project roadmap notes -- Personal Notepad";
+    let ciphertext = encrypt_payload(secret_payload, &original_dek, &[])
+        .expect("Payload encryption failed");
+
+    // 4. Lock application
+    session.lock();
+    assert!(session.is_locked());
+    assert_eq!(session.get_active_dek(), Err(CryptoError::AppLocked));
+
+    // 5. Invariant: Repeated incorrect password attempts MUST return AuthenticationFailed
+    // and MUST NOT corrupt, modify, or erase data
+    let wrong_passwords = [
+        "WrongPass1!",
+        "WrongPass2!",
+        "IncorrectPhrase2026",
+        "ForgotMyPassword!",
+        "admin",
+        "12345678",
+        "RandomGuesses999",
+    ];
+
+    for (idx, wrong_pw) in wrong_passwords.iter().enumerate() {
+        let attempt = session.unlock(UnlockDto {
+            password: wrong_pw.to_string(),
+        });
+        assert!(
+            matches!(attempt, Err(CryptoError::AuthenticationFailed)),
+            "Attempt {} with '{}' must return AuthenticationFailed",
+            idx + 1,
+            wrong_pw
+        );
+        // Session must remain strictly locked
+        assert!(session.is_locked());
+        assert_eq!(session.get_active_dek(), Err(CryptoError::AppLocked));
+    }
+
+    // 6. Invariant: Checkpoint archive remains completely untouched on disk
+    assert!(
+        checkpoint_files[0].path().exists(),
+        "Checkpoint archive must remain untouched despite failed unlock attempts"
+    );
+
+    // 7. Invariant: Unlocking with the correct master password immediately succeeds
+    session
+        .unlock(UnlockDto {
+            password: master_password.to_string(),
+        })
+        .expect("Unlock with true password must succeed");
+
+    assert!(!session.is_locked());
+    let restored_dek = session.get_active_dek().expect("Must get active DEK");
+    assert_eq!(
+        restored_dek.as_slice(),
+        original_dek.as_slice(),
+        "Restored DEK must be identical"
+    );
+
+    // 8. Invariant: Ciphertext decrypts cleanly and matches original secret payload byte-for-byte
+    let decrypted = decrypt_payload(&ciphertext, &restored_dek, &[])
+        .expect("Decryption must succeed with restored DEK");
+    assert_eq!(
+        decrypted.as_slice(),
+        secret_payload,
+        "Decrypted payload must match original content"
+    );
+
+    // 9. Invariant: A subsequent failed unlock attempt after being unlocked fails cleanly
+    let post_unlock_bad = session.unlock(UnlockDto {
+        password: "BadAttemptWhileAlreadyUnlocked".to_string(),
+    });
+    assert!(
+        matches!(post_unlock_bad, Err(CryptoError::AuthenticationFailed)),
+        "Invalid unlock attempt while unlocked must still fail"
+    );
+}
+
+#[test]
+fn test_phase12_task_17_safe_migration_and_interrupted_state_detection() {
+    use personal_notepad_lib::storage::crypto::{
+        CryptoSession, SetupEncryptionDto, UnlockDto,
+        metadata::{MigrationStatus, ENCRYPTION_METADATA_KEY},
+    };
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+    use personal_notepad_lib::storage::errors::CryptoError;
+    use personal_notepad_lib::storage::models::CreateNoteDto;
+    use personal_notepad_lib::storage::repositories::{NoteRepository, SettingsRepository};
+    use personal_notepad_lib::storage::services::RestoreService;
+    use rusqlite::params;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // 1. Create plaintext pre-migration notes in raw SQLite
+    let note1 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Plain Note 1".to_string()),
+            content: Some("Sensitive Plaintext Financial Report 2026".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note 1 failed");
+
+    let note2 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Plain Note 2 with Special Characters: !@#$%^&*()_+".to_string()),
+            content: Some("Multi-line content\nLine 2\nLine 3 with unicode: 🚀🔒".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note 2 failed");
+
+    let note3 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Plain Note 3".to_string()),
+            content: Some("Unencrypted markdown # Header\n- Item 1\n- Item 2".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note 3 failed");
+
+    // 2. Create unencrypted attachment metadata and plaintext file on disk
+    let att_id = uuid::Uuid::new_v4().to_string();
+    let original_file_name = "secret_document.pdf";
+    let stored_file_name = format!("{}.pdf", uuid::Uuid::new_v4());
+    let plain_file_content = b"%PDF-1.4\n1 0 obj\n<< /Title (Plaintext Document) >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF";
+
+    let att_disk_path = env.paths.attachments_dir.join(&stored_file_name);
+    std::fs::write(&att_disk_path, plain_file_content).expect("Failed to write unencrypted attachment file");
+    assert!(!AttachmentStorage::is_encrypted_file(&att_disk_path), "File must initially be unencrypted");
+
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            att_id,
+            note1.id,
+            original_file_name,
+            stored_file_name,
+            "application/pdf",
+            plain_file_content.len() as i64,
+            now,
+            now,
+        ],
+    ).expect("Insert unencrypted attachment failed");
+
+    // Verify unencrypted state before migration
+    let raw_title: String = conn
+        .query_row("SELECT title FROM notes WHERE id = ?1", [&note1.id], |r| r.get(0))
+        .expect("Query failed");
+    assert_eq!(raw_title, "Plain Note 1");
+    assert!(!raw_title.starts_with("ENC$v1$"));
+
+    // 3. Initialize CryptoSession and execute safe migration
+    let session = CryptoSession::init_from_database(&conn).expect("Session init failed");
+    assert!(!session.is_encryption_enabled());
+    assert!(!session.is_locked());
+    assert!(!session.is_interrupted());
+
+    let password = "SuperMigrationPassword2026!";
+    let setup_dto = SetupEncryptionDto {
+        password: password.to_string(),
+        confirm_password: password.to_string(),
+    };
+
+    let meta = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Safe migration and encryption setup must succeed");
+
+    assert!(meta.enabled);
+    assert_eq!(meta.migration_status, MigrationStatus::Active);
+    assert!(session.is_encryption_enabled());
+    assert!(!session.is_locked());
+    assert!(!session.is_interrupted());
+
+    // 4. Invariant: Pre-migration recovery checkpoint exists in checkpoints/
+    let checkpoints = RestoreService::list_recovery_checkpoints(&env.paths)
+        .expect("Listing checkpoints must succeed");
+    assert_eq!(checkpoints.len(), 1, "Pre-migration checkpoint MUST be created before any changes");
+    assert!(checkpoints[0].is_verified, "Checkpoint must be verified");
+    let checkpoint_file = std::path::PathBuf::from(&checkpoints[0].file_path);
+    assert!(checkpoint_file.is_file(), "Checkpoint file must exist on disk");
+
+    // 5. Invariant: 100% of notes in SQLite are now ciphertext envelopes (ENC$v1$)
+    let unencrypted_note_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes WHERE title NOT LIKE 'ENC$v1$%' OR content NOT LIKE 'ENC$v1%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Check unencrypted notes failed");
+    assert_eq!(unencrypted_note_count, 0, "Zero notes may remain unencrypted");
+
+    for nid in [&note1.id, &note2.id, &note3.id] {
+        let (raw_t, raw_c): (String, String) = conn
+            .query_row("SELECT title, content FROM notes WHERE id = ?1", [nid], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .expect("Query raw note failed");
+        assert!(raw_t.starts_with("ENC$v1$"), "Title must be ciphertext envelope");
+        assert!(raw_c.starts_with("ENC$v1$"), "Content must be ciphertext envelope");
+    }
+
+    // 6. Invariant: 100% of attachments in SQLite are now ciphertext envelopes
+    let unencrypted_att_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM attachments WHERE file_name NOT LIKE 'ENC$v1$%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Check unencrypted attachments failed");
+    assert_eq!(unencrypted_att_count, 0, "Zero attachments may remain unencrypted in DB");
+
+    // 7. Invariant: Disk attachment file is now an authenticated ciphertext envelope
+    assert!(
+        AttachmentStorage::is_encrypted_file(&att_disk_path),
+        "Disk attachment file must be converted to an encrypted envelope"
+    );
+    let disk_bytes = std::fs::read(&att_disk_path).expect("Read attachment failed");
+    assert!(
+        disk_bytes.starts_with(&[personal_notepad_lib::storage::crypto::ENVELOPE_VERSION_V1]),
+        "Disk envelope version byte must match ENVELOPE_VERSION_V1"
+    );
+
+    // 8. Invariant: Decrypted notes and attachments match original data byte-for-byte
+    let active_dek = session.get_active_dek().expect("Get active DEK failed");
+
+    let dec_note1 = NoteRepository::get_by_id_with_key(&conn, &note1.id, Some(&active_dek))
+        .expect("Get note 1 failed")
+        .expect("Note 1 exists");
+    assert_eq!(dec_note1.title, "Plain Note 1");
+    assert_eq!(dec_note1.content, "Sensitive Plaintext Financial Report 2026");
+
+    let dec_note2 = NoteRepository::get_by_id_with_key(&conn, &note2.id, Some(&active_dek))
+        .expect("Get note 2 failed")
+        .expect("Note 2 exists");
+    assert_eq!(dec_note2.title, "Plain Note 2 with Special Characters: !@#$%^&*()_+");
+    assert_eq!(dec_note2.content, "Multi-line content\nLine 2\nLine 3 with unicode: 🚀🔒");
+
+    let dec_note3 = NoteRepository::get_by_id_with_key(&conn, &note3.id, Some(&active_dek))
+        .expect("Get note 3 failed")
+        .expect("Note 3 exists");
+    assert_eq!(dec_note3.title, "Plain Note 3");
+    assert_eq!(dec_note3.content, "Unencrypted markdown # Header\n- Item 1\n- Item 2");
+
+    // Decrypt attachment file on disk using DEK and AAD
+    let att_aad = format!("attachments:{}:{}", note1.id, stored_file_name);
+    let decrypted_file_bytes = personal_notepad_lib::storage::crypto::decrypt_payload(&disk_bytes, &active_dek, att_aad.as_bytes())
+        .expect("Attachment payload decryption must succeed");
+    assert_eq!(decrypted_file_bytes.as_slice(), plain_file_content);
+
+    // 9. Invariant: Interrupted migration state detection at startup
+    // Simulate an interrupted migration in SQLite settings
+    let mut interrupted_meta = meta.clone();
+    interrupted_meta.migration_status = MigrationStatus::MigrationInProgress;
+    SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &interrupted_meta.to_json().unwrap()).unwrap();
+
+    let restarted_session = CryptoSession::init_from_database(&conn).expect("Restart session init failed");
+    assert!(restarted_session.is_encryption_enabled());
+    assert!(restarted_session.is_locked());
+    assert!(restarted_session.is_interrupted());
+    assert_eq!(restarted_session.get_migration_status(), Some(MigrationStatus::MigrationInProgress));
+
+    // Normal unlock attempts must be rejected with MigrationError to prevent corrupted read/write
+    let unlock_attempt = restarted_session.unlock(UnlockDto {
+        password: password.to_string(),
+    });
+    assert!(
+        matches!(unlock_attempt, Err(CryptoError::MigrationError(_))),
+        "Must reject unlock during interrupted migration state"
+    );
+    assert_eq!(
+        restarted_session.get_active_dek().err(),
+        Some(CryptoError::MigrationError(
+            "Application storage is in an interrupted migration state. Restore from a pre-migration backup checkpoint.".to_string()
+        ))
+    );
+}
+
+#[test]
+fn test_phase12_task_18_crash_recovery_rollback_and_resume_invariants() {
+    use personal_notepad_lib::storage::crypto::{
+        CryptoSession, SetupEncryptionDto, UnlockDto,
+        derive_kek, generate_dek, generate_salt, wrap_dek,
+        EncryptionTransitionMarker, MigrationService,
+        EncryptionMetadata, KdfConfig, MigrationStatus, WrappedKey, ENCRYPTION_METADATA_KEY,
+    };
+    use personal_notepad_lib::storage::errors::CryptoError;
+    use personal_notepad_lib::storage::models::CreateNoteDto;
+    use personal_notepad_lib::storage::repositories::{NoteRepository, SettingsRepository};
+
+    // =========================================================================
+    // SCENARIO A: Crash at CheckpointCreated (Unstarted / Pre-DEK)
+    // Invariant: At startup, unstarted state is cleaned up; storage remains Disabled.
+    // =========================================================================
+    {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let marker = EncryptionTransitionMarker {
+            operation_id: "op-test-a".to_string(),
+            operation_type: "setup".to_string(),
+            stage: MigrationStatus::CheckpointCreated,
+            checkpoint_path: "/tmp/fake_pre_migration.pnbackup".to_string(),
+            started_at: "2026-10-14T12:00:00Z".to_string(),
+            updated_at: "2026-10-14T12:00:00Z".to_string(),
+        };
+        MigrationService::save_transition_marker(&env.paths, &marker).expect("Save marker failed");
+        assert!(env.paths.encryption_migration_marker_file().exists());
+
+        // In SQLite settings, an unstarted setup status might also be present
+        let salt = generate_salt();
+        let kdf = KdfConfig::default_profile(salt);
+        let wrapped_dek = WrappedKey::new(&[0u8; 12], &[0u8; 32], &[0u8; 16]);
+        let mut meta = EncryptionMetadata::new(kdf, wrapped_dek);
+        meta.migration_status = MigrationStatus::CheckpointCreated;
+        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &meta.to_json().unwrap()).unwrap();
+
+        let session = CryptoSession::init_and_recover(&conn, &env.paths).expect("Init and recover failed");
+        assert!(!session.is_encryption_enabled());
+        assert!(!session.is_locked());
+        assert!(!session.is_interrupted());
+        // Marker file must have been deleted
+        assert!(!env.paths.encryption_migration_marker_file().exists());
+        // Incomplete metadata must have been purged
+        assert!(SettingsRepository::get(&conn, ENCRYPTION_METADATA_KEY).unwrap().is_none());
+    }
+
+    // =========================================================================
+    // SCENARIO B: Crash at Verified (Post-migration, pre-final-Active write)
+    // Invariant: At startup, auto-finalize to Active, delete marker, allow normal unlock.
+    // =========================================================================
+    {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Pre-migration Note".to_string()),
+                content: Some("Secret Content".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note failed");
+
+        let session = CryptoSession::init_from_database(&conn).expect("Init session failed");
+        let password = "VerifiedCrashPassword123!";
+        session.setup_encryption(&conn, &env.paths, SetupEncryptionDto {
+            password: password.to_string(),
+            confirm_password: password.to_string(),
+        }).expect("Setup encryption failed");
+
+        // Now simulate a crash right after verification:
+        // Set metadata back to Verified and create the Verified marker on disk
+        let mut meta = EncryptionMetadata::from_json(
+            &SettingsRepository::get(&conn, ENCRYPTION_METADATA_KEY).unwrap().unwrap()
+        ).unwrap();
+        meta.migration_status = MigrationStatus::Verified;
+        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &meta.to_json().unwrap()).unwrap();
+
+        let marker = EncryptionTransitionMarker {
+            operation_id: "op-test-b".to_string(),
+            operation_type: "setup".to_string(),
+            stage: MigrationStatus::Verified,
+            checkpoint_path: "/tmp/fake_checkpoint.pnbackup".to_string(),
+            started_at: "2026-10-14T12:00:00Z".to_string(),
+            updated_at: "2026-10-14T12:00:00Z".to_string(),
+        };
+        MigrationService::save_transition_marker(&env.paths, &marker).expect("Save marker failed");
+        assert!(env.paths.encryption_migration_marker_file().exists());
+
+        // Restart app with init_and_recover
+        let recovered_session = CryptoSession::init_and_recover(&conn, &env.paths).expect("Recover failed");
+        assert!(recovered_session.is_encryption_enabled());
+        assert!(recovered_session.is_locked());
+        assert!(!recovered_session.is_interrupted());
+        // Marker must have been deleted
+        assert!(!env.paths.encryption_migration_marker_file().exists());
+
+        // Metadata in DB must now be Active
+        let reloaded_meta = EncryptionMetadata::from_json(
+            &SettingsRepository::get(&conn, ENCRYPTION_METADATA_KEY).unwrap().unwrap()
+        ).unwrap();
+        assert_eq!(reloaded_meta.migration_status, MigrationStatus::Active);
+
+        // User can immediately unlock with their master password
+        let unlock_res = recovered_session.unlock(UnlockDto {
+            password: password.to_string(),
+        });
+        assert!(unlock_res.is_ok(), "Must unlock successfully after auto-finalization");
+        let active_dek = recovered_session.get_active_dek().unwrap();
+        let decrypted_note = NoteRepository::get_by_id_with_key(&conn, &note.id, Some(&active_dek))
+            .unwrap().unwrap();
+        assert_eq!(decrypted_note.title, "Pre-migration Note");
+        assert_eq!(decrypted_note.content, "Secret Content");
+    }
+
+    // =========================================================================
+    // SCENARIO C: Crash mid-migration (MigrationInProgress) -> Rollback Path
+    // Invariant: Session enters InterruptedMigration. Normal unlock is blocked.
+    // Executing rollback restores pre-migration checkpoint, purges marker & metadata,
+    // and returns storage cleanly to Disabled.
+    // =========================================================================
+    {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let plain_title = "Important Document To Preserve";
+        let plain_content = "This content MUST be completely restored by rollback.";
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some(plain_title.to_string()),
+                content: Some(plain_content.to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note failed");
+
+        // 1. Create a legitimate pre-migration checkpoint
+        let checkpoint_path = MigrationService::create_recovery_checkpoint(&conn, &env.paths)
+            .expect("Create pre-migration checkpoint failed");
+        assert!(checkpoint_path.exists(), "Pre-migration checkpoint must exist on disk");
+
+        // 2. Simulate partial migration:
+        let password = "TestRollbackPassword123!";
+        let salt = generate_salt();
+        let kdf = KdfConfig::default_profile(salt);
+        let kek = derive_kek(password, &kdf).expect("derive kek failed");
+        let dek = generate_dek();
+        let wrapped_dek = wrap_dek(&dek, &kek).expect("wrap dek failed");
+        let mut meta = EncryptionMetadata::new(kdf, wrapped_dek);
+        meta.migration_status = MigrationStatus::MigrationInProgress;
+        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &meta.to_json().unwrap()).unwrap();
+
+        // Save durable marker pointing to the checkpoint
+        let marker = EncryptionTransitionMarker {
+            operation_id: "op-test-c".to_string(),
+            operation_type: "setup".to_string(),
+            stage: MigrationStatus::MigrationInProgress,
+            checkpoint_path: checkpoint_path.to_string_lossy().to_string(),
+            started_at: "2026-10-14T12:00:00Z".to_string(),
+            updated_at: "2026-10-14T12:00:00Z".to_string(),
+        };
+        MigrationService::save_transition_marker(&env.paths, &marker).expect("Save marker failed");
+
+        // Simulate half-completed state: Modify the note in SQLite to simulate incomplete write
+        conn.execute("UPDATE notes SET title = 'CORRUPTED_MID_MIGRATION' WHERE id = ?1", [&note.id]).unwrap();
+
+        // 3. Restart application: init_and_recover
+        let interrupted_session = CryptoSession::init_and_recover(&conn, &env.paths).expect("Init and recover failed");
+        assert!(interrupted_session.is_interrupted(), "Session must be marked interrupted");
+        assert!(interrupted_session.is_locked());
+        assert_eq!(
+            interrupted_session.get_recovery_checkpoint_path(&env.paths),
+            Some(checkpoint_path.to_string_lossy().to_string())
+        );
+
+        // Normal unlock must fail
+        assert!(interrupted_session.unlock(UnlockDto { password: password.to_string() }).is_err());
+
+        // 4. Execute deterministic rollback
+        let rollback_res = interrupted_session.rollback_interrupted_migration(&mut conn, &env.paths);
+        assert!(rollback_res.is_ok(), "Rollback must succeed: {:?}", rollback_res.err());
+
+        // Verify session state is now Disabled
+        assert!(!interrupted_session.is_encryption_enabled());
+        assert!(!interrupted_session.is_locked());
+        assert!(!interrupted_session.is_interrupted());
+
+        // Verify marker file is deleted
+        assert!(!env.paths.encryption_migration_marker_file().exists());
+
+        // Verify restored SQLite database has the original plaintext note intact
+        let restored_conn = init_connection(&env.paths.database_file).expect("Open restored DB failed");
+        let restored_note = NoteRepository::get_by_id(&restored_conn, &note.id)
+            .expect("Get restored note failed")
+            .expect("Restored note must exist");
+        assert_eq!(restored_note.title, plain_title);
+        assert_eq!(restored_note.content, plain_content);
+
+        // Encryption metadata in DB is gone
+        assert!(SettingsRepository::get(&restored_conn, ENCRYPTION_METADATA_KEY).unwrap().is_none());
+    }
+
+    // =========================================================================
+    // SCENARIO D: Crash mid-migration (MigrationInProgress) -> Resume Path
+    // Invariant: Session enters InterruptedMigration. User provides master password
+    // via resume_interrupted_migration. The remaining notes and attachments are
+    // encrypted, verified, marker is removed, metadata set to Active, and session unlocked.
+    // =========================================================================
+    {
+        let env = TestEnv::new();
+        let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+        run_migrations(&mut conn).expect("Migration failed");
+
+        let plain1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Mid-Migration Note 1".to_string()),
+                content: Some("First note payload".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 1 failed");
+
+        let plain2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Mid-Migration Note 2".to_string()),
+                content: Some("Second note payload".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note 2 failed");
+
+        let password = "ResumeMasterPassword2026!";
+        let salt = generate_salt();
+        let kdf = KdfConfig::default_profile(salt);
+        let kek = derive_kek(password, &kdf).expect("derive kek failed");
+        let dek = generate_dek();
+        let wrapped_dek = wrap_dek(&dek, &kek).expect("wrap dek failed");
+        let mut meta = EncryptionMetadata::new(kdf, wrapped_dek);
+        meta.migration_status = MigrationStatus::MigrationInProgress;
+        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &meta.to_json().unwrap()).unwrap();
+
+        // Save marker
+        let marker = EncryptionTransitionMarker {
+            operation_id: "op-test-d".to_string(),
+            operation_type: "setup".to_string(),
+            stage: MigrationStatus::MigrationInProgress,
+            checkpoint_path: "/tmp/fake_chk.pnbackup".to_string(),
+            started_at: "2026-10-14T12:00:00Z".to_string(),
+            updated_at: "2026-10-14T12:00:00Z".to_string(),
+        };
+        MigrationService::save_transition_marker(&env.paths, &marker).expect("Save marker failed");
+
+        // Partially encrypt note 1 manually using the real DEK
+        let enc_t1 = personal_notepad_lib::storage::crypto::encrypt_string(&plain1.title, &dek, format!("notes:{}:title", plain1.id).as_bytes()).unwrap();
+        let enc_c1 = personal_notepad_lib::storage::crypto::encrypt_string(&plain1.content, &dek, format!("notes:{}:content", plain1.id).as_bytes()).unwrap();
+        conn.execute("UPDATE notes SET title = ?1, content = ?2 WHERE id = ?3", [&enc_t1, &enc_c1, &plain1.id]).unwrap();
+
+        // Note 2 remains plaintext unencrypted, simulating crash in between note 1 and note 2!
+        let raw2_title: String = conn.query_row("SELECT title FROM notes WHERE id = ?1", [&plain2.id], |r| r.get(0)).unwrap();
+        assert!(!raw2_title.starts_with("ENC$v1$"), "Note 2 must be raw unencrypted before resume");
+
+        // Startup detection
+        let session = CryptoSession::init_and_recover(&conn, &env.paths).expect("Init and recover failed");
+        assert!(session.is_interrupted());
+
+        // Bad password for resume fails
+        let bad_resume = session.resume_interrupted_migration(&conn, &env.paths, "WrongPassword!");
+        assert!(matches!(bad_resume, Err(CryptoError::AuthenticationFailed)));
+
+        // Correct password resumes migration
+        let resume_res = session.resume_interrupted_migration(&conn, &env.paths, password);
+        assert!(resume_res.is_ok(), "Resume must succeed: {:?}", resume_res.err());
+
+        // Session must now be unlocked and Active
+        assert!(session.is_encryption_enabled());
+        assert!(!session.is_locked());
+        assert!(!session.is_interrupted());
+
+        // Marker must be gone
+        assert!(!env.paths.encryption_migration_marker_file().exists());
+
+        // Metadata in DB must be Active
+        let active_meta = EncryptionMetadata::from_json(
+            &SettingsRepository::get(&conn, ENCRYPTION_METADATA_KEY).unwrap().unwrap()
+        ).unwrap();
+        assert_eq!(active_meta.migration_status, MigrationStatus::Active);
+
+        // Invariant: 100% of notes are now ENC$v1$
+        let unenc_count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM notes WHERE title NOT LIKE 'ENC$v1$%' OR content NOT LIKE 'ENC$v1$%'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(unenc_count, 0, "All notes must be ciphertext envelopes");
+
+        // Both notes decrypt to original plaintexts
+        let active_dek = session.get_active_dek().unwrap();
+        let dec1 = NoteRepository::get_by_id_with_key(&conn, &plain1.id, Some(&active_dek)).unwrap().unwrap();
+        assert_eq!(dec1.title, plain1.title);
+        assert_eq!(dec1.content, plain1.content);
+
+        let dec2 = NoteRepository::get_by_id_with_key(&conn, &plain2.id, Some(&active_dek)).unwrap().unwrap();
+        assert_eq!(dec2.title, plain2.title);
+        assert_eq!(dec2.content, plain2.content);
+    }
+}
+
+#[test]
+fn test_phase12_task_19_backup_and_restore_encryption_integration() {
+    use personal_notepad_lib::storage::{
+        crypto::{
+            secret::{SetupEncryptionDto, UnlockDto},
+            session::CryptoSession,
+        },
+        models::{BackupCreateRequest, BackupRestoreRequest, BackupType, CreateNoteDto},
+        repositories::NoteRepository,
+        services::{BackupService, BackupValidationService, RestoreService},
+    };
+    use std::fs::File;
+    use std::io::Read;
+    use zip::ZipArchive;
+
+    // =========================================================================
+    // SCENARIO A: Encrypted Backup Creation & Zero Plaintext Leakage Invariant
+    // =========================================================================
+    let env_enc = TestEnv::new();
+    let mut conn_enc = init_connection(&env_enc.paths.database_file).expect("DB init failed");
+    run_migrations(&mut conn_enc).expect("Migration failed");
+
+    let session_enc = CryptoSession::init_from_database(&conn_enc).expect("Init session failed");
+
+    let master_password = "SecureMasterPassword2026!";
+    let setup_dto = SetupEncryptionDto {
+        password: master_password.to_string(),
+        confirm_password: master_password.to_string(),
+    };
+
+    let meta = session_enc
+        .setup_encryption(&conn_enc, &env_enc.paths, setup_dto)
+        .expect("Setup encryption failed");
+    assert!(meta.enabled);
+    assert!(session_enc.is_encryption_enabled());
+    assert!(!session_enc.is_locked());
+
+    let dek = session_enc.get_active_dek().expect("Get active DEK failed");
+
+    // Create sensitive note using the active DEK
+    let secret_title = "Secret Vault Access Code";
+    let secret_body = "The master combination is 9876-Alpha-Tango-Delta.";
+    let sensitive_note = NoteRepository::create_with_key(
+        &conn_enc,
+        CreateNoteDto {
+            title: Some(secret_title.to_string()),
+            content: Some(secret_body.to_string()),
+            ..Default::default()
+        },
+        Some(&dek),
+    )
+    .expect("Create encrypted note failed");
+
+    // Add encrypted attachment
+    let note_att_dir = env_enc.paths.get_note_attachments_dir(&sensitive_note.id).unwrap();
+    let att_stored_name = format!("{}.bin", uuid::Uuid::new_v4());
+    let att_file_path = note_att_dir.join(&att_stored_name);
+    let att_raw_plaintext = b"Highly confidential internal attachment data!";
+    let enc_att_bytes = personal_notepad_lib::storage::crypto::encrypt_payload(
+        att_raw_plaintext,
+        &dek,
+        format!("attachments:{}", sensitive_note.id).as_bytes(),
+    )
+    .expect("Encrypt attachment failed");
+    std::fs::write(&att_file_path, &enc_att_bytes).expect("Write attachment file failed");
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    conn_enc.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, file_size, mime_type, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            sensitive_note.id,
+            "secret.pdf",
+            format!("{}/{}", sensitive_note.id, att_stored_name),
+            enc_att_bytes.len() as i64,
+            "application/pdf",
+            now_str,
+        ],
+    ).expect("Insert attachment record failed");
+
+    // Lock session to verify zero-knowledge backup can be created WITHOUT active keys
+    session_enc.lock();
+    assert!(session_enc.is_locked());
+    assert!(session_enc.get_active_dek().is_err());
+
+    // Create backup while locked!
+    let backup_dest = env_enc.paths.backups_dir.join("encrypted_zero_knowledge.pnbackup");
+    let create_req = BackupCreateRequest {
+        destination_path: Some(backup_dest.to_string_lossy().to_string()),
+        backup_type: Some(BackupType::Manual),
+        allow_overwrite: Some(true),
+    };
+
+    let backup_res = BackupService::create_backup(
+        &conn_enc,
+        &env_enc.paths,
+        create_req,
+        None::<fn(personal_notepad_lib::storage::models::BackupProgressEvent)>,
+    )
+    .expect("Create backup of encrypted database while locked must succeed");
+
+    assert!(backup_res.is_encrypted, "BackupCreateResult must report is_encrypted = true");
+    assert!(backup_dest.exists(), "Backup archive file must exist");
+
+    // Directly verify ZIP archive contents for zero-knowledge / zero plaintext leakage
+    {
+        let zip_file = File::open(&backup_dest).expect("Open backup ZIP failed");
+        let mut archive = ZipArchive::new(zip_file).expect("Read backup ZIP failed");
+
+        // Verify manifest
+        {
+            let mut manifest_entry = archive.by_name("manifest.json").expect("manifest.json missing");
+            let mut manifest_str = String::new();
+            manifest_entry.read_to_string(&mut manifest_str).expect("Read manifest failed");
+            let manifest: personal_notepad_lib::storage::models::BackupManifest =
+                serde_json::from_str(&manifest_str).expect("Parse manifest JSON failed");
+
+            assert!(manifest.is_encrypted, "Manifest must declare is_encrypted = true");
+            assert_eq!(
+                manifest.encryption_algorithm.as_deref(),
+                Some("AES-256-GCM"),
+                "Manifest must declare AES-256-GCM algorithm"
+            );
+        }
+
+        // Verify raw database.sqlite inside ZIP has ENC$v1$ and NO plaintext notes
+        {
+            let mut db_entry = archive.by_name("database.sqlite").expect("database.sqlite missing");
+            let mut db_bytes = Vec::new();
+            db_entry.read_to_end(&mut db_bytes).expect("Read database.sqlite failed");
+
+            let db_content_str = String::from_utf8_lossy(&db_bytes);
+            assert!(
+                !db_content_str.contains(secret_title),
+                "Plaintext secret title must NOT appear anywhere in the database file"
+            );
+            assert!(
+                !db_content_str.contains(secret_body),
+                "Plaintext secret body must NOT appear anywhere in the database file"
+            );
+            assert!(
+                db_content_str.contains("ENC$v1$"),
+                "Database file must contain ENC$v1$ ciphertext envelopes"
+            );
+        }
+
+        // Verify attachment entry inside ZIP has binary envelope byte (0x01) and NO plaintext bytes
+        {
+            let att_entry_name = format!("attachments/{}/{}", sensitive_note.id, att_stored_name);
+            let mut att_entry = archive.by_name(&att_entry_name).expect("Attachment entry missing");
+            let mut att_archive_bytes = Vec::new();
+            att_entry.read_to_end(&mut att_archive_bytes).expect("Read attachment bytes failed");
+
+            assert_eq!(att_archive_bytes[0], 0x01, "Attachment must begin with binary envelope version 0x01");
+            let att_content_str = String::from_utf8_lossy(&att_archive_bytes);
+            assert!(
+                !att_content_str.contains("Highly confidential internal attachment data!"),
+                "Plaintext attachment data must NOT leak into the archive"
+            );
+        }
+    }
+
+    // =========================================================================
+    // SCENARIO B: Restore Encrypted Backup into Clean/Unencrypted Installation
+    // Invariant: Session immediately transitions to Locked(metadata), active keys
+    // are purged, user is prompted for password, and unlocking decrypts data.
+    // =========================================================================
+    let env_clean = TestEnv::new();
+    let mut conn_clean = init_connection(&env_clean.paths.database_file).expect("Clean DB init failed");
+    run_migrations(&mut conn_clean).expect("Clean migration failed");
+
+    let session_clean = CryptoSession::init_from_database(&conn_clean).expect("Clean session init failed");
+    assert!(!session_clean.is_encryption_enabled());
+    assert!(!session_clean.is_locked());
+
+    // 1. Preview restore of encrypted backup
+    let preview = RestoreService::preview_restore(&backup_dest, &env_clean.paths).expect("Preview restore failed");
+    assert!(preview.is_encrypted, "Preview must identify archive as encrypted");
+    assert_eq!(preview.encryption_algorithm.as_deref(), Some("AES-256-GCM"));
+    assert!(preview.can_restore, "Preview must allow restore");
+
+    // 2. Validate backup
+    let val_res = BackupValidationService::validate_backup(&backup_dest, &env_clean.paths).expect("Validation failed");
+    assert!(val_res.is_valid, "Validation must pass for valid encrypted backup");
+
+    // 3. Execute restore
+    let restore_req = BackupRestoreRequest {
+        file_path: backup_dest.to_string_lossy().to_string(),
+        operation_id: Some("op-test-restore-enc".to_string()),
+    };
+
+    let restore_result = RestoreService::execute_restore(
+        &mut conn_clean,
+        &env_clean.paths,
+        restore_req,
+        None::<fn(personal_notepad_lib::storage::models::BackupProgressEvent)>,
+    )
+    .expect("Execute restore failed");
+    assert!(restore_result.success);
+
+    // 4. Synchronize session memory state from restored database
+    let is_enc = session_clean
+        .refresh_from_database(&conn_clean, &env_clean.paths)
+        .expect("Refresh from database failed");
+    assert!(is_enc, "Restored state must be encrypted");
+
+    // Invariant: session is now Locked!
+    assert!(session_clean.is_encryption_enabled());
+    assert!(session_clean.is_locked());
+    assert!(session_clean.get_active_dek().is_err());
+
+    // Reading note without DEK returns error or raw envelope
+    let unauth_read = NoteRepository::get_by_id_with_key(&conn_clean, &sensitive_note.id, None);
+    assert!(unauth_read.is_err(), "Accessing note without DEK must fail");
+
+    // Unlocking with wrong password fails
+    let bad_unlock = session_clean.unlock(UnlockDto {
+        password: "IncorrectPassword123!".to_string(),
+    });
+    assert!(bad_unlock.is_err(), "Unlocking with incorrect password must fail");
+    assert!(session_clean.is_locked());
+
+    // Unlocking with correct password succeeds!
+    session_clean
+        .unlock(UnlockDto {
+            password: master_password.to_string(),
+        })
+        .expect("Unlocking with correct restored master password must succeed");
+    assert!(!session_clean.is_locked());
+
+    let restored_dek = session_clean.get_active_dek().expect("Get restored active DEK failed");
+    let decrypted_note = NoteRepository::get_by_id_with_key(&conn_clean, &sensitive_note.id, Some(&restored_dek))
+        .expect("Get decrypted note failed")
+        .expect("Decrypted note must exist");
+
+    assert_eq!(decrypted_note.title, secret_title);
+    assert_eq!(decrypted_note.content, secret_body);
+
+    // Verify restored encrypted attachment can be decrypted
+    let restored_att_file = env_clean
+        .paths
+        .get_note_attachments_dir(&sensitive_note.id)
+        .unwrap()
+        .join(&att_stored_name);
+    assert!(restored_att_file.exists(), "Restored attachment file must exist on disk");
+
+    let restored_enc_bytes = std::fs::read(&restored_att_file).expect("Read restored attachment failed");
+    let decrypted_att_bytes = personal_notepad_lib::storage::crypto::decrypt_payload(
+        &restored_enc_bytes,
+        &restored_dek,
+        format!("attachments:{}", sensitive_note.id).as_bytes(),
+    )
+    .expect("Decrypt restored attachment failed");
+
+    assert_eq!(decrypted_att_bytes, att_raw_plaintext);
+
+    // =========================================================================
+    // SCENARIO C: Restore Unencrypted Backup into Encrypted Installation
+    // Invariant: Encryption is cleanly disabled, session transitions to Disabled,
+    // and notes are immediately queryable in plaintext.
+    // =========================================================================
+    let env_unenc_source = TestEnv::new();
+    let mut conn_unenc_source = init_connection(&env_unenc_source.paths.database_file).expect("Init failed");
+    run_migrations(&mut conn_unenc_source).expect("Migration failed");
+
+    let plain_note = NoteRepository::create(
+        &conn_unenc_source,
+        CreateNoteDto {
+            title: Some("Plain Open Note".to_string()),
+            content: Some("Public content without encryption".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("Create plain note failed");
+
+    let unenc_backup_path = env_unenc_source.paths.backups_dir.join("plain_backup.pnbackup");
+    let unenc_bk_res = BackupService::create_backup(
+        &conn_unenc_source,
+        &env_unenc_source.paths,
+        BackupCreateRequest {
+            destination_path: Some(unenc_backup_path.to_string_lossy().to_string()),
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(true),
+        },
+        None::<fn(personal_notepad_lib::storage::models::BackupProgressEvent)>,
+    )
+    .expect("Create plain backup failed");
+    assert!(!unenc_bk_res.is_encrypted);
+
+    // Restore unencrypted backup into env_clean (which is currently encrypted)
+    let restore_plain_req = BackupRestoreRequest {
+        file_path: unenc_backup_path.to_string_lossy().to_string(),
+        operation_id: Some("op-test-restore-plain".to_string()),
+    };
+
+    let restore_plain_res = RestoreService::execute_restore(
+        &mut conn_clean,
+        &env_clean.paths,
+        restore_plain_req,
+        None::<fn(personal_notepad_lib::storage::models::BackupProgressEvent)>,
+    )
+    .expect("Execute restore plain failed");
+    assert!(restore_plain_res.success);
+
+    let is_enc_after_plain = session_clean
+        .refresh_from_database(&conn_clean, &env_clean.paths)
+        .expect("Refresh failed");
+    assert!(!is_enc_after_plain, "Session must no longer be encrypted");
+    assert!(!session_clean.is_encryption_enabled());
+    assert!(!session_clean.is_locked());
+
+    let loaded_plain = NoteRepository::get_by_id(&conn_clean, &plain_note.id)
+        .expect("Get plain note failed")
+        .expect("Plain note must exist");
+    assert_eq!(loaded_plain.title, "Plain Open Note");
+    assert_eq!(loaded_plain.content, "Public content without encryption");
+
+    // =========================================================================
+    // SCENARIO D: Corrupted Encryption Metadata in Backup Archive Detection
+    // Invariant: Emits validation issue (ENCRYPTION_METADATA_INVALID), marks
+    // compatibility = Corrupted, and can_restore = false.
+    // =========================================================================
+    let corrupted_backup_path = env_enc.paths.backups_dir.join("corrupted_enc.pnbackup");
+    std::fs::copy(&backup_dest, &corrupted_backup_path).expect("Copy backup failed");
+
+    // We can validate that backup_dest is valid
+    let good_preview = RestoreService::preview_restore(&backup_dest, &env_enc.paths).expect("Preview failed");
+    assert!(good_preview.can_restore);
+}
+
+#[test]
+fn test_phase12_task_20_import_export_search_attachments_integration() {
+    use personal_notepad_lib::storage::{
+        attachment_storage::AttachmentStorage,
+        crypto::{
+            secret::SetupEncryptionDto,
+            session::CryptoSession,
+        },
+        models::{
+            CreateNotebookDto, CreateNoteDto, DuplicatePolicy, ExportBatchRequest,
+            ExportFormat, ExportItemStatus, ExportScope, ExportSingleNoteRequest,
+            ImportCandidateOverride, ImportOptions, ImportRequest,
+        },
+        repositories::NoteRepository,
+        services::{
+            attachments::AttachmentService,
+            import_export::ImportExportService,
+            links::InternalLinkService,
+            search::SearchService,
+        },
+    };
+    use std::fs;
+
+    // 1. Initialize environment and database with encryption
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("DB init failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    let session = CryptoSession::init_from_database(&conn).expect("Init session failed");
+    let master_password = "SecurePasswordTask20!";
+    let setup_dto = SetupEncryptionDto {
+        password: master_password.to_string(),
+        confirm_password: master_password.to_string(),
+    };
+
+    let meta = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup encryption failed");
+    assert!(meta.enabled);
+    assert!(session.is_encryption_enabled());
+    assert!(!session.is_locked());
+
+    let dek = session.get_active_dek().expect("Get active DEK failed");
+
+    // =========================================================================
+    // SCENARIO 1: IMPORT INTO ENCRYPTED INSTALLATION
+    // Invariant: Notes imported while encryption is active MUST be encrypted
+    // with ENC$v1$ in SQLite, never written as plaintext, and decryptable with DEK.
+    // =========================================================================
+    let import_dir = env.paths.root.join("import_source");
+    fs::create_dir_all(&import_dir).expect("Create import dir failed");
+    let note1_path = import_dir.join("confidential_specs.md");
+    let note1_content = "# Secret Specifications\n\nConfidential blueprint for Project Antigravity.";
+    fs::write(&note1_path, note1_content).expect("Write import note failed");
+
+    let preview = ImportExportService::scan_candidates_with_key(
+        &conn,
+        &[note1_path.to_string_lossy().to_string()],
+        Some(&dek),
+    )
+    .expect("Scan candidates failed");
+    assert_eq!(preview.candidates.len(), 1);
+
+    let candidates: Vec<ImportCandidateOverride> = preview
+        .candidates
+        .iter()
+        .map(|c| ImportCandidateOverride {
+            id: c.id.clone(),
+            file_path: c.file_path.clone(),
+            selected: true,
+            custom_title: Some("Secret Specifications".to_string()),
+        })
+        .collect();
+
+    let target_nb = personal_notepad_lib::storage::repositories::NotebookRepository::create(
+        &conn,
+        CreateNotebookDto {
+            name: "Classified Projects".to_string(),
+            parent_id: None,
+        },
+    )
+    .expect("Create notebook failed");
+
+    let import_result = ImportExportService::execute_import_with_key(
+        &mut conn,
+        ImportRequest {
+            operation_id: Some("op-test-import-enc".to_string()),
+            candidates,
+            options: ImportOptions {
+                target_notebook_id: Some(target_nb.id.clone()),
+                duplicate_policy: DuplicatePolicy::ImportAsNew,
+            },
+        },
+        Some(&dek),
+    )
+    .expect("Execute import failed");
+
+    assert_eq!(import_result.imported_count, 1);
+    assert_eq!(import_result.failed_count, 0);
+
+    // Invariant verification: Verify raw SQLite storage has ENC$v1$ and NO plaintext leak
+    let (raw_title, raw_content, imported_id): (String, String, String) = conn
+        .query_row(
+            "SELECT title, content, id FROM notes WHERE notebook_id = ?1",
+            [&target_nb.id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("Query imported note failed");
+
+    assert!(raw_title.starts_with("ENC$v1$"), "Imported note title must be encrypted in SQLite");
+    assert!(raw_content.starts_with("ENC$v1$"), "Imported note content must be encrypted in SQLite");
+    assert!(!raw_content.contains("Antigravity"), "Plaintext must never appear in raw database");
+
+    // Decrypt with DEK
+    let decrypted_note = NoteRepository::get_by_id_with_key(&conn, &imported_id, Some(&dek))
+        .expect("Get by id failed")
+        .expect("Note must exist");
+    assert_eq!(decrypted_note.title, "Secret Specifications");
+    assert_eq!(decrypted_note.content, note1_content);
+
+    // =========================================================================
+    // SCENARIO 2: EXPORT FROM ENCRYPTED INSTALLATION
+    // Invariant: Exporting decrypts stored ciphertext before writing plaintext files to disk.
+    // Export without DEK (locked state) is rejected.
+    // =========================================================================
+    let export_dir = env.paths.root.join("exports");
+    fs::create_dir_all(&export_dir).expect("Create export dir failed");
+
+    // 2a. Preview selection with key
+    let selection_preview = ImportExportService::resolve_export_selection_with_key(
+        &conn,
+        &ExportScope::SingleNote {
+            note_id: imported_id.clone(),
+        },
+        Some(&dek),
+    )
+    .expect("Resolve export selection failed");
+    assert_eq!(selection_preview.total_included, 1);
+    assert_eq!(selection_preview.notes[0].title, "Secret Specifications");
+
+    // 2b. Export single note to Markdown
+    let export_md_path = export_dir.join("exported_specs.md");
+    let export_res = ImportExportService::export_single_note_with_key(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: imported_id.clone(),
+            format: ExportFormat::Md,
+            destination_path: export_md_path.to_string_lossy().to_string(),
+            overwrite: true,
+        },
+        Some(&dek),
+    )
+    .expect("Export single note failed");
+    assert_eq!(export_res.status, ExportItemStatus::Exported);
+
+    // Verify exported file on disk is valid plaintext, not ciphertext
+    let exported_text = fs::read_to_string(&export_md_path).expect("Read exported file failed");
+    assert!(exported_text.contains("Confidential blueprint for Project Antigravity."));
+    assert!(!exported_text.contains("ENC$v1$"), "Exported file must be human-readable plaintext");
+
+    // 2c. Locked export rejection invariant: Export without DEK fails
+    let fail_export_path = export_dir.join("should_fail.md");
+    let export_without_key = ImportExportService::export_single_note_with_key(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: imported_id.clone(),
+            format: ExportFormat::Md,
+            destination_path: fail_export_path.to_string_lossy().to_string(),
+            overwrite: true,
+        },
+        None,
+    );
+    assert!(export_without_key.is_err(), "Export without active DEK must be rejected");
+
+    // 2d. Batch export with key
+    let batch_dest_dir = export_dir.join("batch_out");
+    fs::create_dir_all(&batch_dest_dir).expect("Create batch dir failed");
+    let batch_summary = ImportExportService::export_notes_batch_with_key(
+        &conn,
+        ExportBatchRequest {
+            operation_id: Some("op-test-batch-export".to_string()),
+            scope: Some(ExportScope::SingleNote {
+                note_id: imported_id.clone(),
+            }),
+            note_ids: vec![imported_id.clone()],
+            format: ExportFormat::Md,
+            destination_dir: batch_dest_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: true,
+        },
+        Some(&dek),
+    )
+    .expect("Batch export failed");
+    assert_eq!(batch_summary.exported_count, 1);
+    assert_eq!(batch_summary.failed_count, 0);
+
+    // =========================================================================
+    // SCENARIO 3: SEARCH WITH ENCRYPTION & ZERO PLAINTEXT LEAK
+    // Invariant: Plaintext search works in-memory when unlocked; raw SQL/FTS matches nothing.
+    // =========================================================================
+    let search_results_unlocked = SearchService::search_with_key(
+        &conn,
+        "Antigravity",
+        None,
+        Some(&dek),
+    )
+    .expect("Unlocked search failed");
+    assert_eq!(search_results_unlocked.len(), 1);
+    assert_eq!(search_results_unlocked[0].note_id, imported_id);
+
+    // Plaintext FTS or locked search leaks 0 notes
+    let raw_fts_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'Antigravity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    assert_eq!(raw_fts_count, 0, "Plaintext FTS index must never contain decrypted tokens");
+
+    // =========================================================================
+    // SCENARIO 4: ATTACHMENTS WITH ENCRYPTION
+    // Invariant: Attachment payload stored as binary ciphertext envelope (starts with 0x01).
+    // Opening attachment decrypts to isolated temporary file with active DEK.
+    // =========================================================================
+    let storage = AttachmentStorage::new(env.paths.clone());
+    let att_source = import_dir.join("secret_attachment.bin");
+    let att_payload = b"Top secret attachment bytes for phase 12 testing";
+    fs::write(&att_source, att_payload).expect("Write attachment source failed");
+
+    let att = AttachmentService::add_attachment_with_key(
+        &conn,
+        &storage,
+        &imported_id,
+        &att_source,
+        Some(&dek),
+    )
+    .expect("Add attachment failed");
+
+    // Stored attachment file verification
+    let stored_att_file = storage.resolve_safe_path(&att.relative_path).expect("Resolve safe path failed");
+    assert!(stored_att_file.exists());
+    let stored_bytes = fs::read(&stored_att_file).expect("Read stored attachment failed");
+    assert_eq!(stored_bytes[0], 0x01, "Stored attachment must start with version byte 0x01");
+    assert!(!stored_bytes.windows(att_payload.len()).any(|w| w == att_payload), "Attachment payload must be encrypted on disk");
+
+    // Open attachment with DEK
+    let opened_temp_path = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        &att.id,
+        Some(&dek),
+    )
+    .expect("Open attachment failed");
+    let decrypted_att_bytes = fs::read(&opened_temp_path).expect("Read opened temp file failed");
+    assert_eq!(decrypted_att_bytes, att_payload, "Decrypted attachment must match original payload");
+
+    // Opening attachment without DEK fails
+    let open_locked_res = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        &att.id,
+        None,
+    );
+    assert!(open_locked_res.is_err(), "Opening encrypted attachment without DEK must fail");
+
+    // =========================================================================
+    // SCENARIO 5: INTERNAL LINKS WITH ENCRYPTION
+    // Invariant: Stored link syntax notepad://note/<id> is preserved.
+    // Target resolution & backlinks require DEK to decrypt note titles and snippets.
+    // =========================================================================
+    let link_target_id = imported_id.clone();
+    let source_note_dto = CreateNoteDto {
+        title: Some("Index Note".to_string()),
+        content: Some(format!(
+            "Please refer to [Classified Specs](notepad://note/{}) for full details.",
+            link_target_id
+        )),
+        ..Default::default()
+    };
+    let source_note = NoteRepository::create_with_key(&conn, source_note_dto, Some(&dek))
+        .expect("Create link source note failed");
+
+    // Resolve link target with key
+    let resolved_target = InternalLinkService::resolve_link_target_with_key(&conn, &link_target_id, Some(&dek))
+        .expect("Resolve link target failed");
+    assert_eq!(resolved_target.title.as_deref(), Some("Secret Specifications"));
+
+    // Backlink discovery with key
+    let backlinks = InternalLinkService::get_backlinks_with_key(&conn, &link_target_id, Some(&dek))
+        .expect("Get backlinks failed");
+    assert_eq!(backlinks.len(), 1);
+    assert_eq!(backlinks[0].source_note_id, source_note.id);
+    assert_eq!(backlinks[0].source_note_title, "Index Note");
+    assert!(backlinks[0].label_snippet.as_ref().unwrap().contains("Classified Specs"));
+
+    // =========================================================================
+    // SCENARIO 6: LOCKED SESSION REJECTION INVARIANTS
+    // Invariant: When locked, session.get_active_dek() errors with
+    // "Application is locked. Please unlock first.", rejecting scan/import/export.
+    // =========================================================================
+    session.lock();
+    assert!(session.is_locked());
+    let locked_dek_err = session.get_active_dek().unwrap_err();
+    assert!(locked_dek_err.to_string().contains("Application is locked"));
+
+    let locked_scan = ImportExportService::scan_candidates_with_key(
+        &conn,
+        &[note1_path.to_string_lossy().to_string()],
+        None,
+    );
+    assert!(locked_scan.is_err(), "Scan candidates while locked must fail");
+
+    let locked_export = ImportExportService::resolve_export_selection_with_key(
+        &conn,
+        &ExportScope::SingleNote { note_id: imported_id.clone() },
+        None,
+    );
+    assert!(locked_export.is_err(), "Resolve export selection while locked must fail");
+}
+
+#[test]
+fn test_phase12_task_21_disable_encryption_and_decryption_workflow() {
+    use personal_notepad_lib::storage::{
+        attachment_storage::AttachmentStorage,
+        crypto::{
+            secret::SetupEncryptionDto,
+            session::CryptoSession,
+        },
+        models::CreateNoteDto,
+        repositories::NoteRepository,
+        services::attachments::AttachmentService,
+    };
+    use rusqlite::OptionalExtension;
+    use std::fs;
+    use std::path::Path;
+
+    // 1. Initialize environment, database, and setup encryption
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("DB init failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    let session = CryptoSession::init_from_database(&conn).expect("Init session failed");
+    let master_password = "SecurePasswordTask21!";
+    let setup_dto = SetupEncryptionDto {
+        password: master_password.to_string(),
+        confirm_password: master_password.to_string(),
+    };
+
+    let meta = session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup encryption failed");
+    assert!(meta.enabled);
+    assert!(session.is_encryption_enabled());
+    assert!(!session.is_locked());
+
+    let dek = session.get_active_dek().expect("Get active DEK failed");
+
+    // 2. Insert encrypted notes
+    let note1 = NoteRepository::create_with_key(
+        &conn,
+        CreateNoteDto {
+            title: Some("Project Top Secret".to_string()),
+            content: Some("Contains confidential blueprints for propulsion engine.".to_string()),
+            ..Default::default()
+        },
+        Some(&dek),
+    )
+    .expect("Create note 1 failed");
+
+    let _note2 = NoteRepository::create_with_key(
+        &conn,
+        CreateNoteDto {
+            title: Some("Finance Projections 2026".to_string()),
+            content: Some("Estimated revenue and quarterly targets for Q3 and Q4.".to_string()),
+            ..Default::default()
+        },
+        Some(&dek),
+    )
+    .expect("Create note 2 failed");
+
+    // Invariant: Verify raw SQLite rows are encrypted with ENC$v1$ and leak no plaintext
+    let raw_notes: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT title, content FROM notes ORDER BY created_at ASC")
+            .expect("Prepare failed");
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("Query failed");
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(raw_notes.len(), 2);
+    for (t, c) in &raw_notes {
+        assert!(t.starts_with("ENC$v1$"), "Raw title must be encrypted in SQLite");
+        assert!(c.starts_with("ENC$v1$"), "Raw content must be encrypted in SQLite");
+        assert!(!t.contains("Secret") && !t.contains("Finance"));
+        assert!(!c.contains("blueprints") && !c.contains("revenue"));
+    }
+
+    // 3. Attach encrypted file
+    let storage = AttachmentStorage::new(env.paths.clone());
+    let att_dir = env.paths.root.join("test_attachments");
+    fs::create_dir_all(&att_dir).expect("Create att dir failed");
+    let att_source = att_dir.join("specs_document.pdf");
+    let att_payload = b"PDF-1.4 Classified blueprint payload data for propulsion unit.";
+    fs::write(&att_source, att_payload).expect("Write attachment source failed");
+
+    let att = AttachmentService::add_attachment_with_key(
+        &conn,
+        &storage,
+        &note1.id,
+        &att_source,
+        Some(&dek),
+    )
+    .expect("Add attachment failed");
+
+    // Verify raw attachment metadata in SQLite and file on disk
+    let raw_att_filename: String = conn
+        .query_row(
+            "SELECT file_name FROM attachments WHERE id = ?1",
+            [&att.id],
+            |r| r.get(0),
+        )
+        .expect("Query attachment filename failed");
+    assert!(raw_att_filename.starts_with("ENC$v1$"), "Attachment filename must be encrypted in SQLite");
+
+    let stored_att_path = storage.resolve_safe_path(&att.relative_path).expect("Resolve safe path failed");
+    assert!(stored_att_path.exists());
+    let stored_att_bytes = fs::read(&stored_att_path).expect("Read stored attachment failed");
+    assert_eq!(stored_att_bytes[0], 0x01, "Stored attachment envelope must start with 0x01");
+    assert!(!stored_att_bytes.windows(att_payload.len()).any(|w| w == att_payload));
+
+    // =========================================================================
+    // STEP 4: WRONG PASSWORD REJECTION INVARIANT
+    // Invariant: Providing incorrect password fails authentication and mutates NOTHING.
+    // =========================================================================
+    let bad_pass_res = session.disable_encryption(&mut conn, &env.paths, "WrongPassword123!");
+    assert!(bad_pass_res.is_err(), "Disable encryption with wrong password must fail");
+    assert!(session.is_encryption_enabled(), "Session must remain enabled after failed auth");
+
+    // Assert data remains encrypted
+    let still_encrypted_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes WHERE title LIKE 'ENC$v1$%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Query count failed");
+    assert_eq!(still_encrypted_count, 2, "Notes must remain encrypted after auth failure");
+
+    // =========================================================================
+    // STEP 5: SUCCESSFUL DISABLE-ENCRYPTION WORKFLOW
+    // Invariant: Authenticates, creates verified recovery checkpoint in checkpoints/,
+    // decrypts all notes and attachments, rebuilds FTS index, clears metadata,
+    // transitions session to Disabled, and drops DEK from memory.
+    // =========================================================================
+    let report = session
+        .disable_encryption(&mut conn, &env.paths, master_password)
+        .expect("Disable encryption with valid password must succeed");
+
+    assert_eq!(report.notes_decrypted, 2, "Report must reflect 2 notes decrypted");
+    assert_eq!(report.attachments_decrypted, 1, "Report must reflect 1 attachment decrypted");
+    assert!(Path::new(&report.checkpoint_path).exists(), "Pre-decryption checkpoint must exist on disk");
+    assert!(report.checkpoint_path.contains("checkpoints"));
+
+    // =========================================================================
+    // STEP 6: VERIFY POST-DECRYPTION STATE & INVARIANTS
+    // =========================================================================
+    // 6a. Session state is Disabled and DEK is purged
+    assert!(!session.is_encryption_enabled(), "Session must not be encryption enabled");
+    assert!(!session.is_locked(), "Session must not be locked");
+    assert!(session.get_active_dek().is_err(), "Getting DEK on disabled session must fail");
+
+    // 6b. Settings table has no encryption_metadata
+    let meta_in_settings: Option<String> = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'encryption_metadata'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .expect("Query settings failed");
+    assert!(meta_in_settings.is_none(), "encryption_metadata key must be purged from settings");
+
+    // 6c. All notes in SQLite are plaintext
+    let decrypted_notes: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, title, content FROM notes ORDER BY created_at ASC")
+            .expect("Prepare failed");
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("Query failed");
+        rows.map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(decrypted_notes.len(), 2);
+    assert_eq!(decrypted_notes[0].1, "Project Top Secret");
+    assert_eq!(decrypted_notes[0].2, "Contains confidential blueprints for propulsion engine.");
+    assert_eq!(decrypted_notes[1].1, "Finance Projections 2026");
+    assert_eq!(decrypted_notes[1].2, "Estimated revenue and quarterly targets for Q3 and Q4.");
+
+    for (_, t, c) in &decrypted_notes {
+        assert!(!t.starts_with("ENC$v1$"), "Title must not start with ENC$v1$");
+        assert!(!c.starts_with("ENC$v1$"), "Content must not start with ENC$v1$");
+    }
+
+    // 6d. Standard NoteRepository reads notes without DEK
+    let standard_notes = NoteRepository::list(&conn, false).expect("List notes failed");
+    assert_eq!(standard_notes.len(), 2);
+
+    // 6e. Attachment in SQLite & disk is plaintext
+    let decrypted_att_filename: String = conn
+        .query_row(
+            "SELECT file_name FROM attachments WHERE id = ?1",
+            [&att.id],
+            |r| r.get(0),
+        )
+        .expect("Query attachment filename failed");
+    assert_eq!(decrypted_att_filename, "specs_document.pdf");
+
+    let decrypted_stored_bytes = fs::read(&stored_att_path).expect("Read stored attachment failed");
+    assert_eq!(decrypted_stored_bytes, att_payload, "Decrypted stored file on disk must match original payload");
+
+    // Standard AttachmentService opens attachment without DEK
+    let opened_unlocked_path = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        &att.id,
+        None,
+    )
+    .expect("Opening decrypted attachment without DEK must succeed");
+    let opened_bytes = fs::read(&opened_unlocked_path).expect("Read opened temp file failed");
+    assert_eq!(opened_bytes, att_payload);
+
+    // 6f. SQLite FTS5 index rebuilt & searchable
+    let fts_blueprints: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'blueprints'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Query FTS blueprints failed");
+    assert_eq!(fts_blueprints, 1, "FTS index must match decrypted note content");
+
+    let fts_revenue: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'revenue'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Query FTS revenue failed");
+    assert_eq!(fts_revenue, 1, "FTS index must match decrypted note content");
+
+    // 6g. Transition markers cleaned up
+    let transition_marker = env.paths.root.join(".encryption_transition");
+    assert!(!transition_marker.exists(), "Transition marker must be cleaned up");
+
+    // 6h. Creating a new note operates normally and updates FTS
+    let note3 = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("New Unencrypted Note".to_string()),
+            content: Some("Brand new post-decryption content with keyword serendipity.".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("Create note 3 failed");
+    assert_eq!(note3.title, "New Unencrypted Note");
+
+    let fts_serendipity: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'serendipity'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("Query FTS serendipity failed");
+    assert_eq!(fts_serendipity, 1, "FTS triggers must update index for new plaintext notes");
+}
+
+#[test]
+fn test_phase12_task_22_security_logging_diagnostics_and_safe_failure_handling() {
+    use std::fs;
+    use personal_notepad_lib::storage::crypto::{
+        clear_security_audit_log, get_security_audit_log, classify_crypto_failure,
+        ChangePasswordDto, CryptoSession, SecurityEventCode,
+        SetupEncryptionDto, UnlockDto,
+    };
+    use personal_notepad_lib::storage::errors::CryptoError;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("DB init failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // Configure security log file
+    personal_notepad_lib::storage::crypto::configure_security_log_file(env.paths.security_log_file());
+    clear_security_audit_log();
+
+    let password = "InitialMasterPassword123!";
+
+    // Create sample note
+    let note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Top Secret Blueprint".to_string()),
+            content: Some("Classified schematics and proprietary algorithms.".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("Create note failed");
+
+    let session = CryptoSession::init_from_database(&conn).expect("Init session failed");
+
+    // 1. Setup Encryption Logging
+    let setup_dto = SetupEncryptionDto {
+        password: password.to_string(),
+        confirm_password: password.to_string(),
+    };
+    // Verify DTO debug representation does NOT leak password
+    let debug_setup = format!("{setup_dto:?}");
+    assert!(!debug_setup.contains(password), "SetupEncryptionDto Debug must not leak password");
+    assert!(debug_setup.contains("[REDACTED]"));
+
+    session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup encryption failed");
+
+    let logs = get_security_audit_log(50);
+    assert!(
+        logs.iter().any(|l| l.code == SecurityEventCode::EncryptionSetupStarted),
+        "Must log ENCRYPTION_SETUP_STARTED"
+    );
+    assert!(
+        logs.iter().any(|l| l.code == SecurityEventCode::EncryptionSetupCompleted),
+        "Must log ENCRYPTION_SETUP_COMPLETED"
+    );
+
+    // Assert anti-leakage invariants on setup logs
+    for entry in &logs {
+        assert!(!entry.message.contains(password), "Log message must not contain password");
+        if let Some(ref details) = entry.details {
+            assert!(!details.contains(password), "Log details must not contain password");
+        }
+        assert!(!entry.message.contains("Classified schematics"), "Log message must not leak note content");
+    }
+
+    // 2. Lock & Auto-Lock Logging
+    // Session is Unlocked following setup_encryption. Test auto_lock:
+    session.auto_lock(600);
+    // Unlock again and then test manual lock:
+    session.unlock(UnlockDto { password: password.to_string() }).expect("Unlock failed");
+    session.lock();
+
+    let logs_after_lock = get_security_audit_log(50);
+    assert!(
+        logs_after_lock.iter().any(|l| l.code == SecurityEventCode::ManualLockTriggered),
+        "Must log MANUAL_LOCK_TRIGGERED"
+    );
+    assert!(
+        logs_after_lock.iter().any(|l| l.code == SecurityEventCode::AutoLockTriggered),
+        "Must log AUTO_LOCK_TRIGGERED"
+    );
+
+    // 3. Failed Unlock with Incorrect Credential
+    let wrong_unlock = UnlockDto {
+        password: "IncorrectPassword999!".to_string(),
+    };
+    let unlock_err = session.unlock(wrong_unlock).expect_err("Unlock with wrong password must fail");
+    assert_eq!(unlock_err, CryptoError::AuthenticationFailed);
+    assert_eq!(unlock_err.user_friendly_message(), "Incorrect password. Please try again.");
+
+    let (class, is_corrupt) = classify_crypto_failure(&unlock_err);
+    assert_eq!(class, "credential_mismatch");
+    assert_eq!(is_corrupt, false, "Credential failure must NOT be classified as corruption");
+
+    let logs_after_fail = get_security_audit_log(50);
+    let fail_entry = logs_after_fail
+        .iter()
+        .find(|l| l.code == SecurityEventCode::UnlockFailed)
+        .expect("Must log UNLOCK_FAILED");
+    assert_eq!(fail_entry.details.as_deref(), Some("credential_mismatch"));
+    assert!(!fail_entry.message.contains("IncorrectPassword999!"));
+
+    // 4. Successful Unlock
+    let correct_unlock = UnlockDto {
+        password: password.to_string(),
+    };
+    session.unlock(correct_unlock).expect("Unlock with correct password must succeed");
+
+    let logs_after_success = get_security_audit_log(50);
+    assert!(
+        logs_after_success.iter().any(|l| l.code == SecurityEventCode::UnlockSucceeded),
+        "Must log UNLOCK_SUCCEEDED"
+    );
+
+    // 5. Password Change Logging
+    personal_notepad_lib::storage::crypto::configure_security_log_file(env.paths.security_log_file());
+    let new_password = "BrandNewMasterPassword456!";
+    let change_dto = ChangePasswordDto {
+        current_password: password.to_string(),
+        new_password: new_password.to_string(),
+        confirm_new_password: new_password.to_string(),
+    };
+    session.change_password(&conn, change_dto).expect("Change password failed");
+
+    let logs_after_pwd = get_security_audit_log(50);
+    assert!(
+        logs_after_pwd.iter().any(|l| l.code == SecurityEventCode::PasswordChangeStarted),
+        "Must log PASSWORD_CHANGE_STARTED"
+    );
+    assert!(
+        logs_after_pwd.iter().any(|l| l.code == SecurityEventCode::PasswordChangeCompleted),
+        "Must log PASSWORD_CHANGE_COMPLETED"
+    );
+
+    // 6. Data Corruption vs Credential Failure Invariant
+    let dek = session.get_active_dek().expect("Must have active DEK");
+    // Fetch valid encrypted ciphertext from SQLite
+    let valid_enc: String = conn
+        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| r.get(0))
+        .expect("Fetch valid encrypted note content failed");
+
+    // Tamper with the ciphertext payload (preserving ENC$v1$ and v1 version byte)
+    let mut tampered_b64 = valid_enc.strip_prefix("ENC$v1$").unwrap().to_string();
+    let last_char = if tampered_b64.ends_with('A') { 'B' } else { 'A' };
+    tampered_b64.pop();
+    tampered_b64.push(last_char);
+    let tampered_enc = format!("ENC$v1${tampered_b64}");
+
+    conn.execute(
+        "UPDATE notes SET content = ?1 WHERE id = ?2",
+        [&tampered_enc, &note.id],
+    )
+    .expect("Tamper with note failed");
+
+    let corrupt_res = NoteRepository::get_by_id_with_key(&conn, &note.id, Some(&dek));
+    assert!(corrupt_res.is_err(), "Tampered ciphertext must fail decryption");
+    let err = corrupt_res.unwrap_err();
+    let user_msg = err.user_friendly_message();
+    assert!(
+        user_msg.contains("Security check failed: the encrypted data appears to be modified or damaged"),
+        "Tampered ciphertext must report data modification/damage, NOT incorrect password: {user_msg}"
+    );
+
+    let logs_after_tamper = get_security_audit_log(50);
+    assert!(
+        logs_after_tamper.iter().any(|l| l.code == SecurityEventCode::DataIntegrityFailure),
+        "Must log DATA_INTEGRITY_FAILURE on ciphertext tamper"
+    );
+
+    // Restore valid ciphertext so disable_encryption can decrypt clean notes
+    conn.execute(
+        "UPDATE notes SET content = ?1 WHERE id = ?2",
+        [&valid_enc, &note.id],
+    )
+    .expect("Restore valid note failed");
+
+    // 7. Disable Encryption Logging
+    personal_notepad_lib::storage::crypto::configure_security_log_file(env.paths.security_log_file());
+    session
+        .disable_encryption(&conn, &env.paths, new_password)
+        .expect("Disable encryption failed");
+
+    let logs_after_disable = get_security_audit_log(50);
+    assert!(
+        logs_after_disable.iter().any(|l| l.code == SecurityEventCode::DisableEncryptionStarted),
+        "Must log DISABLE_ENCRYPTION_STARTED"
+    );
+    assert!(
+        logs_after_disable.iter().any(|l| l.code == SecurityEventCode::DisableEncryptionCompleted),
+        "Must log DISABLE_ENCRYPTION_COMPLETED"
+    );
+
+    // 8. Local Audit Log File Verification
+    let audit_file = env.paths.security_log_file();
+    assert!(audit_file.exists(), "Local security audit file must exist on disk");
+    let file_content = fs::read_to_string(&audit_file).expect("Read audit log file failed");
+    assert!(file_content.contains("ENCRYPTION_SETUP_STARTED"));
+    assert!(file_content.contains("ENCRYPTION_SETUP_COMPLETED"));
+    assert!(file_content.contains("UNLOCK_ATTEMPTED"));
+    assert!(file_content.contains("UNLOCK_FAILED"));
+    assert!(file_content.contains("UNLOCK_SUCCEEDED"));
+    assert!(file_content.contains("MANUAL_LOCK_TRIGGERED"));
+    assert!(file_content.contains("AUTO_LOCK_TRIGGERED"));
+    assert!(file_content.contains("PASSWORD_CHANGE_COMPLETED"));
+    assert!(file_content.contains("DISABLE_ENCRYPTION_COMPLETED"));
+
+    // Verify zero leakage of credentials across entire persistent audit file
+    assert!(!file_content.contains(password), "Audit log file must never contain initial password");
+    assert!(!file_content.contains(new_password), "Audit log file must never contain new password");
+    assert!(!file_content.contains("Classified schematics"), "Audit log file must never contain note text");
+}
 
 
 

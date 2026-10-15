@@ -205,10 +205,11 @@ pub fn execute_restore(
     app: AppHandle,
     state: State<'_, Database>,
     paths: State<'_, StoragePaths>,
+    session: State<'_, crate::storage::crypto::CryptoSession>,
     request: BackupRestoreRequest,
 ) -> Result<BackupRestoreResult, String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
-    RestoreService::execute_restore(
+    let res = RestoreService::execute_restore(
         &mut *conn,
         &paths,
         request,
@@ -216,15 +217,28 @@ pub fn execute_restore(
             let _ = app.emit("backup-progress", evt);
         }),
     )
-    .map_err(|e| e.user_friendly_message())
+    .map_err(|e| e.user_friendly_message())?;
+
+    // Phase 12, Task 19: Immediately refresh crypto session state from the restored database
+    let _ = session.refresh_from_database(&conn, &paths);
+
+    Ok(res)
 }
 
 /// Checks and recovers previous interrupted restore operation if an unexpected shutdown occurred (Phase 11, Task 19).
 #[tauri::command]
 pub fn check_and_recover_interrupted_restore(
+    state: State<'_, Database>,
     paths: State<'_, StoragePaths>,
+    session: State<'_, crate::storage::crypto::CryptoSession>,
 ) -> Result<Option<String>, String> {
-    RestoreService::recover_if_interrupted(&paths).map_err(|e| e.user_friendly_message())
+    let msg = RestoreService::recover_if_interrupted(&paths).map_err(|e| e.user_friendly_message())?;
+    if msg.is_some() {
+        if let Ok(conn) = state.conn.lock() {
+            let _ = session.refresh_from_database(&conn, &paths);
+        }
+    }
+    Ok(msg)
 }
 
 /// Runs comprehensive post-restore validation and ensures application state is fully initialized (Phase 11, Task 20).

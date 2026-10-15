@@ -1,5 +1,10 @@
 use rusqlite::{params, Connection};
-use crate::storage::{errors::StorageError, models::SearchResult};
+use crate::storage::{
+    crypto::{SecretBytes, ENCRYPTION_METADATA_KEY},
+    errors::StorageError,
+    models::SearchResult,
+    repositories::{NoteRepository, SettingsRepository},
+};
 
 pub struct SearchRepository;
 
@@ -13,12 +18,48 @@ impl SearchRepository {
     /// Hard maximum search result count limit (Task 31, 62)
     pub const MAX_LIMIT: usize = 100;
 
+    /// Checks whether encryption is configured and active for the database (Task 11).
+    pub fn is_encryption_enabled(conn: &Connection) -> bool {
+        SettingsRepository::get(conn, ENCRYPTION_METADATA_KEY)
+            .map(|opt| opt.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Purges unencrypted plaintext FTS virtual tables, shadow tables, and synchronization triggers (Task 11).
+    /// Ensures that no plaintext tokens or derived indexes remain on disk when encryption is enabled.
+    pub fn purge_plaintext_index(conn: &Connection) -> Result<(), StorageError> {
+        let cleanup_sql = r#"
+            DROP TABLE IF EXISTS notes_fts;
+            DROP TRIGGER IF EXISTS notes_fts_ai;
+            DROP TRIGGER IF EXISTS notes_fts_ad;
+            DROP TRIGGER IF EXISTS notes_fts_au;
+        "#;
+        conn.execute_batch(cleanup_sql)?;
+        Ok(())
+    }
+
     /// Searches active, non-deleted notes by title and content.
-    /// Safely handles empty input, Unicode, special characters, and SQL injection inputs.
+    /// Backward-compatible wrapper delegating to `search_with_key` without DEK.
     pub fn search(
         conn: &Connection,
         query: &str,
         limit: Option<usize>,
+    ) -> Result<Vec<SearchResult>, StorageError> {
+        Self::search_with_key(conn, query, limit, None)
+    }
+
+    /// Searches active, non-deleted notes by title and content with optional DEK (Phase 12, Task 11).
+    /// When encryption is enabled:
+    /// - If locked (no DEK): Rejects with `StorageError::Crypto` ("Application is locked...").
+    /// - If unlocked (with DEK): Performs safe in-memory search over decrypted notes, preventing any
+    ///   unencrypted derived index or search snippet from being written to disk.
+    /// When encryption is not enabled:
+    /// - Uses SQLite FTS5 / LIKE queries as before.
+    pub fn search_with_key(
+        conn: &Connection,
+        query: &str,
+        limit: Option<usize>,
+        dek: Option<&SecretBytes>,
     ) -> Result<Vec<SearchResult>, StorageError> {
         let trimmed = query.trim();
 
@@ -36,6 +77,28 @@ impl SearchRepository {
 
         let bounded_limit = limit.unwrap_or(Self::DEFAULT_LIMIT).clamp(1, Self::MAX_LIMIT);
 
+        if Self::is_encryption_enabled(conn) {
+            let key = match dek {
+                Some(k) => k,
+                None => {
+                    return Err(StorageError::Crypto(
+                        "Application is locked. Please unlock to search notes.".to_string(),
+                    ));
+                }
+            };
+
+            return Self::search_in_memory_encrypted(conn, trimmed, bounded_limit, key);
+        }
+
+        Self::search_unencrypted(conn, trimmed, bounded_limit)
+    }
+
+    /// Executes search against unencrypted notes using FTS5 with LIKE fallback.
+    fn search_unencrypted(
+        conn: &Connection,
+        trimmed: &str,
+        bounded_limit: usize,
+    ) -> Result<Vec<SearchResult>, StorageError> {
         #[cfg(debug_assertions)]
         let start = std::time::Instant::now();
 
@@ -53,9 +116,6 @@ impl SearchRepository {
             match Self::search_fts5(conn, trimmed, bounded_limit) {
                 Ok(results) => Ok(results),
                 Err(_) => {
-                    // Task 66: Inconsistent or corrupted FTS index detected.
-                    // Recovery strategy: Rebuild search index without touching notes,
-                    // retry FTS5 query, or safely fall back to LIKE search.
                     let _ = Self::recover_index(conn);
                     if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
                         Ok(recovered)
@@ -65,7 +125,6 @@ impl SearchRepository {
                 }
             }
         } else {
-            // Task 66: Missing index detected -> recreate -> populate from notes
             let _ = Self::recover_index(conn);
             if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
                 Ok(recovered)
@@ -74,8 +133,6 @@ impl SearchRepository {
             }
         };
 
-        // Task 63: Performance logging during development (query, result count, execution time)
-        // Strictly never logs note content. Completely eliminated in release builds.
         #[cfg(debug_assertions)]
         {
             if let Ok(ref items) = search_res {
@@ -91,16 +148,132 @@ impl SearchRepository {
         search_res
     }
 
+    /// Executes safe in-memory search over decrypted notes when encryption is active (Task 11).
+    /// Prevents derived indexes, plaintext tokens, or snippets from ever being written to SQLite.
+    fn search_in_memory_encrypted(
+        conn: &Connection,
+        query: &str,
+        limit: usize,
+        dek: &SecretBytes,
+    ) -> Result<Vec<SearchResult>, StorageError> {
+        #[cfg(debug_assertions)]
+        let start = std::time::Instant::now();
+
+        let notes = NoteRepository::list_active_with_key(conn, Some(dek))?;
+
+        let trimmed = query.trim();
+        let lower_query = trimmed.to_lowercase();
+
+        // Check if query is an explicit quoted phrase: "phrase" or 'phrase'
+        let is_quoted = (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
+            || (trimmed.starts_with('“') && trimmed.ends_with('”') && trimmed.len() >= 2);
+
+        let phrase_inner = if is_quoted {
+            trimmed[1..trimmed.len() - 1].trim().to_lowercase()
+        } else {
+            String::new()
+        };
+
+        let words: Vec<String> = if is_quoted {
+            Vec::new()
+        } else {
+            trimmed
+                .split_whitespace()
+                .map(|w| w.to_lowercase())
+                .filter(|w| !w.is_empty())
+                .collect()
+        };
+
+        let mut matches: Vec<(u8, String, String, crate::storage::models::Note)> = Vec::new();
+
+        for note in notes {
+            let lower_title = note.title.to_lowercase();
+            let lower_content = note.content.to_lowercase();
+
+            let matched = if is_quoted {
+                if phrase_inner.is_empty() {
+                    false
+                } else {
+                    lower_title.contains(&phrase_inner) || lower_content.contains(&phrase_inner)
+                }
+            } else if words.is_empty() {
+                false
+            } else {
+                // Multi-term search requires all terms to be present across title or content (AND logic)
+                words.iter().all(|w| lower_title.contains(w) || lower_content.contains(w))
+            };
+
+            if matched {
+                // Ranking hierarchy:
+                // 0: Exact title match
+                // 1: Title prefix match
+                // 2: Title contains full query
+                // 3: Title contains all words
+                // 4: Content match
+                let rank: u8 = if lower_title == lower_query {
+                    0
+                } else if lower_title.starts_with(&lower_query) {
+                    1
+                } else if lower_title.contains(&lower_query) {
+                    2
+                } else if !words.is_empty() && words.iter().all(|w| lower_title.contains(w)) {
+                    3
+                } else {
+                    4
+                };
+
+                matches.push((rank, note.modified_at.clone(), note.id.clone(), note));
+            }
+        }
+
+        // Deterministic sorting: rank ASC, modified_at DESC, id ASC
+        matches.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+
+        let clean_query = if is_quoted { &phrase_inner } else { trimmed };
+
+        let results: Vec<SearchResult> = matches
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, _, note)| {
+                let snippet = generate_snippet(&note.content, clean_query, 120);
+                SearchResult {
+                    note_id: note.id,
+                    title: note.title,
+                    snippet,
+                    modified_at: note.modified_at,
+                    notebook_id: note.notebook_id,
+                    favorite: note.is_favorite,
+                }
+            })
+            .collect();
+
+        #[cfg(debug_assertions)]
+        {
+            eprintln!(
+                "[Search Encrypted] in-memory query executed: count={} duration={}ms query=\"{}\"",
+                results.len(),
+                start.elapsed().as_millis(),
+                trimmed
+            );
+        }
+
+        Ok(results)
+    }
+
     /// Rebuilds the FTS5 search index internally from the authoritative notes content table (Task 65).
-    ///
-    /// Useful for:
-    /// - Database migrations
-    /// - Index corruption recovery
-    /// - Future maintenance
-    ///
-    /// Re-creates virtual table and sync triggers if missing, then invokes SQLite FTS5 'rebuild'.
-    /// Strictly an internal backend capability; no user-facing button is exposed in Phase 6.
+    /// If encryption is active, purges plaintext FTS tables and triggers instead of recreating them (Task 11).
     pub fn rebuild_search_index(conn: &Connection) -> Result<(), StorageError> {
+        if Self::is_encryption_enabled(conn) {
+            // Under application-level encryption, do NOT create unencrypted FTS tables on disk (Task 11).
+            // Purge any lingering unencrypted index and return Ok(()).
+            return Self::purge_plaintext_index(conn);
+        }
+
         let sql = r#"
             CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
                 title,
@@ -130,15 +303,12 @@ impl SearchRepository {
     }
 
     /// Safe recovery strategy for missing or inconsistent/corrupted FTS search index (Task 66).
-    ///
-    /// Lifecycle:
-    /// 1. Detect missing or broken index
-    /// 2. Re-create virtual table and sync triggers if missing
-    /// 3. Rebuild / populate index from authoritative notes table
-    ///
-    /// Invariant: Authoritative `notes` records are strictly never deleted or modified
-    /// because search index creation or recovery failed.
+    /// If encryption is active, purges plaintext FTS tables and triggers instead of recreating them (Task 11).
     pub fn recover_index(conn: &Connection) -> Result<(), StorageError> {
+        if Self::is_encryption_enabled(conn) {
+            return Self::purge_plaintext_index(conn);
+        }
+
         // Attempt fast rebuild if virtual table is intact
         if Self::rebuild_search_index(conn).is_ok() {
             return Ok(());
@@ -4870,6 +5040,180 @@ mod tests {
         assert_eq!(results_restart_new[0].note_id, n1.id);
 
         drop(conn_restarted);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_11_protect_search_indexes_and_derived_data() {
+        use crate::storage::crypto::{KdfConfig, EncryptionMetadata, SecretBytes, generate_salt, ENCRYPTION_METADATA_KEY};
+
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_task11_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).unwrap();
+        run_migrations(&mut conn).unwrap();
+
+        // 1. Initial plaintext state: FTS table exists
+        let initial_fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(initial_fts_count, 1, "notes_fts virtual table should initially exist");
+
+        // Plaintext search works
+        let n_plain = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Plaintext Project".to_string()),
+                content: Some("Unencrypted note before setting up encryption.".to_string()),
+                ..Default::default()
+            },
+        ).unwrap();
+        let r_plain = SearchRepository::search(&conn, "Unencrypted", None).unwrap();
+        assert_eq!(r_plain.len(), 1);
+        assert_eq!(r_plain[0].note_id, n_plain.id);
+
+        // 2. Enable encryption and purge plaintext search indexes
+        let dummy_kdf = KdfConfig::default_profile(generate_salt());
+        let dummy_wrapped = crate::storage::crypto::WrappedKey::new(&[0u8; 12], &[0u8; 32], &[0u8; 16]);
+        let dummy_meta = EncryptionMetadata::new(dummy_kdf, dummy_wrapped);
+        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &dummy_meta.to_json().unwrap()).unwrap();
+
+        assert!(SearchRepository::is_encryption_enabled(&conn));
+
+        // Purge plaintext FTS table and triggers
+        SearchRepository::purge_plaintext_index(&conn).unwrap();
+
+        // Verify FTS virtual table, triggers, and shadow tables are completely gone
+        let fts_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_table_count, 0, "notes_fts virtual table MUST be purged when encryption is enabled");
+
+        let trigger_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'notes_fts_%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trigger_count, 0, "notes_fts triggers MUST be purged when encryption is enabled");
+
+        // 3. Rebuild / recovery under encryption does NOT recreate FTS on disk
+        SearchRepository::rebuild_search_index(&conn).unwrap();
+        let fts_after_rebuild: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_after_rebuild, 0, "rebuild_search_index must NOT recreate notes_fts while encryption is active");
+
+        SearchRepository::recover_index(&conn).unwrap();
+        let fts_after_recover: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_after_recover, 0, "recover_index must NOT recreate notes_fts while encryption is active");
+
+        // 4. Locked search rejection: searching without DEK fails immediately
+        let locked_err = SearchRepository::search_with_key(&conn, "Project", None, None).unwrap_err();
+        match locked_err {
+            StorageError::Crypto(msg) => {
+                assert!(msg.contains("locked"), "Expected locked error message, got: {msg}");
+            }
+            other => panic!("Expected Crypto error, got: {other:?}"),
+        }
+
+        // Calling legacy search without key also rejects safely
+        let legacy_locked_err = SearchRepository::search(&conn, "Project", None).unwrap_err();
+        assert!(matches!(legacy_locked_err, StorageError::Crypto(_)));
+
+        // 5. Encrypted note creation and in-memory unlocked search
+        let dek = SecretBytes::new(vec![0x42; 32]);
+
+        let enc_note1 = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Project Titan Specification".to_string()),
+                content: Some("Confidential quantum architectural details for the titan cluster.".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        ).unwrap();
+
+        let enc_note2 = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Titan Budget 2026".to_string()),
+                content: Some("Financial expenditure allocations for titan engineering milestones.".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        ).unwrap();
+
+        let enc_note3 = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Grocery Checklist".to_string()),
+                content: Some("Organic milk, sourdough bread, coffee beans.".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        ).unwrap();
+
+        // 5a. Search for single keyword: "titan"
+        let r_titan = SearchRepository::search_with_key(&conn, "titan", None, Some(&dek)).unwrap();
+        assert_eq!(r_titan.len(), 2);
+        // enc_note2 ("Titan Budget 2026") starts with "Titan" (rank 1: prefix match)
+        // enc_note1 ("Project Titan Specification") contains "Titan" (rank 2: contains match)
+        assert_eq!(r_titan[0].note_id, enc_note2.id);
+        assert_eq!(r_titan[1].note_id, enc_note1.id);
+
+        // 5b. Search for exact phrase: "quantum architectural"
+        let r_phrase = SearchRepository::search_with_key(&conn, "\"quantum architectural\"", None, Some(&dek)).unwrap();
+        assert_eq!(r_phrase.len(), 1);
+        assert_eq!(r_phrase[0].note_id, enc_note1.id);
+        assert!(r_phrase[0].snippet.is_some());
+        let snippet = r_phrase[0].snippet.as_ref().unwrap();
+        assert!(snippet.to_lowercase().contains("quantum architectural"));
+
+        // 5c. Multi-word search (implicit AND): "titan milestones"
+        let r_multi = SearchRepository::search_with_key(&conn, "titan milestones", None, Some(&dek)).unwrap();
+        assert_eq!(r_multi.len(), 1);
+        assert_eq!(r_multi[0].note_id, enc_note2.id);
+
+        // 5d. Case-insensitivity: "GROCERY"
+        let r_case = SearchRepository::search_with_key(&conn, "GROCERY", None, Some(&dek)).unwrap();
+        assert_eq!(r_case.len(), 1);
+        assert_eq!(r_case[0].note_id, enc_note3.id);
+
+        // 5e. Soft-deleted encrypted notes excluded from search
+        NoteRepository::delete(&conn, &enc_note3.id, true).unwrap();
+        let r_deleted = SearchRepository::search_with_key(&conn, "coffee", None, Some(&dek)).unwrap();
+        assert_eq!(r_deleted.len(), 0, "Soft-deleted encrypted note must be excluded from search");
+
+        // 6. Verify zero FTS tables or shadow tables ever created in SQLite
+        let fts_final_check: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name LIKE 'notes_fts%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_final_check, 0, "Zero notes_fts tables must exist in database after search");
+
+        drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

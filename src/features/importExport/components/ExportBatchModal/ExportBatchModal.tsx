@@ -12,6 +12,7 @@ import {
   pickExportDestinationFile,
   pickExportDestinationFolder,
 } from "../../services/fileDialog";
+import { cryptoStorage } from "../../../../services/storage/crypto";
 import { sanitizeExportFilename } from "../ExportNoteModal/ExportNoteModal";
 import { OperationSummaryModal } from "../OperationSummaryModal/OperationSummaryModal";
 import "./ExportBatchModal.css";
@@ -45,6 +46,7 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
   const [summary, setSummary] = useState<ExportSummary | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isEncryptionActive, setIsEncryptionActive] = useState(false);
 
   // Compute active effective scope based on includeNested toggle
   const effectiveScope: ExportScope = useMemo(() => {
@@ -69,6 +71,15 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
     let isMounted = true;
     setIsLoadingPreview(true);
     setErrorMessage(null);
+
+    cryptoStorage
+      .getEncryptionStatus()
+      .then((st) => {
+        if (isMounted) setIsEncryptionActive(st.enabled);
+      })
+      .catch(() => {
+        if (isMounted) setIsEncryptionActive(false);
+      });
 
     importExportStorage
       .previewExportSelection(effectiveScope)
@@ -380,6 +391,16 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
               </span>
             </div>
           )}
+
+          {/* Security Disclosure */}
+          <div className="export-batch-security-notice" role="note">
+            <span className="export-security-icon">ℹ️</span>
+            <span>
+              {isEncryptionActive
+                ? "Security Notice: Database encryption is active. Exporting creates unencrypted files at the chosen destination. Ensure destination folders are properly secured."
+                : "Security Notice: Exporting creates unencrypted files at the chosen destination."}
+            </span>
+          </div>
 
           {/* Error Message */}
           {errorMessage && (

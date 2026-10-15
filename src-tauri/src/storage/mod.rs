@@ -1,4 +1,5 @@
 pub mod attachment_storage;
+pub mod crypto;
 pub mod database;
 pub mod errors;
 pub mod migrations;
@@ -13,8 +14,11 @@ pub use attachment_storage::{
     sanitize_original_filename, AttachmentStorage, StoredAttachmentFile,
     ValidatedSourceFile, DEFAULT_MAX_ATTACHMENT_SIZE_BYTES,
 };
+pub use crypto::*;
 pub use database::{init_connection, Database};
-pub use errors::{AttachmentError, BackupError, ImportExportError, StorageError, TrashError};
+pub use errors::{
+    AttachmentError, BackupError, CryptoError, ImportExportError, StorageError, TrashError,
+};
 pub use migrations::{run_migrations, run_migrations_custom, Migration, MIGRATIONS};
 pub use models::*;
 pub use paths::StoragePaths;

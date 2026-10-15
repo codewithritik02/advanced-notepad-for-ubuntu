@@ -88,6 +88,51 @@ export const logger = {
       );
     },
   },
+
+  security: {
+    setupStarted: (): void => {
+      logger.info("[Security] Encryption setup started");
+    },
+    setupCompleted: (notesCount: number, attachmentsCount: number): void => {
+      logger.info(`[Security] Encryption setup completed: notes=${notesCount}, attachments=${attachmentsCount}`);
+    },
+    setupFailed: (error: unknown): void => {
+      logger.error("[Security] Encryption setup failed", error);
+    },
+    unlockAttempted: (): void => {
+      logger.info("[Security] Application unlock attempted");
+    },
+    unlockSucceeded: (): void => {
+      logger.info("[Security] Application unlocked successfully");
+    },
+    unlockFailed: (error: unknown): void => {
+      logger.warn("[Security] Application unlock failed", { error: String(error) });
+    },
+    autoLockOccurred: (idleMinutes: number): void => {
+      logger.info(`[Security] Application locked automatically after ${idleMinutes}m inactivity`);
+    },
+    manualLockOccurred: (): void => {
+      logger.info("[Security] Application session locked manually");
+    },
+    passwordChangeStarted: (): void => {
+      logger.info("[Security] Password change operation started");
+    },
+    passwordChangeCompleted: (): void => {
+      logger.info("[Security] Password changed successfully");
+    },
+    passwordChangeFailed: (error: unknown): void => {
+      logger.warn("[Security] Password change failed", { error: String(error) });
+    },
+    disableEncryptionStarted: (): void => {
+      logger.warn("[Security] Disable encryption workflow started");
+    },
+    disableEncryptionCompleted: (notesCount: number, attachmentsCount: number): void => {
+      logger.info(`[Security] Disable encryption completed: decrypted_notes=${notesCount}, decrypted_attachments=${attachmentsCount}`);
+    },
+    disableEncryptionFailed: (error: unknown): void => {
+      logger.error("[Security] Disable encryption failed", error);
+    },
+  },
 };
 
 export default logger;

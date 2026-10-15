@@ -418,3 +418,23 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+.export-batch-security-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--color-bg-secondary, #f8f9fa);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--color-text-secondary, #4b5563);
+  margin-top: 12px;
+}
+
+.export-security-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+

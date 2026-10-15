@@ -18,6 +18,8 @@ export interface TopBarProps {
   canGoForward?: boolean;
   onNavigateBack?: () => void;
   onNavigateForward?: () => void;
+  isEncryptionEnabled?: boolean;
+  onLockClick?: () => void;
 }
 
 // Lightweight inline SVG icons
@@ -96,6 +98,13 @@ const SettingsIcon = () => (
   </svg>
 );
 
+const LockIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </svg>
+);
+
 export const TopBar: React.FC<TopBarProps> = ({
   searchQuery = "",
   isSearching = false,
@@ -112,6 +121,8 @@ export const TopBar: React.FC<TopBarProps> = ({
   canGoForward = false,
   onNavigateBack,
   onNavigateForward,
+  isEncryptionEnabled = false,
+  onLockClick,
 }) => {
   const internalSearchRef = useRef<HTMLInputElement>(null);
   const searchInputRef = externalSearchRef ?? internalSearchRef;
@@ -238,6 +249,19 @@ export const TopBar: React.FC<TopBarProps> = ({
           <PlusIcon />
           <span className="btn-label">New Note</span>
         </button>
+
+        {isEncryptionEnabled && (
+          <button
+            type="button"
+            className="topbar-icon-btn topbar-lock-btn"
+            id="topbar-lock-btn"
+            onClick={onLockClick}
+            title="Lock Application (Ctrl+Alt+L)"
+            aria-label="Lock Application"
+          >
+            <LockIcon />
+          </button>
+        )}
 
         <button
           type="button"

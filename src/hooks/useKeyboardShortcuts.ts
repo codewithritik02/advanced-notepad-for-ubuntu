@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 export interface KeyboardShortcutHandlers {
+  enabled?: boolean;
   onNewNote?: () => void;
   onFocusSearch?: () => void;
   onOpenSettings?: () => void;
@@ -9,6 +10,7 @@ export interface KeyboardShortcutHandlers {
   onDeleteNote?: () => void;
   onNavigateBack?: () => void;
   onNavigateForward?: () => void;
+  onLockApp?: () => void;
 }
 
 /**
@@ -18,6 +20,7 @@ export interface KeyboardShortcutHandlers {
  * without scattering listeners across individual components.
  */
 export function useKeyboardShortcuts({
+  enabled = true,
   onNewNote,
   onFocusSearch,
   onOpenSettings,
@@ -26,8 +29,13 @@ export function useKeyboardShortcuts({
   onDeleteNote,
   onNavigateBack,
   onNavigateForward,
+  onLockApp,
 }: KeyboardShortcutHandlers): void {
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     const handleKeyDown = (event: KeyboardEvent) => {
       const isModifier = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
@@ -110,6 +118,13 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // Ctrl/Cmd + Alt + L or Ctrl/Cmd + Shift + L — Lock Application (Phase 12, Task 13)
+      if (isModifier && (event.altKey || event.shiftKey) && key === "l") {
+        event.preventDefault();
+        onLockApp?.();
+        return;
+      }
+
       // Ctrl/Cmd + Backspace or Delete — Delete active note (Phase 8, Task 14)
       if (isModifier && (key === "backspace" || key === "delete")) {
         const activeEl = document.activeElement;
@@ -128,7 +143,17 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onNewNote, onFocusSearch, onOpenSettings, onEscape, onSaveNote, onDeleteNote]);
+  }, [
+    onNewNote,
+    onFocusSearch,
+    onOpenSettings,
+    onEscape,
+    onSaveNote,
+    onDeleteNote,
+    onNavigateBack,
+    onNavigateForward,
+    onLockApp,
+  ]);
 }
 
 export default useKeyboardShortcuts;

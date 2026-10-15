@@ -846,6 +846,10 @@ pub struct BackupManifest {
     pub scope: BackupScopeDeclaration,
     #[serde(default)]
     pub checksums: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub is_encrypted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_algorithm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -869,6 +873,8 @@ pub struct BackupCreateResult {
     pub note_count: usize,
     pub attachment_count: usize,
     pub warning_message: Option<String>,
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -887,6 +893,8 @@ pub struct BackupListItem {
     pub is_verified: bool,
     pub is_valid: bool,
     pub issue_summary: Option<String>,
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -942,6 +950,10 @@ pub struct RestorePreviewResult {
     pub compatibility: BackupCompatibilityStatus,
     pub warnings: Vec<String>,
     pub can_restore: bool,
+    #[serde(default)]
+    pub is_encrypted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_algorithm: Option<String>,
 }
 
 /// Authoritative metadata for a pre-restore recovery checkpoint (Phase 11, Task 16).
@@ -961,6 +973,8 @@ pub struct RecoveryCheckpoint {
     pub attachment_total_bytes: u64,
     pub schema_version: i32,
     pub is_verified: bool,
+    #[serde(default)]
+    pub is_encrypted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1597,6 +1611,8 @@ mod tests {
                 includes_attachments: true,
             },
             checksums,
+            is_encrypted: false,
+            encryption_algorithm: None,
         };
 
         let manifest_json = serde_json::to_string(&manifest).expect("Serialize manifest");
@@ -1621,6 +1637,7 @@ mod tests {
             note_count: 42,
             attachment_count: 1,
             warning_message: None,
+            is_encrypted: false,
         };
         let create_json = serde_json::to_string(&create_res).unwrap();
         assert!(create_json.contains("\"filePath\":"));
@@ -1644,6 +1661,7 @@ mod tests {
             is_verified: true,
             is_valid: true,
             issue_summary: None,
+            is_encrypted: false,
         };
         let list_json = serde_json::to_string(&list_item).unwrap();
         assert!(list_json.contains("\"isVerified\":true"));
@@ -1715,6 +1733,7 @@ mod tests {
             attachment_total_bytes: 1048576,
             schema_version: 4,
             is_verified: true,
+            is_encrypted: false,
         };
         let chk_json = serde_json::to_string(&checkpoint).unwrap();
         assert!(chk_json.contains("\"checkpointId\":\"chk-uuid-1\""));

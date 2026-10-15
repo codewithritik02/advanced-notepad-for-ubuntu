@@ -309,6 +309,11 @@ export const BackupListModal: React.FC<BackupListModalProps> = ({
                         {item.fileName}
                       </span>
                       <div className="backup-item-badges">
+                        {item.isEncrypted && (
+                          <Badge variant="accent" size="sm" title="Encrypted backup archive">
+                            🔒 Encrypted
+                          </Badge>
+                        )}
                         <Badge
                           variant={
                             item.backupType === "automatic"
@@ -385,6 +390,13 @@ export const BackupListModal: React.FC<BackupListModalProps> = ({
                     <span className="backup-detail-stat-label">File Size</span>
                     <span className="backup-detail-stat-val">
                       {formatBackupBytes(selectedBackup.fileSize)}
+                    </span>
+                  </div>
+
+                  <div className="backup-detail-stat">
+                    <span className="backup-detail-stat-label">Encryption</span>
+                    <span className="backup-detail-stat-val">
+                      {selectedBackup.isEncrypted ? "🔒 Encrypted" : "Disabled"}
                     </span>
                   </div>
 

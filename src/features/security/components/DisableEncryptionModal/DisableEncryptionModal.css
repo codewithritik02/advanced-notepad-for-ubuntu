@@ -1,0 +1,135 @@
+.disable-encryption-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md, 16px);
+}
+
+.disable-encryption-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md, 16px);
+}
+
+.disable-encryption-warning-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm, 10px);
+  padding: var(--spacing-md, 12px) var(--spacing-lg, 16px);
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.12));
+  border: 1px solid var(--color-danger-border, rgba(239, 68, 68, 0.35));
+  border-radius: var(--radius-md, 6px);
+  color: var(--color-danger, #ef4444);
+}
+
+.disable-encryption-warning-banner .warning-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.disable-encryption-warning-banner .warning-text strong {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.disable-encryption-warning-banner .warning-text p {
+  margin: 0;
+  font-size: 0.825rem;
+  line-height: 1.45;
+  color: var(--color-text-secondary, #94a3b8);
+}
+
+.disable-encryption-checkpoint-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+  padding: 8px 12px;
+  background-color: var(--color-surface-hover, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-md, 6px);
+  font-size: 0.8rem;
+  color: var(--color-text-secondary, #94a3b8);
+}
+
+.disable-encryption-checkpoint-info .info-icon {
+  flex-shrink: 0;
+  font-size: 1rem;
+}
+
+.disable-encryption-checkpoint-info p {
+  margin: 0;
+}
+
+.disable-encryption-checkpoint-info code {
+  background-color: var(--color-surface, rgba(0, 0, 0, 0.3));
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.8rem;
+  color: var(--color-text-primary, #f1f5f9);
+}
+
+.disable-encryption-ack-label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm, 10px);
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.825rem;
+  color: var(--color-text-secondary, #cbd5e1);
+  line-height: 1.4;
+  padding: 4px 0;
+}
+
+.disable-encryption-ack-label input[type="checkbox"] {
+  margin-top: 2px;
+  cursor: pointer;
+  accent-color: var(--color-danger, #ef4444);
+}
+
+.disable-encryption-error {
+  padding: 8px 12px;
+  background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.1));
+  border-left: 3px solid var(--color-danger, #ef4444);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--color-danger, #ef4444);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.disable-encryption-success {
+  text-align: center;
+  padding: var(--spacing-lg, 24px) var(--spacing-md, 16px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+}
+
+.disable-encryption-success-icon {
+  font-size: 2.5rem;
+  margin-bottom: 4px;
+}
+
+.disable-encryption-success h4 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--color-text-primary, #f1f5f9);
+}
+
+.disable-encryption-success p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary, #94a3b8);
+  max-width: 420px;
+  line-height: 1.5;
+}
+
+.disable-encryption-footer-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm, 8px);
+}

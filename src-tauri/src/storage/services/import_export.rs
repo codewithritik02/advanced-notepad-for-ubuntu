@@ -15,7 +15,8 @@ use crate::storage::models::{
     ImportFormat, ImportItemStatus, ImportOptions, ImportPreview, ImportProgress, ImportRequest, ImportSummary,
     InterchangeDocument, InterchangeInternalLink, InterchangeNote, Note, OperationOutcome, ValidationStatus,
 };
-use crate::storage::repositories::{AttachmentRepository, NoteRepository, NotebookRepository, TagRepository};
+use crate::storage::crypto::SecretBytes;
+use crate::storage::repositories::{AttachmentRepository, NoteRepository, NotebookRepository, SearchRepository, TagRepository};
 use crate::storage::services::links::LinkParser;
 
 fn cancelled_set() -> &'static Mutex<HashSet<String>> {
@@ -391,6 +392,52 @@ impl ImportExportService {
         title: &str,
         content: &str,
     ) -> Result<DuplicateMatch, StorageError> {
+        Self::check_duplicate_with_key(conn, title, content, None)
+    }
+
+    /// Checks for duplicate notes, correctly decrypting active notes when protected by encryption.
+    pub fn check_duplicate_with_key(
+        conn: &Connection,
+        title: &str,
+        content: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<DuplicateMatch, StorageError> {
+        if SearchRepository::is_encryption_enabled(conn) {
+            let Some(key) = dek else {
+                return Err(StorageError::Crypto(
+                    "Application is locked. Please unlock first.".to_string(),
+                ));
+            };
+            let active_notes = NoteRepository::list_active_with_key(conn, Some(key))?;
+            for n in &active_notes {
+                if n.title == title && n.content == content {
+                    return Ok(DuplicateMatch::ExactMatch {
+                        existing_id: n.id.clone(),
+                        existing_title: n.title.clone(),
+                    });
+                }
+            }
+            if !content.trim().is_empty() {
+                for n in &active_notes {
+                    if n.content == content {
+                        return Ok(DuplicateMatch::ContentMatch {
+                            existing_id: n.id.clone(),
+                            existing_title: n.title.clone(),
+                        });
+                    }
+                }
+            }
+            for n in &active_notes {
+                if n.title == title {
+                    return Ok(DuplicateMatch::TitleCollisionOnly {
+                        existing_id: n.id.clone(),
+                        existing_title: n.title.clone(),
+                    });
+                }
+            }
+            return Ok(DuplicateMatch::None);
+        }
+
         // 1. Check for exact title and exact content match
         let mut exact_stmt = conn.prepare(
             "SELECT id, title FROM notes WHERE title = ?1 AND content = ?2 AND is_deleted = 0 LIMIT 1",
@@ -479,6 +526,21 @@ impl ImportExportService {
         conn: &Connection,
         raw_paths: &[String],
     ) -> Result<ImportPreview, StorageError> {
+        Self::scan_candidates_with_key(conn, raw_paths, None)
+    }
+
+    /// Scans candidate files, evaluating duplicate notes with active encryption key if protected.
+    pub fn scan_candidates_with_key(
+        conn: &Connection,
+        raw_paths: &[String],
+        dek: Option<&SecretBytes>,
+    ) -> Result<ImportPreview, StorageError> {
+        if SearchRepository::is_encryption_enabled(conn) && dek.is_none() {
+            return Err(StorageError::Crypto(
+                "Application is locked. Please unlock first.".to_string(),
+            ));
+        }
+
         // Safe cancellation handling: an empty selection returns an empty preview without mutating data
         if raw_paths.is_empty() {
             return Ok(ImportPreview {
@@ -648,13 +710,13 @@ impl ImportExportService {
 
                 if doc.notes.len() == 1 {
                     proposed_title = Self::sanitize_title(&doc.notes[0].title);
-                    Self::check_duplicate(conn, &proposed_title, &doc.notes[0].content)?
+                    Self::check_duplicate_with_key(conn, &proposed_title, &doc.notes[0].content, dek)?
                 } else {
                     warnings.push(format!("Structured package containing {} note(s).", doc.notes.len()));
                     DuplicateMatch::None
                 }
             } else {
-                Self::check_duplicate(conn, &proposed_title, &validated.text)?
+                Self::check_duplicate_with_key(conn, &proposed_title, &validated.text, dek)?
             };
 
             let (is_duplicate, duplicate_note_id, duplicate_note_title) = match dup_match {
@@ -738,18 +800,46 @@ impl ImportExportService {
         conn: &mut Connection,
         request: ImportRequest,
     ) -> Result<ImportSummary, StorageError> {
-        Self::execute_import_with_progress(conn, request, |_| {})
+        Self::execute_import_with_progress_and_key(conn, request, None, |_| {})
+    }
+
+    /// Executes the committing of imported notes with an active encryption key if protected.
+    pub fn execute_import_with_key(
+        conn: &mut Connection,
+        request: ImportRequest,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ImportSummary, StorageError> {
+        Self::execute_import_with_progress_and_key(conn, request, dek, |_| {})
     }
 
     /// Executes the committing of imported notes within atomic per-file transactions with progress emission and cancellation checks.
     pub fn execute_import_with_progress<F>(
         conn: &mut Connection,
         request: ImportRequest,
+        on_progress: F,
+    ) -> Result<ImportSummary, StorageError>
+    where
+        F: FnMut(&ImportProgress),
+    {
+        Self::execute_import_with_progress_and_key(conn, request, None, on_progress)
+    }
+
+    /// Executes the committing of imported notes within atomic per-file transactions with encryption support, progress emission, and cancellation checks.
+    pub fn execute_import_with_progress_and_key<F>(
+        conn: &mut Connection,
+        request: ImportRequest,
+        dek: Option<&SecretBytes>,
         mut on_progress: F,
     ) -> Result<ImportSummary, StorageError>
     where
         F: FnMut(&ImportProgress),
     {
+        if SearchRepository::is_encryption_enabled(conn) && dek.is_none() {
+            return Err(StorageError::Crypto(
+                "Application is locked. Please unlock first.".to_string(),
+            ));
+        }
+
         let start_time = std::time::Instant::now();
         let mut results = Vec::new();
         let mut imported_count = 0;
@@ -940,7 +1030,7 @@ impl ImportExportService {
                         };
 
                         // Check duplicate under chosen policy
-                        let dup_match = Self::check_duplicate(&tx, &note_title, &interchange_note.content)?;
+                        let dup_match = Self::check_duplicate_with_key(&tx, &note_title, &interchange_note.content, dek)?;
                         let (skip, _) = Self::should_skip_candidate(request.options.duplicate_policy, &dup_match, true);
                         if skip {
                             continue;
@@ -1010,6 +1100,9 @@ impl ImportExportService {
                             .cloned()
                             .unwrap_or_else(|| now.clone());
 
+                        let stored_title = NoteRepository::encrypt_field_if_needed(&note_title, &target_note_id, "title", dek)?;
+                        let stored_content = NoteRepository::encrypt_field_if_needed(&content, &target_note_id, "content", dek)?;
+
                         tx.execute(
                             "INSERT INTO notes (
                                 id, title, content, format, notebook_id, created_at, modified_at,
@@ -1017,8 +1110,8 @@ impl ImportExportService {
                             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
                             params![
                                 target_note_id,
-                                note_title,
-                                content,
+                                stored_title,
+                                stored_content,
                                 note_format,
                                 resolved_notebook_id,
                                 created_at,
@@ -1103,7 +1196,7 @@ impl ImportExportService {
                     });
 
                 // Duplicate policy check
-                let dup_match = Self::check_duplicate(conn, &final_title, &validated.text)?;
+                let dup_match = Self::check_duplicate_with_key(conn, &final_title, &validated.text, dek)?;
                 let (skip, skip_reason) = Self::should_skip_candidate(request.options.duplicate_policy, &dup_match, true);
                 if skip {
                     results.push(ImportFileResult {
@@ -1136,7 +1229,7 @@ impl ImportExportService {
 
                 let tx_result = (|| -> Result<Note, StorageError> {
                     let tx = conn.transaction()?;
-                    let note = NoteRepository::create(
+                    let note = NoteRepository::create_with_key(
                         &tx,
                         CreateNoteDto {
                             title: Some(final_title.clone()),
@@ -1146,6 +1239,7 @@ impl ImportExportService {
                             is_favorite: Some(false),
                             is_pinned: Some(false),
                         },
+                        dek,
                     )?;
                     tx.commit()?;
                     Ok(note)
@@ -1360,7 +1454,22 @@ impl ImportExportService {
         conn: &Connection,
         request: ExportSingleNoteRequest,
     ) -> Result<ExportFileResult, StorageError> {
-        let note = NoteRepository::get_by_id(conn, &request.note_id)?
+        Self::export_single_note_with_key(conn, request, None)
+    }
+
+    /// Exports an individual note to a destination file chosen by the user, with encryption support.
+    pub fn export_single_note_with_key(
+        conn: &Connection,
+        request: ExportSingleNoteRequest,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ExportFileResult, StorageError> {
+        if SearchRepository::is_encryption_enabled(conn) && dek.is_none() {
+            return Err(StorageError::Crypto(
+                "Application is locked. Please unlock first.".to_string(),
+            ));
+        }
+
+        let note = NoteRepository::get_by_id_with_key(conn, &request.note_id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{}' not found", request.note_id)))?;
 
         let dest_path = Path::new(&request.destination_path);
@@ -1505,9 +1614,26 @@ impl ImportExportService {
         conn: &Connection,
         scope: &ExportScope,
     ) -> Result<ExportSelectionPreview, StorageError> {
+        Self::resolve_export_selection_with_key(conn, scope, None)
+    }
+
+    /// Resolves an export selection scope, validating note IDs, filtering out trashed notes,
+    /// avoiding loading large full content into memory/preview, and reporting accurate counts.
+    /// Safely decrypts metadata when protected by encryption.
+    pub fn resolve_export_selection_with_key(
+        conn: &Connection,
+        scope: &ExportScope,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ExportSelectionPreview, StorageError> {
+        if SearchRepository::is_encryption_enabled(conn) && dek.is_none() {
+            return Err(StorageError::Crypto(
+                "Application is locked. Please unlock first.".to_string(),
+            ));
+        }
+
         match scope {
             ExportScope::SingleNote { note_id } => {
-                let note_opt = NoteRepository::get_by_id(conn, note_id)?;
+                let note_opt = NoteRepository::get_by_id_with_key(conn, note_id, dek)?;
                 match note_opt {
                     None => Ok(ExportSelectionPreview {
                         total_requested: 1,
@@ -1575,7 +1701,7 @@ impl ImportExportService {
                 let mut notebook_set = std::collections::HashSet::new();
 
                 for id in unique_ids {
-                    match NoteRepository::get_by_id(conn, &id)? {
+                    match NoteRepository::get_by_id_with_key(conn, &id, dek)? {
                         None => {
                             skipped_missing_count += 1;
                         }
@@ -1632,51 +1758,33 @@ impl ImportExportService {
                 let mut skipped_trashed_count = 0;
 
                 for nb_id in &target_notebook_ids {
-                    let mut stmt = conn.prepare(
-                        "SELECT id, title, format, notebook_id, is_favorite, is_pinned, is_deleted, modified_at, length(content)
-                         FROM notes
-                         WHERE notebook_id = ?1
-                         ORDER BY modified_at DESC"
-                    )?;
+                    let active_notes = NoteRepository::list_filtered_with_key(conn, false, Some(nb_id), false, dek)?;
+                    let trashed_in_nb: usize = conn.query_row(
+                        "SELECT COUNT(1) FROM notes WHERE notebook_id = ?1 AND is_deleted = 1",
+                        params![nb_id],
+                        |r| r.get::<_, i64>(0).map(|c| c as usize),
+                    ).unwrap_or(0);
+                    skipped_trashed_count += trashed_in_nb;
 
-                    let rows = stmt.query_map(rusqlite::params![nb_id], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, Option<String>>(3)?,
-                            row.get::<_, bool>(4)?,
-                            row.get::<_, bool>(5)?,
-                            row.get::<_, bool>(6)?,
-                            row.get::<_, String>(7)?,
-                            row.get::<_, i64>(8)? as usize,
-                        ))
-                    })?;
-
-                    for r in rows {
-                        let (id, title, format, nb_opt, is_favorite, is_pinned, is_deleted, modified_at, content_len) = r?;
-                        if is_deleted {
-                            skipped_trashed_count += 1;
+                    for note in active_notes {
+                        let tag_count = TagRepository::get_tags_for_note(conn, &note.id)?.len();
+                        let notebook_path = if let Some(ref nid) = note.notebook_id {
+                            NotebookRepository::get_hierarchy_path(conn, nid).ok()
                         } else {
-                            let tag_count = TagRepository::get_tags_for_note(conn, &id)?.len();
-                            let notebook_path = if let Some(ref nid) = nb_opt {
-                                NotebookRepository::get_hierarchy_path(conn, nid).ok()
-                            } else {
-                                None
-                            };
-                            notes.push(ExportNoteMetadataItem {
-                                id,
-                                title,
-                                format,
-                                notebook_id: nb_opt,
-                                notebook_path,
-                                is_favorite,
-                                is_pinned,
-                                tag_count,
-                                content_length_bytes: content_len,
-                                modified_at,
-                            });
-                        }
+                            None
+                        };
+                        notes.push(ExportNoteMetadataItem {
+                            id: note.id,
+                            title: note.title,
+                            format: note.format,
+                            notebook_id: note.notebook_id,
+                            notebook_path,
+                            is_favorite: note.is_favorite,
+                            is_pinned: note.is_pinned,
+                            tag_count,
+                            content_length_bytes: note.content.len(),
+                            modified_at: note.modified_at,
+                        });
                     }
                 }
 
@@ -1693,57 +1801,38 @@ impl ImportExportService {
                 })
             }
             ExportScope::AllNotes => {
-                let mut stmt = conn.prepare(
-                    "SELECT id, title, format, notebook_id, is_favorite, is_pinned, is_deleted, modified_at, length(content)
-                     FROM notes
-                     ORDER BY modified_at DESC"
-                )?;
+                let active_notes = NoteRepository::list_active_with_key(conn, dek)?;
+                let skipped_trashed_count: usize = conn.query_row(
+                    "SELECT COUNT(1) FROM notes WHERE is_deleted = 1",
+                    [],
+                    |r| r.get::<_, i64>(0).map(|c| c as usize),
+                ).unwrap_or(0);
 
                 let mut notes = Vec::new();
-                let mut skipped_trashed_count = 0;
                 let mut notebook_set = std::collections::HashSet::new();
 
-                let rows = stmt.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, bool>(4)?,
-                        row.get::<_, bool>(5)?,
-                        row.get::<_, bool>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)? as usize,
-                    ))
-                })?;
-
-                for r in rows {
-                    let (id, title, format, nb_opt, is_favorite, is_pinned, is_deleted, modified_at, content_len) = r?;
-                    if is_deleted {
-                        skipped_trashed_count += 1;
-                    } else {
-                        if let Some(ref nid) = nb_opt {
-                            notebook_set.insert(nid.clone());
-                        }
-                        let tag_count = TagRepository::get_tags_for_note(conn, &id)?.len();
-                        let notebook_path = if let Some(ref nid) = nb_opt {
-                            NotebookRepository::get_hierarchy_path(conn, nid).ok()
-                        } else {
-                            None
-                        };
-                        notes.push(ExportNoteMetadataItem {
-                            id,
-                            title,
-                            format,
-                            notebook_id: nb_opt,
-                            notebook_path,
-                            is_favorite,
-                            is_pinned,
-                            tag_count,
-                            content_length_bytes: content_len,
-                            modified_at,
-                        });
+                for note in active_notes {
+                    if let Some(ref nid) = note.notebook_id {
+                        notebook_set.insert(nid.clone());
                     }
+                    let tag_count = TagRepository::get_tags_for_note(conn, &note.id)?.len();
+                    let notebook_path = if let Some(ref nid) = note.notebook_id {
+                        NotebookRepository::get_hierarchy_path(conn, nid).ok()
+                    } else {
+                        None
+                    };
+                    notes.push(ExportNoteMetadataItem {
+                        id: note.id,
+                        title: note.title,
+                        format: note.format,
+                        notebook_id: note.notebook_id,
+                        notebook_path,
+                        is_favorite: note.is_favorite,
+                        is_pinned: note.is_pinned,
+                        tag_count,
+                        content_length_bytes: note.content.len(),
+                        modified_at: note.modified_at,
+                    });
                 }
 
                 let total_included = notes.len();
@@ -1766,18 +1855,46 @@ impl ImportExportService {
         conn: &Connection,
         request: ExportBatchRequest,
     ) -> Result<ExportSummary, StorageError> {
-        Self::export_notes_batch_with_progress(conn, request, |_| {})
+        Self::export_notes_batch_with_progress_and_key(conn, request, None, |_| {})
+    }
+
+    /// Executes a batch export for multiple notes or notebook selection with active encryption key.
+    pub fn export_notes_batch_with_key(
+        conn: &Connection,
+        request: ExportBatchRequest,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ExportSummary, StorageError> {
+        Self::export_notes_batch_with_progress_and_key(conn, request, dek, |_| {})
     }
 
     /// Executes a batch export for multiple notes or notebook selection with progress emission and cancellation support.
     pub fn export_notes_batch_with_progress<F>(
         conn: &Connection,
         request: ExportBatchRequest,
+        on_progress: F,
+    ) -> Result<ExportSummary, StorageError>
+    where
+        F: FnMut(&ExportProgress),
+    {
+        Self::export_notes_batch_with_progress_and_key(conn, request, None, on_progress)
+    }
+
+    /// Executes a batch export for multiple notes or notebook selection with encryption support, progress emission, and cancellation support.
+    pub fn export_notes_batch_with_progress_and_key<F>(
+        conn: &Connection,
+        request: ExportBatchRequest,
+        dek: Option<&SecretBytes>,
         mut on_progress: F,
     ) -> Result<ExportSummary, StorageError>
     where
         F: FnMut(&ExportProgress),
     {
+        if SearchRepository::is_encryption_enabled(conn) && dek.is_none() {
+            return Err(StorageError::Crypto(
+                "Application is locked. Please unlock first.".to_string(),
+            ));
+        }
+
         let start_time = std::time::Instant::now();
         let operation_id = request.operation_id.clone();
 
@@ -1789,7 +1906,7 @@ impl ImportExportService {
         });
 
         // 2. Resolve preview to obtain eligible note IDs and skip counts
-        let preview = Self::resolve_export_selection(conn, &scope)?;
+        let preview = Self::resolve_export_selection_with_key(conn, &scope, dek)?;
         let total = preview.notes.len();
 
         // 3. Process export based on format
@@ -1809,7 +1926,7 @@ impl ImportExportService {
 
                 let mut interchange_notes = Vec::new();
                 for meta in &preview.notes {
-                    if let Some(note) = NoteRepository::get_by_id(conn, &meta.id)? {
+                    if let Some(note) = NoteRepository::get_by_id_with_key(conn, &meta.id, dek)? {
                         let mut tags: Vec<String> = TagRepository::get_tags_for_note(conn, &note.id)?
                             .into_iter()
                             .map(|t| t.name)
@@ -2015,7 +2132,7 @@ impl ImportExportService {
                         cancelled_count,
                     });
 
-                    if let Some(note) = NoteRepository::get_by_id(conn, &meta.id)? {
+                    if let Some(note) = NoteRepository::get_by_id_with_key(conn, &meta.id, dek)? {
                         let base_stem = Self::sanitize_filename(&note.title);
                         let mut filename = format!("{base_stem}.{ext}");
                         let mut counter = 1;

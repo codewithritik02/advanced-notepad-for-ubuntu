@@ -1,31 +1,107 @@
 use rusqlite::{params, Connection, Row};
+use crate::storage::crypto::{decrypt_string, encrypt_string, is_encrypted_string, SecretBytes};
 use crate::storage::errors::StorageError;
 use crate::storage::models::{CreateNoteDto, Note, TrashedNoteItem, UpdateNoteDto};
 
 pub struct NoteRepository;
 
 impl NoteRepository {
-    fn map_row(row: &Row) -> rusqlite::Result<Note> {
+    /// Decrypts a stored database field if it is encrypted with the versioned prefix (Task 9).
+    /// If unencrypted, returns the raw plaintext string as-is.
+    /// If encrypted and no DEK is supplied (e.g. application locked), returns an explicit error.
+    pub fn decrypt_field_if_encrypted(
+        raw_val: &str,
+        note_id: &str,
+        field_name: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<String, StorageError> {
+        if !is_encrypted_string(raw_val) {
+            return Ok(raw_val.to_string());
+        }
+
+        match dek {
+            Some(key) => {
+                let aad = format!("notes:{}:{}", note_id, field_name);
+                let decrypted = decrypt_string(raw_val, key, aad.as_bytes())
+                    .map_err(|e| StorageError::Crypto(e.user_friendly_message()))?;
+                Ok(decrypted)
+            }
+            None => Err(StorageError::Crypto(
+                "Application is locked. Please unlock to access encrypted notes.".to_string(),
+            )),
+        }
+    }
+
+    /// Encrypts a field value if an active DEK is provided (Task 9).
+    /// Binds the note ID and field name as authenticated Associated Data (AAD) to prevent ciphertext splicing.
+    pub fn encrypt_field_if_needed(
+        val: &str,
+        note_id: &str,
+        field_name: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<String, StorageError> {
+        match dek {
+            Some(key) => {
+                let aad = format!("notes:{}:{}", note_id, field_name);
+                let encrypted = encrypt_string(val, key, aad.as_bytes())
+                    .map_err(|e| StorageError::Crypto(e.user_friendly_message()))?;
+                Ok(encrypted)
+            }
+            None => Ok(val.to_string()),
+        }
+    }
+
+    fn map_row_with_key(row: &Row, dek: Option<&SecretBytes>) -> Result<Note, StorageError> {
+        let id: String = row.get(0)?;
+        let raw_title: String = row.get(1)?;
+        let raw_content: String = row.get(2)?;
+        let format: String = row.get(3)?;
+        let notebook_id: Option<String> = row.get(4)?;
+        let created_at: String = row.get(5)?;
+        let modified_at: String = row.get(6)?;
         let is_fav_int: i32 = row.get(7)?;
         let is_pin_int: i32 = row.get(8)?;
         let is_del_int: i32 = row.get(9)?;
+        let deleted_at: Option<String> = row.get(10)?;
+
+        let title = Self::decrypt_field_if_encrypted(&raw_title, &id, "title", dek)?;
+        let content = Self::decrypt_field_if_encrypted(&raw_content, &id, "content", dek)?;
 
         Ok(Note {
-            id: row.get(0)?,
-            title: row.get(1)?,
-            content: row.get(2)?,
-            format: row.get(3)?,
-            notebook_id: row.get(4)?,
-            created_at: row.get(5)?,
-            modified_at: row.get(6)?,
+            id,
+            title,
+            content,
+            format,
+            notebook_id,
+            created_at,
+            modified_at,
             is_favorite: is_fav_int != 0,
             is_pinned: is_pin_int != 0,
             is_deleted: is_del_int != 0,
-            deleted_at: row.get(10)?,
+            deleted_at,
+        })
+    }
+
+    #[allow(dead_code)]
+    fn map_row(row: &Row) -> rusqlite::Result<Note> {
+        Self::map_row_with_key(row, None).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+            )
         })
     }
 
     pub fn create(conn: &Connection, dto: CreateNoteDto) -> Result<Note, StorageError> {
+        Self::create_with_key(conn, dto, None)
+    }
+
+    pub fn create_with_key(
+        conn: &Connection,
+        dto: CreateNoteDto,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let title = dto.title.unwrap_or_else(|| "Untitled Note".to_string());
@@ -34,6 +110,9 @@ impl NoteRepository {
         let is_favorite = dto.is_favorite.unwrap_or(false);
         let is_pinned = dto.is_pinned.unwrap_or(false);
 
+        let stored_title = Self::encrypt_field_if_needed(&title, &id, "title", dek)?;
+        let stored_content = Self::encrypt_field_if_needed(&content, &id, "content", dek)?;
+
         conn.execute(
             "INSERT INTO notes (
                 id, title, content, format, notebook_id, created_at, modified_at,
@@ -41,8 +120,8 @@ impl NoteRepository {
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
             params![
                 id,
-                title,
-                content,
+                stored_title,
+                stored_content,
                 format,
                 dto.notebook_id,
                 now,
@@ -74,6 +153,15 @@ impl NoteRepository {
         dto: CreateNoteDto,
         tag_ids: &[String],
     ) -> Result<Note, StorageError> {
+        Self::create_with_tags_and_key(conn, dto, tag_ids, None)
+    }
+
+    pub fn create_with_tags_and_key(
+        conn: &mut Connection,
+        dto: CreateNoteDto,
+        tag_ids: &[String],
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
         let tx = conn.transaction()?;
 
         let id = uuid::Uuid::new_v4().to_string();
@@ -84,6 +172,9 @@ impl NoteRepository {
         let is_favorite = dto.is_favorite.unwrap_or(false);
         let is_pinned = dto.is_pinned.unwrap_or(false);
 
+        let stored_title = Self::encrypt_field_if_needed(&title, &id, "title", dek)?;
+        let stored_content = Self::encrypt_field_if_needed(&content, &id, "content", dek)?;
+
         tx.execute(
             "INSERT INTO notes (
                 id, title, content, format, notebook_id, created_at, modified_at,
@@ -91,8 +182,8 @@ impl NoteRepository {
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
             params![
                 id,
-                title,
-                content,
+                stored_title,
+                stored_content,
                 format,
                 dto.notebook_id,
                 now,
@@ -127,6 +218,14 @@ impl NoteRepository {
     }
 
     pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<Note>, StorageError> {
+        Self::get_by_id_with_key(conn, id, None)
+    }
+
+    pub fn get_by_id_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -136,7 +235,7 @@ impl NoteRepository {
 
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(Self::map_row(row)?))
+            Ok(Some(Self::map_row_with_key(row, dek)?))
         } else {
             Ok(None)
         }
@@ -144,6 +243,14 @@ impl NoteRepository {
 
     /// Retrieves a single active (non-deleted) note by ID (Phase 8, Task 4).
     pub fn get_active_by_id(conn: &Connection, id: &str) -> Result<Option<Note>, StorageError> {
+        Self::get_active_by_id_with_key(conn, id, None)
+    }
+
+    pub fn get_active_by_id_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -153,7 +260,7 @@ impl NoteRepository {
 
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(Self::map_row(row)?))
+            Ok(Some(Self::map_row_with_key(row, dek)?))
         } else {
             Ok(None)
         }
@@ -161,6 +268,14 @@ impl NoteRepository {
 
     /// Retrieves a single trashed note by ID (Phase 8, Task 4).
     pub fn get_trashed_by_id(conn: &Connection, id: &str) -> Result<Option<Note>, StorageError> {
+        Self::get_trashed_by_id_with_key(conn, id, None)
+    }
+
+    pub fn get_trashed_by_id_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -170,7 +285,7 @@ impl NoteRepository {
 
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(Self::map_row(row)?))
+            Ok(Some(Self::map_row_with_key(row, dek)?))
         } else {
             Ok(None)
         }
@@ -178,11 +293,25 @@ impl NoteRepository {
 
     /// Lists only active (non-deleted) notes ordered by is_pinned DESC, modified_at DESC (Phase 8, Task 4).
     pub fn list_active(conn: &Connection) -> Result<Vec<Note>, StorageError> {
-        Self::list_filtered(conn, false, None, false)
+        Self::list_active_with_key(conn, None)
+    }
+
+    pub fn list_active_with_key(
+        conn: &Connection,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered_with_key(conn, false, None, false, dek)
     }
 
     /// Lists only notes currently in Trash, ordered by deleted_at DESC, id ASC (Phase 8, Task 4 & 10).
     pub fn list_trashed(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        Self::list_trashed_with_key(conn, None)
+    }
+
+    pub fn list_trashed_with_key(
+        conn: &Connection,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -191,28 +320,28 @@ impl NoteRepository {
              ORDER BY deleted_at DESC, id ASC",
         )?;
 
-        let note_iter = stmt.query_map([], Self::map_row)?;
+        let mut rows = stmt.query([])?;
         let mut notes = Vec::new();
-        for note in note_iter {
-            notes.push(note?);
+        while let Some(row) = rows.next()? {
+            notes.push(Self::map_row_with_key(row, dek)?);
         }
         Ok(notes)
     }
 
     /// Lists lightweight TrashedNoteItem DTOs for the Trash UI (Phase 8, Task 10).
-    ///
-    /// Performance & Query Guarantees:
-    /// - Strictly queries trashed notes (`is_deleted = 1`), excluding active notes.
-    /// - Avoids loading full note content bodies into memory by selecting `SUBSTR(n.content, 1, 200)`.
-    /// - Resolves notebook name via LEFT JOIN without N+1 queries.
-    /// - Resolves attachment count via aggregated LEFT JOIN without N+1 queries.
-    /// - Stable deterministic ordering: `ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC`.
     pub fn list_trashed_items(conn: &Connection) -> Result<Vec<TrashedNoteItem>, StorageError> {
+        Self::list_trashed_items_with_key(conn, None)
+    }
+
+    pub fn list_trashed_items_with_key(
+        conn: &Connection,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<TrashedNoteItem>, StorageError> {
         let sql = r#"
             SELECT
                 n.id,
                 n.title,
-                SUBSTR(n.content, 1, 200) AS preview,
+                n.content,
                 n.notebook_id,
                 nb.name AS notebook_name,
                 n.created_at,
@@ -232,27 +361,37 @@ impl NoteRepository {
         "#;
 
         let mut stmt = conn.prepare(sql)?;
-        let item_iter = stmt.query_map([], |row| {
+        let mut rows = stmt.query([])?;
+        let mut items = Vec::new();
+
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let raw_title: String = row.get(1)?;
+            let raw_content: String = row.get(2)?;
+            let notebook_id: Option<String> = row.get(3)?;
+            let notebook_name: Option<String> = row.get(4)?;
+            let created_at: String = row.get(5)?;
+            let modified_at: String = row.get(6)?;
+            let deleted_at: Option<String> = row.get(7)?;
             let is_fav_int: i32 = row.get(8)?;
             let att_count: i64 = row.get(9)?;
 
-            Ok(TrashedNoteItem {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                preview: row.get(2)?,
-                notebook_id: row.get(3)?,
-                notebook_name: row.get(4)?,
-                created_at: row.get(5)?,
-                modified_at: row.get(6)?,
-                deleted_at: row.get(7)?,
+            let title = Self::decrypt_field_if_encrypted(&raw_title, &id, "title", dek)?;
+            let full_content = Self::decrypt_field_if_encrypted(&raw_content, &id, "content", dek)?;
+            let preview = full_content.chars().take(200).collect::<String>();
+
+            items.push(TrashedNoteItem {
+                id,
+                title,
+                preview,
+                notebook_id,
+                notebook_name,
+                created_at,
+                modified_at,
+                deleted_at,
                 is_favorite: is_fav_int != 0,
                 attachment_count: att_count.max(0) as usize,
-            })
-        })?;
-
-        let mut items = Vec::new();
-        for item in item_iter {
-            items.push(item?);
+            });
         }
         Ok(items)
     }
@@ -276,11 +415,11 @@ impl NoteRepository {
     }
 
     pub fn list_by_notebook(conn: &Connection, notebook_id: &str) -> Result<Vec<Note>, StorageError> {
-        Self::list_filtered(conn, false, Some(notebook_id), false)
+        Self::list_filtered_with_key(conn, false, Some(notebook_id), false, None)
     }
 
     pub fn list_unfiled(conn: &Connection) -> Result<Vec<Note>, StorageError> {
-        Self::list_filtered(conn, false, None, true)
+        Self::list_filtered_with_key(conn, false, None, true, None)
     }
 
     pub fn list_filtered(
@@ -288,6 +427,16 @@ impl NoteRepository {
         include_deleted: bool,
         notebook_id: Option<&str>,
         unfiled_only: bool,
+    ) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered_with_key(conn, include_deleted, notebook_id, unfiled_only, None)
+    }
+
+    pub fn list_filtered_with_key(
+        conn: &Connection,
+        include_deleted: bool,
+        notebook_id: Option<&str>,
+        unfiled_only: bool,
+        dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
         let mut sql = String::from(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
@@ -312,17 +461,26 @@ impl NoteRepository {
         sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC");
 
         let mut stmt = conn.prepare(&sql)?;
-        let note_iter = stmt.query_map(rusqlite::params_from_iter(params_vec), Self::map_row)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec))?;
 
         let mut notes = Vec::new();
-        for note in note_iter {
-            notes.push(note?);
+        while let Some(row) = rows.next()? {
+            notes.push(Self::map_row_with_key(row, dek)?);
         }
         Ok(notes)
     }
 
     pub fn update(conn: &Connection, id: &str, dto: UpdateNoteDto) -> Result<Note, StorageError> {
-        let existing = Self::get_by_id(conn, id)?
+        Self::update_with_key(conn, id, dto, None)
+    }
+
+    pub fn update_with_key(
+        conn: &Connection,
+        id: &str,
+        dto: UpdateNoteDto,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
         if existing.is_deleted && dto.is_deleted != Some(false) {
@@ -347,6 +505,9 @@ impl NoteRepository {
             existing.deleted_at
         };
 
+        let stored_title = Self::encrypt_field_if_needed(&title, id, "title", dek)?;
+        let stored_content = Self::encrypt_field_if_needed(&content, id, "content", dek)?;
+
         conn.execute(
             "UPDATE notes
              SET title = ?1, content = ?2, format = ?3, notebook_id = ?4,
@@ -354,8 +515,8 @@ impl NoteRepository {
                  is_deleted = ?8, deleted_at = ?9
              WHERE id = ?10",
             params![
-                title,
-                content,
+                stored_title,
+                stored_content,
                 format,
                 notebook_id,
                 now,
@@ -383,14 +544,16 @@ impl NoteRepository {
     }
 
     /// Soft deletes an active note, transitioning its lifecycle state to Trashed (Phase 8, Task 5).
-    ///
-    /// Invariants:
-    /// - Verifies the note exists.
-    /// - Rejects if the note is already in Trash (returns StorageError::Conflict).
-    /// - Atomically sets is_deleted = 1 and deleted_at = now using parameterized SQL.
-    /// - Preserves content, title, created_at, notebook_id, tags, and attachments.
     pub fn soft_delete(conn: &Connection, id: &str) -> Result<Note, StorageError> {
-        let existing = Self::get_by_id(conn, id)?
+        Self::soft_delete_with_key(conn, id, None)
+    }
+
+    pub fn soft_delete_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
         if existing.is_deleted {
@@ -425,15 +588,16 @@ impl NoteRepository {
     }
 
     /// Restores a trashed note back to active state (Phase 8, Task 6).
-    ///
-    /// Validations and Invariants:
-    /// - Confirms note exists.
-    /// - Rejects if the note is already active (Conflict).
-    /// - Verifies if notebook_id still exists in notebooks table; if removed, unfiles safely to None.
-    /// - Sets is_deleted = 0, deleted_at = NULL, updates modified_at.
-    /// - Retains same note ID, title, content, format, created_at, tags, favorites, and attachments.
     pub fn restore(conn: &Connection, id: &str) -> Result<Note, StorageError> {
-        let existing = Self::get_by_id(conn, id)?
+        Self::restore_with_key(conn, id, None)
+    }
+
+    pub fn restore_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
         if !existing.is_deleted {
@@ -479,7 +643,16 @@ impl NoteRepository {
         id: &str,
         notebook_id: Option<&str>,
     ) -> Result<Note, StorageError> {
-        let existing = Self::get_by_id(conn, id)?
+        Self::move_to_notebook_with_key(conn, id, notebook_id, None)
+    }
+
+    pub fn move_to_notebook_with_key(
+        conn: &Connection,
+        id: &str,
+        notebook_id: Option<&str>,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let existing = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
         if let Some(target_nb_id) = notebook_id {
@@ -516,13 +689,23 @@ impl NoteRepository {
         id: &str,
         is_favorite: bool,
     ) -> Result<Note, StorageError> {
-        Self::update(
+        Self::set_favorite_with_key(conn, id, is_favorite, None)
+    }
+
+    pub fn set_favorite_with_key(
+        conn: &Connection,
+        id: &str,
+        is_favorite: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        Self::update_with_key(
             conn,
             id,
             UpdateNoteDto {
                 is_favorite: Some(is_favorite),
                 ..Default::default()
             },
+            dek,
         )
     }
 
@@ -530,12 +713,27 @@ impl NoteRepository {
         conn: &Connection,
         id: &str,
     ) -> Result<Note, StorageError> {
-        let note = Self::get_by_id(conn, id)?
+        Self::toggle_favorite_with_key(conn, id, None)
+    }
+
+    pub fn toggle_favorite_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let note = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
-        Self::set_favorite(conn, id, !note.is_favorite)
+        Self::set_favorite_with_key(conn, id, !note.is_favorite, dek)
     }
 
     pub fn list_favorites(conn: &Connection) -> Result<Vec<Note>, StorageError> {
+        Self::list_favorites_with_key(conn, None)
+    }
+
+    pub fn list_favorites_with_key(
+        conn: &Connection,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -543,15 +741,23 @@ impl NoteRepository {
              WHERE is_deleted = 0 AND is_favorite = 1
              ORDER BY is_pinned DESC, modified_at DESC",
         )?;
-        let note_iter = stmt.query_map([], Self::map_row)?;
+        let mut rows = stmt.query([])?;
         let mut notes = Vec::new();
-        for note in note_iter {
-            notes.push(note?);
+        while let Some(row) = rows.next()? {
+            notes.push(Self::map_row_with_key(row, dek)?);
         }
         Ok(notes)
     }
 
     pub fn list_by_tag(conn: &Connection, tag_id: &str) -> Result<Vec<Note>, StorageError> {
+        Self::list_by_tag_with_key(conn, tag_id, None)
+    }
+
+    pub fn list_by_tag_with_key(
+        conn: &Connection,
+        tag_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT n.id, n.title, n.content, n.format, n.notebook_id, n.created_at, n.modified_at,
                     n.is_favorite, n.is_pinned, n.is_deleted, n.deleted_at
@@ -562,10 +768,10 @@ impl NoteRepository {
              ORDER BY n.is_pinned DESC, n.modified_at DESC",
         )?;
 
-        let note_iter = stmt.query_map(params![tag_id], Self::map_row)?;
+        let mut rows = stmt.query(params![tag_id])?;
         let mut notes = Vec::new();
-        for note in note_iter {
-            notes.push(note?);
+        while let Some(row) = rows.next()? {
+            notes.push(Self::map_row_with_key(row, dek)?);
         }
         Ok(notes)
     }
@@ -574,7 +780,15 @@ impl NoteRepository {
         conn: &Connection,
         id: &str,
     ) -> Result<Option<crate::storage::models::NoteMetadata>, StorageError> {
-        let note = match Self::get_by_id(conn, id)? {
+        Self::get_metadata_with_key(conn, id, None)
+    }
+
+    pub fn get_metadata_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Option<crate::storage::models::NoteMetadata>, StorageError> {
+        let note = match Self::get_by_id_with_key(conn, id, dek)? {
             Some(n) => n,
             None => return Ok(None),
         };
@@ -589,9 +803,15 @@ impl NoteRepository {
 
     /// Returns the human-readable notebook path for a note (or "Unfiled" if unassigned).
     pub fn get_notebook_path(conn: &Connection, note_id: &str) -> Result<String, StorageError> {
-        let note = Self::get_by_id(conn, note_id)?
-            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{note_id}' not found")))?;
-        match note.notebook_id {
+        let mut stmt = conn.prepare("SELECT notebook_id FROM notes WHERE id = ?1")?;
+        let nb_id_opt: Option<String> = stmt.query_row(params![note_id], |r| r.get(0)).map_err(|e| {
+            if e == rusqlite::Error::QueryReturnedNoRows {
+                StorageError::NotFound(format!("Note with id '{note_id}' not found"))
+            } else {
+                StorageError::Database(e)
+            }
+        })?;
+        match nb_id_opt {
             Some(ref nb_id) => crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(conn, nb_id),
             None => Ok("Unfiled".to_string()),
         }
@@ -601,12 +821,16 @@ impl NoteRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::attachment_storage::AttachmentStorage;
+    use crate::storage::crypto::{generate_dek, ENCRYPTED_PREFIX_V1};
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
     use crate::storage::models::{CreateAttachmentDto, CreateNotebookDto};
+    use crate::storage::paths::StoragePaths;
     use crate::storage::repositories::attachments::AttachmentRepository;
     use crate::storage::repositories::notebooks::NotebookRepository;
     use crate::storage::repositories::tags::TagRepository;
+    use crate::storage::services::TrashService;
 
     #[test]
     fn test_atomic_transaction_and_rollback_on_failure() {
@@ -984,6 +1208,340 @@ mod tests {
         assert_eq!(items_after_nb_del.len(), 2);
         assert_eq!(items_after_nb_del[0].id, note2.id);
         assert_eq!(items_after_nb_del[0].notebook_name, None);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_encrypted_note_storage_roundtrip_and_db_inspection() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_enc_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+        let plain_title = "Secret Vault Access Codes";
+        let plain_content = "Master password is: SuperSecretToken1234!";
+
+        // 1. Create encrypted note
+        let created = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some(plain_title.to_string()),
+                content: Some(plain_content.to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .expect("Creation with key failed");
+
+        assert_eq!(created.title, plain_title);
+        assert_eq!(created.content, plain_content);
+
+        // 2. Direct SQLite inspection: Raw database must NOT contain plaintext strings!
+        let (raw_title, raw_content): (String, String) = conn
+            .query_row(
+                "SELECT title, content FROM notes WHERE id = ?1",
+                params![created.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("Raw query failed");
+
+        assert!(raw_title.starts_with(ENCRYPTED_PREFIX_V1), "Raw title in SQLite must start with ENC$v1$");
+        assert!(raw_content.starts_with(ENCRYPTED_PREFIX_V1), "Raw content in SQLite must start with ENC$v1$");
+        assert!(!raw_title.contains("Vault"), "Raw SQLite title leaked plaintext!");
+        assert!(!raw_content.contains("SuperSecretToken1234"), "Raw SQLite content leaked plaintext!");
+
+        // 3. Read back with active key
+        let fetched = NoteRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
+            .expect("Read with key failed")
+            .expect("Note not found");
+
+        assert_eq!(fetched.title, plain_title);
+        assert_eq!(fetched.content, plain_content);
+
+        // 4. Update encrypted note
+        let updated_title = "Updated Secret Vault";
+        let updated_content = "New secret content 987654";
+        let updated = NoteRepository::update_with_key(
+            &conn,
+            &created.id,
+            UpdateNoteDto {
+                title: Some(updated_title.to_string()),
+                content: Some(updated_content.to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .expect("Update with key failed");
+
+        assert_eq!(updated.title, updated_title);
+        assert_eq!(updated.content, updated_content);
+
+        // Raw DB inspection after update
+        let (raw_title2, raw_content2): (String, String) = conn
+            .query_row(
+                "SELECT title, content FROM notes WHERE id = ?1",
+                params![created.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("Raw query failed");
+
+        assert!(raw_title2.starts_with(ENCRYPTED_PREFIX_V1));
+        assert!(raw_content2.starts_with(ENCRYPTED_PREFIX_V1));
+        assert!(!raw_title2.contains("Updated Secret"));
+        assert!(!raw_content2.contains("987654"));
+
+        // Read again with active key
+        let fetched2 = NoteRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
+            .expect("Read with key failed")
+            .expect("Note not found");
+        assert_eq!(fetched2.title, updated_title);
+        assert_eq!(fetched2.content, updated_content);
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_encrypted_note_rejection_when_locked() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_lock_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+
+        let created = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Confidential Note".to_string()),
+                content: Some("Classified Information".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .expect("Creation failed");
+
+        // 1. Calling get_by_id_with_key without DEK (locked state) must return StorageError::Crypto
+        let err = NoteRepository::get_by_id_with_key(&conn, &created.id, None)
+            .expect_err("Must reject reading encrypted note without DEK");
+        assert!(matches!(err, StorageError::Crypto(_)));
+        assert!(err.to_string().contains("locked"));
+
+        // 2. Calling list_filtered_with_key without DEK must also fail with StorageError::Crypto
+        let list_err = NoteRepository::list_filtered_with_key(&conn, false, None, false, None)
+            .expect_err("Must reject listing encrypted notes without DEK");
+        assert!(matches!(list_err, StorageError::Crypto(_)));
+
+        // 3. Trashing note without DEK: soft_delete_with_key must fail because it reads existing note first
+        let soft_err = NoteRepository::soft_delete_with_key(&conn, &created.id, None)
+            .expect_err("Must reject soft deleting encrypted note without DEK");
+        assert!(matches!(soft_err, StorageError::Crypto(_)));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_ciphertext_tamper_detection() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_tamper_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+
+        let created = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Authentic Title".to_string()),
+                content: Some("Authentic Content".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .expect("Creation failed");
+
+        // Tamper with content in SQLite by modifying a character in the ciphertext
+        let raw_content: String = conn
+            .query_row("SELECT content FROM notes WHERE id = ?1", params![created.id], |r| r.get(0))
+            .unwrap();
+
+        // Mutate a byte in base64 envelope
+        let mut bytes = raw_content.into_bytes();
+        let last_idx = bytes.len() - 2;
+        bytes[last_idx] = if bytes[last_idx] == b'A' { b'B' } else { b'A' };
+        let tampered_content = String::from_utf8(bytes).unwrap();
+
+        conn.execute(
+            "UPDATE notes SET content = ?1 WHERE id = ?2",
+            params![tampered_content, created.id],
+        )
+        .unwrap();
+
+        // Attempt to decrypt tampered note
+        let err = NoteRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
+            .expect_err("Decryption of tampered ciphertext must fail tag authentication");
+        assert!(matches!(err, StorageError::Crypto(_)));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_aad_splicing_defense() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_aad_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+
+        // Note A
+        let note_a = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note A Title".to_string()),
+                content: Some("Note A Sensitive Body".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .unwrap();
+
+        // Note B
+        let note_b = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note B Title".to_string()),
+                content: Some("Note B Ordinary Body".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .unwrap();
+
+        // Attacker attempts ciphertext splicing: copy Note A's content ciphertext into Note B's content row
+        let raw_content_a: String = conn
+            .query_row("SELECT content FROM notes WHERE id = ?1", params![note_a.id], |r| r.get(0))
+            .unwrap();
+
+        conn.execute(
+            "UPDATE notes SET content = ?1 WHERE id = ?2",
+            params![raw_content_a, note_b.id],
+        )
+        .unwrap();
+
+        // Loading Note B with valid DEK must fail because AAD was notes:<note_a_id>:content
+        let err = NoteRepository::get_by_id_with_key(&conn, &note_b.id, Some(&dek))
+            .expect_err("Spliced ciphertext from Note A must fail AEAD verification on Note B");
+        assert!(matches!(err, StorageError::Crypto(_)));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_mixed_plaintext_and_encrypted_notes_backward_compatibility() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_mixed_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+
+        // 1. Plaintext legacy note (created without DEK)
+        let note_legacy = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Plaintext Legacy Note".to_string()),
+                content: Some("Plaintext Body".to_string()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        // 2. Encrypted note (created with DEK)
+        let note_encrypted = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Encrypted Modern Note".to_string()),
+                content: Some("Encrypted Body".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .unwrap();
+
+        // Verify SQLite raw storage
+        let raw_legacy_title: String = conn
+            .query_row("SELECT title FROM notes WHERE id = ?1", params![note_legacy.id], |r| r.get(0))
+            .unwrap();
+        let raw_enc_title: String = conn
+            .query_row("SELECT title FROM notes WHERE id = ?1", params![note_encrypted.id], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(raw_legacy_title, "Plaintext Legacy Note");
+        assert!(raw_enc_title.starts_with(ENCRYPTED_PREFIX_V1));
+
+        // Reading legacy note without DEK works
+        let fetched_legacy = NoteRepository::get_by_id_with_key(&conn, &note_legacy.id, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched_legacy.title, "Plaintext Legacy Note");
+
+        // Reading both with DEK active
+        let all_notes = NoteRepository::list_filtered_with_key(&conn, false, None, false, Some(&dek)).unwrap();
+        assert_eq!(all_notes.len(), 2);
+
+        let titles: Vec<String> = all_notes.into_iter().map(|n| n.title).collect();
+        assert!(titles.contains(&"Plaintext Legacy Note".to_string()));
+        assert!(titles.contains(&"Encrypted Modern Note".to_string()));
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_trashed_and_permanent_deletion_resilience_without_dek() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init failed");
+        run_migrations(&mut conn).expect("Migrations failed");
+
+        let dek = generate_dek();
+
+        // 1. Create encrypted note
+        let note = NoteRepository::create_with_key(
+            &conn,
+            CreateNoteDto {
+                title: Some("Trashable Encrypted Note".to_string()),
+                content: Some("To be deleted permanently".to_string()),
+                ..Default::default()
+            },
+            Some(&dek),
+        )
+        .unwrap();
+
+        // 2. Soft delete while unlocked
+        let trashed = TrashService::soft_delete_with_key(&conn, &note.id, Some(&dek)).unwrap();
+        assert!(trashed.is_deleted);
+
+        // 3. Permanently delete WITHOUT DEK (e.g., user empties trash or purges without decrypting body)
+        let storage_paths = StoragePaths::from_root(temp_dir.clone());
+        let storage = AttachmentStorage::new(storage_paths);
+
+        let perm_res = TrashService::permanently_delete_note(&conn, &storage, &note.id).unwrap();
+        assert!(perm_res.success);
+
+        // Verify note row is completely removed from SQLite
+        let exists: bool = conn
+            .query_row("SELECT COUNT(1) FROM notes WHERE id = ?1", params![note.id], |r| r.get::<_, i64>(0))
+            .unwrap() > 0;
+        assert!(!exists, "Permanently deleted encrypted note must be removed from notes table");
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

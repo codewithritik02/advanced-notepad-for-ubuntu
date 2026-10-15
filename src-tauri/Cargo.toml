@@ -29,6 +29,11 @@ thiserror = "2"
 tauri-plugin-dialog = "2"
 sha2 = "0.10"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+base64 = "0.22"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

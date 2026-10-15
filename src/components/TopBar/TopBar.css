@@ -201,6 +201,10 @@
   background-color: var(--color-surface-active);
 }
 
+.topbar-lock-btn:hover {
+  color: var(--color-warning-default, #f59e0b);
+}
+
 /* ==========================================================================
    Desktop Responsive Adaptations (900px to 1024px)
    ========================================================================== */

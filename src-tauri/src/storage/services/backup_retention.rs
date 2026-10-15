@@ -231,6 +231,8 @@ mod tests {
                 includes_attachments: true,
             },
             checksums: std::collections::HashMap::new(),
+            is_encrypted: false,
+            encryption_algorithm: None,
         };
 
         let json = serde_json::to_vec_pretty(&manifest).expect("Serialize manifest");

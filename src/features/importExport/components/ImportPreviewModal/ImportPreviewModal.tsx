@@ -11,6 +11,7 @@ import {
   Notebook,
 } from "../../../../services/storage/types";
 import { importExportStorage } from "../../../../services/storage/importExport";
+import { cryptoStorage } from "../../../../services/storage/crypto";
 import { OperationSummaryModal } from "../OperationSummaryModal/OperationSummaryModal";
 import "./ImportPreviewModal.css";
 
@@ -49,6 +50,16 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isEncryptionActive, setIsEncryptionActive] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      cryptoStorage
+        .getEncryptionStatus()
+        .then((st) => setIsEncryptionActive(st.enabled))
+        .catch(() => setIsEncryptionActive(false));
+    }
+  }, [isOpen]);
 
   // Synchronize candidates when preview updates
   useEffect(() => {
@@ -251,6 +262,13 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                 </select>
               </div>
             </div>
+
+            {isEncryptionActive && (
+              <div className="import-encrypted-storage-notice" role="status">
+                <span className="import-encrypted-icon">🔒</span>
+                <span>Protected Storage: Imported notes will be encrypted with your active encryption key before persisting to disk.</span>
+              </div>
+            )}
 
             {/* Metrics Header */}
             {preview && (

@@ -205,6 +205,16 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
                 <span>•</span>
                 <span>Size: {formatBackupBytes(preview.fileSize)}</span>
                 <span>•</span>
+                {preview.isEncrypted ? (
+                  <Badge variant="accent" size="sm" title="This backup contains end-to-end encrypted data">
+                    🔒 Encrypted
+                  </Badge>
+                ) : (
+                  <Badge variant="default" size="sm" title="This backup is unencrypted">
+                    Unencrypted
+                  </Badge>
+                )}
+                <span>•</span>
                 <Badge
                   variant={
                     preview.compatibility === "compatible"
@@ -228,6 +238,12 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
 
             {/* Content summary grid */}
             <div className="restore-preview-grid">
+              <div className="restore-preview-stat-card">
+                <span className="restore-preview-stat-label">Encryption</span>
+                <span className="restore-preview-stat-value">
+                  {preview.isEncrypted ? "🔒 Encrypted" : "Disabled"}
+                </span>
+              </div>
               <div className="restore-preview-stat-card">
                 <span className="restore-preview-stat-label">Active Notes</span>
                 <span className="restore-preview-stat-value">{preview.noteCount}</span>
@@ -376,6 +392,40 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
                     before any files are replaced.
                   </p>
                 </div>
+
+                {/* Encrypted backup notice */}
+                {preview.isEncrypted && (
+                  <div
+                    className="restore-preview-encrypted-banner"
+                    style={{
+                      padding: "10px 14px",
+                      background: "rgba(59, 130, 246, 0.12)",
+                      border: "1px solid rgba(59, 130, 246, 0.25)",
+                      borderRadius: "6px",
+                      marginTop: "10px",
+                      color: "var(--color-text-main, #e5e7eb)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        fontWeight: 600,
+                        fontSize: "0.85rem",
+                        marginBottom: "4px",
+                      }}
+                    >
+                      <span>🔒</span>
+                      <span>Encrypted Backup Restore Notice</span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: "0.8rem", lineHeight: 1.4, opacity: 0.9 }}>
+                      This backup is protected with end-to-end encryption. Once restored, the application
+                      will immediately lock, and you will need the master password used when this backup
+                      was created to unlock and view your notes.
+                    </p>
+                  </div>
+                )}
 
                 {/* Mandatory confirmation checkbox */}
                 {preview.canRestore && (

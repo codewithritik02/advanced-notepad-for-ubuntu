@@ -91,6 +91,8 @@ fn test_unit_1_manifest_serialization_and_parsing() {
             includes_attachments: true,
         },
         checksums,
+        is_encrypted: false,
+        encryption_algorithm: None,
     };
 
     // Serialize to JSON string and bytes

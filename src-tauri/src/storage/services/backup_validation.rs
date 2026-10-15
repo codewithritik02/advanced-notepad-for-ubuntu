@@ -405,6 +405,99 @@ impl BackupValidationService {
             });
         }
 
+        // 4g. Check encryption metadata consistency and integrity (Phase 12, Task 19)
+        let db_enc_meta_str: Option<String> = db_conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [crate::storage::crypto::metadata::ENCRYPTION_METADATA_KEY],
+                |r| r.get(0),
+            )
+            .ok();
+
+        if manifest.is_encrypted {
+            match db_enc_meta_str {
+                Some(ref s) => {
+                    match crate::storage::crypto::EncryptionMetadata::from_json(s) {
+                        Ok(meta) => {
+                            if let Err(e) = meta.validate() {
+                                crate::storage::crypto::record_security_event(
+                                    crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                                    crate::storage::crypto::SecurityLogLevel::Error,
+                                    "Backup encryption metadata validation failed",
+                                    Some("metadata_invalid"),
+                                );
+                                archive_val_res.issues.push(BackupValidationIssue {
+                                    severity: BackupValidationIssueSeverity::Error,
+                                    code: "ENCRYPTION_METADATA_INVALID".to_string(),
+                                    message: format!("Encryption metadata failed validation: {e}"),
+                                });
+                                archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                            } else if !meta.enabled {
+                                crate::storage::crypto::record_security_event(
+                                    crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                                    crate::storage::crypto::SecurityLogLevel::Error,
+                                    "Backup declared encrypted but metadata is disabled",
+                                    Some("encryption_disabled"),
+                                );
+                                archive_val_res.issues.push(BackupValidationIssue {
+                                    severity: BackupValidationIssueSeverity::Error,
+                                    code: "ENCRYPTION_DISABLED_IN_METADATA".to_string(),
+                                    message: "Manifest declared backup as encrypted, but encryption metadata has enabled=false.".to_string(),
+                                });
+                                archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                            }
+                        }
+                        Err(e) => {
+                            crate::storage::crypto::record_security_event(
+                                crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                                crate::storage::crypto::SecurityLogLevel::Error,
+                                "Backup encryption metadata in settings is malformed",
+                                Some("metadata_malformed"),
+                            );
+                            archive_val_res.issues.push(BackupValidationIssue {
+                                severity: BackupValidationIssueSeverity::Error,
+                                code: "ENCRYPTION_METADATA_INVALID".to_string(),
+                                message: format!("Encryption metadata in database settings is malformed: {e}"),
+                            });
+                            archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                        }
+                    }
+                }
+                None => {
+                    crate::storage::crypto::record_security_event(
+                        crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                        crate::storage::crypto::SecurityLogLevel::Error,
+                        "Backup declared encrypted but encryption metadata is missing from database",
+                        Some("metadata_missing"),
+                    );
+                    archive_val_res.issues.push(BackupValidationIssue {
+                        severity: BackupValidationIssueSeverity::Error,
+                        code: "ENCRYPTION_METADATA_MISSING".to_string(),
+                        message: "Manifest declared backup as encrypted, but encryption metadata was not found in database settings.".to_string(),
+                    });
+                    archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                }
+            }
+        } else if let Some(ref s) = db_enc_meta_str {
+            if let Ok(meta) = crate::storage::crypto::EncryptionMetadata::from_json(s) {
+                if meta.enabled {
+                    archive_val_res.issues.push(BackupValidationIssue {
+                        severity: BackupValidationIssueSeverity::Warning,
+                        code: "ENCRYPTION_METADATA_MISMATCH".to_string(),
+                        message: "Database contains active encryption metadata, but manifest does not declare is_encrypted: true.".to_string(),
+                    });
+                    if let Err(e) = meta.validate() {
+                        archive_val_res.issues.push(BackupValidationIssue {
+                            severity: BackupValidationIssueSeverity::Error,
+                            code: "ENCRYPTION_METADATA_INVALID".to_string(),
+                            message: format!("Encryption metadata failed validation: {e}"),
+                        });
+                        archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                    }
+                }
+            }
+        }
+
         // 5. Final validity calculation
         let has_errors = archive_val_res
             .issues

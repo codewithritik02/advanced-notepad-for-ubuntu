@@ -134,6 +134,8 @@ impl RestoreService {
             backup_type,
             format_version,
             schema_version,
+            is_encrypted,
+            encryption_algorithm,
         ) = if let Some(ref m) = val_res.manifest {
             (
                 m.database.note_count,
@@ -147,6 +149,8 @@ impl RestoreService {
                 m.backup_type,
                 m.format_version,
                 m.database.schema_version,
+                m.is_encrypted,
+                m.encryption_algorithm.clone(),
             )
         } else {
             let fallback_mtime = fs::metadata(archive_path)
@@ -156,7 +160,7 @@ impl RestoreService {
                 .unwrap_or_else(chrono::Utc::now)
                 .to_rfc3339();
 
-            (0, 0, 0, 0, 0, 0, false, fallback_mtime, BackupType::Manual, 0, 0)
+            (0, 0, 0, 0, 0, 0, false, fallback_mtime, BackupType::Manual, 0, 0, false, None)
         };
 
         // 3. Assemble disclosure warnings and issues
@@ -188,6 +192,8 @@ impl RestoreService {
             compatibility: val_res.compatibility,
             warnings,
             can_restore,
+            is_encrypted,
+            encryption_algorithm,
         })
     }
 
@@ -297,12 +303,16 @@ impl RestoreService {
                 }
             };
 
+        let (is_encrypted, encryption_algorithm) = ManifestManager::detect_encryption_from_db(conn);
+
         // 6. Generate authoritative manifest
         let manifest = ManifestManager::build_manifest(
             BackupType::Checkpoint,
             db_info,
             &captured_attachments,
             attachments_summary,
+            is_encrypted,
+            encryption_algorithm,
         );
 
         // 7. Write ZIP archive
@@ -416,6 +426,7 @@ impl RestoreService {
             attachment_total_bytes: manifest.attachments_summary.total_bytes,
             schema_version: manifest.database.schema_version,
             is_verified: true,
+            is_encrypted: manifest.is_encrypted,
         })
     }
 
@@ -469,6 +480,7 @@ impl RestoreService {
                         attachment_total_bytes: manifest.attachments_summary.total_bytes,
                         schema_version: manifest.database.schema_version,
                         is_verified: true,
+                        is_encrypted: manifest.is_encrypted,
                     });
                 }
             }
@@ -1404,6 +1416,8 @@ impl RestoreService {
                     paths.root.join(&clean_rel)
                 } else if clean_rel.starts_with(&format!("{note_id}/")) {
                     paths.attachments_dir.join(&clean_rel)
+                } else if paths.attachments_dir.join(&clean_rel).exists() {
+                    paths.attachments_dir.join(&clean_rel)
                 } else {
                     paths.attachments_dir.join(&note_id).join(&clean_rel)
                 };
@@ -1451,7 +1465,8 @@ impl RestoreService {
             BackupError::PostRestoreValidationFailed(format!("Failed to rebuild search index: {e}"))
         })?;
 
-        {
+        let is_encrypted = crate::storage::repositories::SearchRepository::is_encryption_enabled(conn);
+        if !is_encrypted {
             let fts_check: Result<i64, _> = conn.query_row(
                 "SELECT COUNT(1) FROM notes_fts",
                 [],

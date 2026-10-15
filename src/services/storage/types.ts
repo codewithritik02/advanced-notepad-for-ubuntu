@@ -546,6 +546,8 @@ export interface BackupManifest {
   attachments: BackupAttachmentItem[];
   scope: BackupScopeDeclaration;
   checksums: Record<string, string>;
+  is_encrypted?: boolean;
+  encryption_algorithm?: string | null;
 }
 
 export interface BackupCreateRequest {
@@ -565,6 +567,7 @@ export interface BackupCreateResult {
   noteCount: number;
   attachmentCount: number;
   warningMessage?: string | null;
+  isEncrypted?: boolean;
 }
 
 export interface BackupListItem {
@@ -581,6 +584,7 @@ export interface BackupListItem {
   isVerified: boolean;
   isValid: boolean;
   issueSummary?: string | null;
+  isEncrypted?: boolean;
 }
 
 export type BackupValidationIssueSeverity = "warning" | "error";
@@ -622,6 +626,8 @@ export interface RestorePreviewResult {
   compatibility: BackupCompatibilityStatus;
   warnings: string[];
   canRestore: boolean;
+  isEncrypted?: boolean;
+  encryptionAlgorithm?: string | null;
 }
 
 export interface BackupRestoreRequest {
@@ -755,6 +761,7 @@ export interface RecoveryCheckpoint {
   attachmentTotalBytes: number;
   schemaVersion: number;
   isVerified: boolean;
+  isEncrypted?: boolean;
 }
 
 /**

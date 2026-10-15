@@ -129,6 +129,7 @@ impl BackupListService {
                                 is_verified: false,
                                 is_valid: false,
                                 issue_summary: Some("Archive format identifier does not match Personal Notepad.".to_string()),
+                                is_encrypted: false,
                             });
                         } else {
                             discovered.push(BackupListItem {
@@ -145,6 +146,7 @@ impl BackupListService {
                                 is_verified: false, // Discovered archive is unverified until deep validation
                                 is_valid: true,
                                 issue_summary: None,
+                                is_encrypted: manifest.is_encrypted,
                             });
                         }
                     }
@@ -164,6 +166,7 @@ impl BackupListService {
                             is_verified: false,
                             is_valid: false,
                             issue_summary: Some(err.user_friendly_message()),
+                            is_encrypted: false,
                         });
                     }
                 }
@@ -322,6 +325,8 @@ mod tests {
                 includes_attachments: true,
             },
             checksums: std::collections::HashMap::new(),
+            is_encrypted: false,
+            encryption_algorithm: None,
         };
 
         let json = serde_json::to_vec_pretty(&manifest).unwrap();
