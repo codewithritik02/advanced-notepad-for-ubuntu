@@ -2,6 +2,7 @@ pub mod attachment_storage;
 pub mod crypto;
 pub mod database;
 pub mod errors;
+pub mod lifecycle;
 pub mod limits;
 pub mod migrations;
 pub mod models;
@@ -11,6 +12,10 @@ pub mod schema;
 pub mod services;
 
 pub use limits::*;
+pub use lifecycle::{
+    checkpoint_database_for_shutdown, initialize_application_storage, ApplicationLifecycleError,
+    InitializedApplicationStorage,
+};
 
 pub use attachment_storage::{
     detect_mime_type, detect_mime_type_with_magic, sanitize_extension,
@@ -33,4 +38,3 @@ pub use paths::StoragePaths;
 pub use repositories::*;
 pub use schema::{apply_initial_schema, INITIAL_SCHEMA_SQL};
 pub use services::{AttachmentService, ImportExportService, SearchService, TrashService};
-

@@ -1,30 +1,12 @@
+mod common;
+
+use common::TestAppDir as TestEnv;
 use personal_notepad_lib::storage::{
     init_connection, run_migrations,
     models::{CreateNotebookDto, UpdateNotebookDto, CreateNoteDto, UpdateNoteDto, UpdateTagDto},
     repositories::{NotebookRepository, NoteRepository, SettingsRepository, TagRepository},
     StorageError, StoragePaths,
 };
-
-/// Helper to create an isolated, unique temporary database environment for tests
-struct TestEnv {
-    dir: std::path::PathBuf,
-    paths: StoragePaths,
-}
-
-impl TestEnv {
-    fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("pn_integration_{}", uuid::Uuid::new_v4()));
-        let paths = StoragePaths::from_root(dir.clone());
-        paths.ensure_directories().expect("Failed to create test directories");
-        Self { dir, paths }
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
 
 #[test]
 fn test_fresh_database_initialization_and_migration() {
@@ -10109,6 +10091,7 @@ fn test_phase11_task_22_backup_health_and_failure_notifications() {
 
 #[test]
 fn test_phase11_task_24_end_to_end_and_data_loss_simulations() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         init_connection, run_migrations,
         models::{
@@ -10530,6 +10513,7 @@ fn test_phase11_task_24_end_to_end_and_data_loss_simulations() {
 
 #[test]
 fn test_phase12_task_13_manual_lock_and_key_lifecycle() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::crypto::{CryptoSession, SetupEncryptionDto, UnlockDto};
     use personal_notepad_lib::storage::errors::CryptoError;
     use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
@@ -10608,6 +10592,7 @@ fn test_phase12_task_13_manual_lock_and_key_lifecycle() {
 
 #[test]
 fn test_phase12_task_15_password_change_and_key_rewrapping_invariants() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::crypto::{
         CryptoSession, SetupEncryptionDto, UnlockDto, ChangePasswordDto,
         encrypt_payload, decrypt_payload,
@@ -10775,6 +10760,7 @@ fn test_phase12_task_15_password_change_and_key_rewrapping_invariants() {
 
 #[test]
 fn test_phase12_task_16_forgotten_password_and_failed_attempt_invariants() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::crypto::{
         CryptoSession, SetupEncryptionDto, UnlockDto,
         encrypt_payload, decrypt_payload,
@@ -10892,6 +10878,7 @@ fn test_phase12_task_16_forgotten_password_and_failed_attempt_invariants() {
 
 #[test]
 fn test_phase12_task_17_safe_migration_and_interrupted_state_detection() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::crypto::{
         CryptoSession, SetupEncryptionDto, UnlockDto,
         metadata::{MigrationStatus, ENCRYPTION_METADATA_KEY},
@@ -11096,6 +11083,7 @@ fn test_phase12_task_17_safe_migration_and_interrupted_state_detection() {
 
 #[test]
 fn test_phase12_task_18_crash_recovery_rollback_and_resume_invariants() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::crypto::{
         CryptoSession, SetupEncryptionDto, UnlockDto,
         derive_kek, generate_dek, generate_salt, wrap_dek,
@@ -11409,6 +11397,7 @@ fn test_phase12_task_18_crash_recovery_rollback_and_resume_invariants() {
 
 #[test]
 fn test_phase12_task_19_backup_and_restore_encryption_integration() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         crypto::{
             secret::{SetupEncryptionDto, UnlockDto},
@@ -11740,6 +11729,7 @@ fn test_phase12_task_19_backup_and_restore_encryption_integration() {
 
 #[test]
 fn test_phase12_task_20_import_export_search_attachments_integration() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         attachment_storage::AttachmentStorage,
         crypto::{
@@ -12062,6 +12052,7 @@ fn test_phase12_task_20_import_export_search_attachments_integration() {
 
 #[test]
 fn test_phase12_task_21_disable_encryption_and_decryption_workflow() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         attachment_storage::AttachmentStorage,
         crypto::{
@@ -12319,6 +12310,7 @@ fn test_phase12_task_21_disable_encryption_and_decryption_workflow() {
 
 #[test]
 fn test_phase12_task_22_security_logging_diagnostics_and_safe_failure_handling() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use std::fs;
     use personal_notepad_lib::storage::crypto::{
         clear_security_audit_log, get_security_audit_log, classify_crypto_failure,
@@ -14779,6 +14771,7 @@ fn test_phase13_task_19_harden_startup_shutdown_and_application_lifecycle() {
 
 #[test]
 fn test_phase13_task_20_control_background_work_cancellation_and_concurrency() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::services::backup_scheduler::BackupSchedulerService;
     use personal_notepad_lib::storage::models::{
         DuplicatePolicy, ExportBatchRequest, ExportFormat,
@@ -15208,8 +15201,6 @@ fn test_phase13_task_24_measure_performance_and_regression_verification() {
     let notes_with_tag = NoteRepository::list_by_tag(&conn, &tag.id).expect("List by tag");
     assert_eq!(notes_with_tag.len(), 50);
 }
-
-
 
 
 

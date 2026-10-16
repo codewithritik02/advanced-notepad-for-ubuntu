@@ -9,6 +9,7 @@ import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../u
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import { ExportNoteModal } from "../../../importExport";
 import { logger } from "../../../../utils/logger";
+import { closeAfterPendingWrites } from "../../services/closeGuard";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -436,6 +437,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const latestDataRef = useRef({ title: "", content: "", format: "txt" as NoteFormat });
   const prevNoteIdRef = useRef<string | null>(null);
   const isDirtyRef = useRef(false);
+  const closeInProgressRef = useRef(false);
 
   useEffect(() => {
     isDirtyRef.current = isDirty;
@@ -489,17 +491,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   // Save before application close and flush on unmount
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      if (noteId && isDirtyRef.current) {
-        const data = { ...latestDataRef.current };
-        const titleToSave = data.title.trim() ? data.title : "Untitled Note";
-        storageService.notes
-          .update(noteId, {
-            title: titleToSave,
-            content: data.content,
-            format: data.format,
-          })
-          .catch(() => {});
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      // A browser unload cannot reliably await an asynchronous SQLite command. Surface the
+      // pending work instead; the Tauri close handler below performs the awaited native flow.
+      if (noteId && (isDirtyRef.current || inFlightSavePromiseRef.current)) {
+        event.preventDefault();
+        event.returnValue = "";
       }
     };
 
@@ -510,20 +507,47 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => {
         getCurrentWindow()
-          .onCloseRequested(async () => {
-            if (noteId && isDirtyRef.current) {
-              const data = { ...latestDataRef.current };
-              const titleToSave = data.title.trim() ? data.title : "Untitled Note";
-              try {
-                await storageService.notes.update(noteId, {
-                  title: titleToSave,
+          .onCloseRequested(async (event) => {
+            if (!noteId || (!isDirtyRef.current && !inFlightSavePromiseRef.current)) {
+              return;
+            }
+            if (closeInProgressRef.current) {
+              event.preventDefault();
+              return;
+            }
+
+            closeInProgressRef.current = true;
+            const closed = await closeAfterPendingWrites({
+              event,
+              waitForPendingSave: async () => {
+                await inFlightSavePromiseRef.current;
+              },
+              savePendingChanges: async () => {
+                if (!isDirtyRef.current) return;
+                if (debounceTimerRef.current) {
+                  clearTimeout(debounceTimerRef.current);
+                  debounceTimerRef.current = null;
+                }
+                const data = { ...latestDataRef.current };
+                const updated = await storageService.notes.update(noteId, {
+                  title: data.title.trim() ? data.title : "Untitled Note",
                   content: data.content,
                   format: data.format,
                 });
-              } catch (err) {
-                logger.error("Close-time note persistence failed", err, { noteId });
-              }
-            }
+                isDirtyRef.current = false;
+                setIsDirty(false);
+                setEditorStatus("saved");
+                setSaveError(null);
+                onNoteUpdated?.(updated);
+              },
+              destroyWindow: () => getCurrentWindow().destroy(),
+              reportFailure: (err) => {
+                setEditorStatus("error");
+                setSaveError("Unable to save changes. The window was kept open so you can retry.");
+                logger.error("Close-time note persistence failed; window kept open", err, { noteId });
+              },
+            });
+            if (!closed) closeInProgressRef.current = false;
           })
           .then((unlisten) => {
             unlistenTauriClose = unlisten;

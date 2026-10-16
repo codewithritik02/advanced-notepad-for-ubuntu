@@ -37,6 +37,51 @@ import {
   MIN_PASSWORD_LENGTH,
   MAX_PASSWORD_LENGTH,
 } from "../src/features/security/utils/passwordValidation.ts";
+import { closeAfterPendingWrites } from "../src/features/notes/services/closeGuard.ts";
+
+describe("Phase 14 Task 4 — guarded application close", () => {
+  it("prevents native close until an in-flight save and the latest dirty write finish", async () => {
+    const calls = [];
+    const event = { preventDefault: () => calls.push("prevent") };
+    let releasePendingSave;
+    const pendingSave = new Promise((resolve) => {
+      releasePendingSave = resolve;
+    });
+
+    const closePromise = closeAfterPendingWrites({
+      event,
+      waitForPendingSave: async () => {
+        calls.push("wait");
+        await pendingSave;
+      },
+      savePendingChanges: async () => calls.push("save"),
+      destroyWindow: async () => calls.push("destroy"),
+      reportFailure: () => calls.push("error"),
+    });
+
+    assert.deepStrictEqual(calls, ["prevent", "wait"], "window is not destroyed while save is pending");
+    releasePendingSave();
+    assert.strictEqual(await closePromise, true);
+    assert.deepStrictEqual(calls, ["prevent", "wait", "save", "destroy"]);
+  });
+
+  it("surfaces a failed pending save and keeps the window open", async () => {
+    const calls = [];
+    const failure = new Error("injected SQLite write failure");
+    const closed = await closeAfterPendingWrites({
+      event: { preventDefault: () => calls.push("prevent") },
+      savePendingChanges: async () => {
+        calls.push("save");
+        throw failure;
+      },
+      destroyWindow: async () => calls.push("destroy"),
+      reportFailure: (error) => calls.push(error === failure ? "reported" : "wrong-error"),
+    });
+
+    assert.strictEqual(closed, false);
+    assert.deepStrictEqual(calls, ["prevent", "save", "reported"]);
+  });
+});
 
 describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
   // =========================================================================
@@ -24407,9 +24452,11 @@ describe("Phase 13 Task 19 — Harden Startup, Shutdown, and Application Lifecyc
 
   it("verifies backend handles startup orphan cleanup, instance locking, and shutdown WAL checkpointing", () => {
     const libCode = fs.readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf-8");
-    assert.ok(libCode.includes("cleanup_orphan_temp_files"), "Cleans orphan temp files on startup");
-    assert.ok(libCode.includes("AppInstanceLock"), "Acquires single instance lock on startup");
-    assert.ok(libCode.includes("checkpoint_wal"), "Checkpoints WAL on window close");
+    const lifecycleCode = fs.readFileSync(new URL("../src-tauri/src/storage/lifecycle.rs", import.meta.url), "utf-8");
+    assert.ok(lifecycleCode.includes("cleanup_orphan_temp_files"), "Cleans orphan temp files on startup");
+    assert.ok(lifecycleCode.includes("AppInstanceLock::acquire"), "Acquires single instance lock on startup");
+    assert.ok(lifecycleCode.includes("checkpoint_wal"), "Checkpoints WAL on window close");
+    assert.ok(libCode.includes("initialize_application_storage"), "Uses the tested lifecycle entry point");
     assert.ok(libCode.includes("flush_and_checkpoint_db"), "Exposes flush_and_checkpoint_db command");
 
     const pathsCode = fs.readFileSync(new URL("../src-tauri/src/storage/paths.rs", import.meta.url), "utf-8");
@@ -24576,8 +24623,6 @@ describe("Phase 13 Task 24 — Measure Performance and Run Regression Verificati
     assert.ok(appCode.includes("EmptyTrashDialog"), "Mounts trash cleanup dialog");
   });
 });
-
-
 
 
 

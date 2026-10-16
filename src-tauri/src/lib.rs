@@ -1,7 +1,7 @@
 pub mod commands;
 pub mod storage;
 
-use storage::{init_connection, Database, StoragePaths};
+use storage::Database;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -10,42 +10,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-            let storage_paths = StoragePaths::from_root(app_data_dir);
-            storage_paths
-                .ensure_directories()
+            let platform_app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let app_data_dir = storage::paths::resolve_app_data_root(platform_app_data_dir)
                 .map_err(|e| e.to_string())?;
+            let storage_paths = storage::StoragePaths::from_root(app_data_dir);
+            let initialized = storage::initialize_application_storage(storage_paths)
+                .map_err(|error| error.to_string())?;
 
-            // 1. Clean up orphan temp files from crashed previous runs (Phase 13, Task 19)
-            let _ = storage_paths.cleanup_orphan_temp_files();
-
-            // 2. Acquire single instance lock (Phase 13, Task 19)
-            let instance_lock = storage::paths::AppInstanceLock::acquire(&storage_paths)
-                .map_err(|e| e.to_string())?;
-
-            // 3. Recover from any interrupted restore before opening active database (Phase 11, Task 19)
-            let _ = storage::services::RestoreService::recover_if_interrupted(&storage_paths);
-
-            let mut conn =
-                init_connection(&storage_paths.database_file).map_err(|e| e.to_string())?;
-
-            // Execute all pending migrations in order with pre-migration snapshot safety
-            storage::migrations::run_migrations_with_safety(&mut conn, Some(&storage_paths.database_file)).map_err(|e| e.to_string())?;
-
-            let crypto_session = storage::crypto::CryptoSession::init_and_recover(&conn, &storage_paths)
-                .map_err(|e| e.to_string())?;
-
-            app.manage(storage_paths);
-            app.manage(crypto_session);
-            app.manage(Database::new(conn));
-            app.manage(instance_lock);
+            app.manage(initialized.paths);
+            app.manage(initialized.crypto_session);
+            app.manage(initialized.database);
+            app.manage(initialized.instance_lock);
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(db) = window.try_state::<Database>() {
-                    if let Ok(conn) = db.conn.lock() {
-                        let _ = storage::database::checkpoint_wal(&conn);
+                    if let Err(error) = storage::checkpoint_database_for_shutdown(&db) {
+                        eprintln!("[Shutdown Error] {error}");
                     }
                 }
             }

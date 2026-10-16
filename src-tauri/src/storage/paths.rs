@@ -1,5 +1,77 @@
-use std::path::{Path, PathBuf};
 use crate::storage::errors::StorageError;
+use std::path::{Path, PathBuf};
+
+/// Explicit opt-in used by debug/test desktop launches to isolate all application data.
+/// Release builds ignore this variable and always use the operating-system app-data path.
+pub const TEST_DATA_DIR_ENV: &str = "PERSONAL_NOTEPAD_TEST_DATA_DIR";
+
+/// Test roots must carry this marker before the application will accept an override or
+/// test cleanup will remove the directory.
+pub const TEST_ROOT_MARKER_FILE: &str = ".personal-notepad-test-root";
+pub const TEST_ROOT_MARKER_CONTENT: &str = "personal-notepad-isolated-test-root-v1\n";
+pub const TEST_ROOT_PREFIX: &str = "personal-notepad-test-";
+
+/// Validates an explicitly prepared test root without ever consulting the normal app-data path.
+/// The root must be a direct child of the platform temporary directory, use the reserved prefix,
+/// and contain the exact safety marker created by the test fixture.
+pub fn validate_isolated_test_root(root: &Path) -> Result<PathBuf, StorageError> {
+    if !root.is_absolute() {
+        return Err(StorageError::Validation(
+            "Test data directory must be an absolute path".to_string(),
+        ));
+    }
+
+    let canonical_root = root.canonicalize().map_err(|error| {
+        StorageError::Validation(format!("Test data directory is unavailable: {error}"))
+    })?;
+    let canonical_temp = std::env::temp_dir().canonicalize().map_err(|error| {
+        StorageError::Validation(format!(
+            "System temporary directory is unavailable: {error}"
+        ))
+    })?;
+
+    if canonical_root.parent() != Some(canonical_temp.as_path()) {
+        return Err(StorageError::Validation(
+            "Test data directory must be a direct child of the system temporary directory"
+                .to_string(),
+        ));
+    }
+
+    let has_reserved_prefix = canonical_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(TEST_ROOT_PREFIX));
+    if !has_reserved_prefix {
+        return Err(StorageError::Validation(
+            "Test data directory does not use the reserved test prefix".to_string(),
+        ));
+    }
+
+    let marker = canonical_root.join(TEST_ROOT_MARKER_FILE);
+    let marker_content = std::fs::read_to_string(&marker).map_err(|_| {
+        StorageError::Validation(
+            "Test data directory is missing its isolation safety marker".to_string(),
+        )
+    })?;
+    if marker_content != TEST_ROOT_MARKER_CONTENT {
+        return Err(StorageError::Validation(
+            "Test data directory has an invalid isolation safety marker".to_string(),
+        ));
+    }
+
+    Ok(canonical_root)
+}
+
+/// Returns the normal app-data root unless a debug/test launch explicitly supplies a validated
+/// isolated root. This keeps release behavior unchanged while making desktop tests safe.
+pub fn resolve_app_data_root(default_root: PathBuf) -> Result<PathBuf, StorageError> {
+    #[cfg(debug_assertions)]
+    if let Some(test_root) = std::env::var_os(TEST_DATA_DIR_ENV) {
+        return validate_isolated_test_root(Path::new(&test_root));
+    }
+
+    Ok(default_root)
+}
 
 /// Centralized management of application storage directories and paths
 #[derive(Debug, Clone)]
@@ -118,11 +190,17 @@ impl StoragePaths {
 
     /// Validates that a requested subpath resides strictly within the specified base directory,
     /// preventing directory traversal attacks (`../` or `..\`).
-    pub fn sanitize_subpath(base: &Path, user_relative_path: &Path) -> Result<PathBuf, StorageError> {
+    pub fn sanitize_subpath(
+        base: &Path,
+        user_relative_path: &Path,
+    ) -> Result<PathBuf, StorageError> {
         let path_str = user_relative_path.to_string_lossy();
 
         // Check for Windows drive letter prefix (e.g., C:) regardless of host OS
-        if path_str.len() >= 2 && path_str.as_bytes()[1] == b':' && path_str.as_bytes()[0].is_ascii_alphabetic() {
+        if path_str.len() >= 2
+            && path_str.as_bytes()[1] == b':'
+            && path_str.as_bytes()[0].is_ascii_alphabetic()
+        {
             return Err(StorageError::Validation(
                 "Absolute paths or drive prefixes are not permitted".to_string(),
             ));
@@ -169,7 +247,9 @@ impl StoragePaths {
                 if path.is_dir() && file_name.starts_with(".restore_staging_") {
                     let _ = std::fs::remove_dir_all(&path);
                     count += 1;
-                } else if path.is_file() && (file_name.contains(".tmp.") || file_name.ends_with(".tmp")) {
+                } else if path.is_file()
+                    && (file_name.contains(".tmp.") || file_name.ends_with(".tmp"))
+                {
                     let _ = std::fs::remove_file(&path);
                     count += 1;
                 }
@@ -181,10 +261,14 @@ impl StoragePaths {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let file_name = entry.file_name().to_string_lossy().to_string();
-                if path.is_dir() && (file_name.starts_with(".backup_staging_") || file_name.starts_with(".tmp.")) {
+                if path.is_dir()
+                    && (file_name.starts_with(".backup_staging_") || file_name.starts_with(".tmp."))
+                {
                     let _ = std::fs::remove_dir_all(&path);
                     count += 1;
-                } else if path.is_file() && (file_name.contains(".tmp.") || file_name.ends_with(".tmp")) {
+                } else if path.is_file()
+                    && (file_name.contains(".tmp.") || file_name.ends_with(".tmp"))
+                {
                     let _ = std::fs::remove_file(&path);
                     count += 1;
                 }
@@ -200,7 +284,9 @@ impl StoragePaths {
                         for file_entry in files.flatten() {
                             let fpath = file_entry.path();
                             let fname = file_entry.file_name().to_string_lossy().to_string();
-                            if fpath.is_file() && (fname.contains(".tmp.") || fname.ends_with(".tmp")) {
+                            if fpath.is_file()
+                                && (fname.contains(".tmp.") || fname.ends_with(".tmp"))
+                            {
                                 let _ = std::fs::remove_file(&fpath);
                                 count += 1;
                             }
@@ -229,7 +315,8 @@ impl AppInstanceLock {
             if let Ok(content) = std::fs::read_to_string(&lock_path) {
                 if let Ok(existing_pid) = content.trim().parse::<u32>() {
                     // Check if existing process is actually running on Linux via /proc
-                    let is_running = std::path::Path::new(&format!("/proc/{existing_pid}")).exists();
+                    let is_running =
+                        std::path::Path::new(&format!("/proc/{existing_pid}")).exists();
                     if is_running && existing_pid != current_pid {
                         return Err(StorageError::Conflict(format!(
                             "Another instance of Personal Notepad is already running (PID {existing_pid}). Concurrent access blocked."
@@ -265,7 +352,9 @@ mod tests {
         assert_eq!(paths.config_dir, temp_dir.join("config"));
 
         // 1. Initial creation
-        paths.ensure_directories().expect("ensure_directories should succeed");
+        paths
+            .ensure_directories()
+            .expect("ensure_directories should succeed");
         assert!(paths.root.is_dir());
         assert!(paths.attachments_dir.is_dir());
         assert!(paths.backups_dir.is_dir());
@@ -273,7 +362,9 @@ mod tests {
         assert!(paths.config_dir.is_dir());
 
         // 2. Idempotent re-run
-        paths.ensure_directories().expect("ensure_directories should be idempotent");
+        paths
+            .ensure_directories()
+            .expect("ensure_directories should be idempotent");
 
         // Clean up
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -281,13 +372,18 @@ mod tests {
 
     #[test]
     fn test_note_attachments_dir_and_backup_paths() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_subpaths_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_subpaths_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
-        paths.ensure_directories().expect("ensure_directories failed");
+        paths
+            .ensure_directories()
+            .expect("ensure_directories failed");
 
         // 1. Safe note attachments directory creation
         let note_id = uuid::Uuid::new_v4().to_string();
-        let note_att_dir = paths.get_note_attachments_dir(&note_id).expect("Should resolve note attachment dir");
+        let note_att_dir = paths
+            .get_note_attachments_dir(&note_id)
+            .expect("Should resolve note attachment dir");
         assert!(note_att_dir.is_dir());
         assert_eq!(note_att_dir, paths.attachments_dir.join(&note_id));
 
@@ -298,8 +394,13 @@ mod tests {
         assert!(paths.get_note_attachments_dir("").is_err());
 
         // 3. Backup file path resolution
-        let backup_path = paths.get_backup_file_path("20260929-223000").expect("Should resolve backup path");
-        assert_eq!(backup_path, paths.backups_dir.join("backup-20260929-223000.sqlite"));
+        let backup_path = paths
+            .get_backup_file_path("20260929-223000")
+            .expect("Should resolve backup path");
+        assert_eq!(
+            backup_path,
+            paths.backups_dir.join("backup-20260929-223000.sqlite")
+        );
 
         // 4. Malicious backup tag traversal rejection
         assert!(paths.get_backup_file_path("../evil").is_err());
@@ -315,7 +416,8 @@ mod tests {
 
         // Valid safe relative subpath
         let safe_subpath = Path::new("note-123/image.png");
-        let resolved = StoragePaths::sanitize_subpath(&base, safe_subpath).expect("Safe path should resolve");
+        let resolved =
+            StoragePaths::sanitize_subpath(&base, safe_subpath).expect("Safe path should resolve");
         assert_eq!(resolved, base.join("note-123/image.png"));
 
         // Rejection of parent directory traversal
@@ -332,7 +434,8 @@ mod tests {
 
     #[test]
     fn test_cleanup_orphan_temp_files() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_orphan_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_orphan_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -370,7 +473,10 @@ mod tests {
 
         // 2. Drop lock (clean exit)
         drop(lock);
-        assert!(!paths.app_instance_lock_file().exists(), "Lock file must be removed on clean drop");
+        assert!(
+            !paths.app_instance_lock_file().exists(),
+            "Lock file must be removed on clean drop"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
