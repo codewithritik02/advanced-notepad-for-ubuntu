@@ -6,6 +6,7 @@
 - `frontend.test.mjs` also executes the pure guarded-close coordinator to verify pending-save ordering and failure behavior.
 - `../src-tauri/tests/` contains Rust integration and backend workflow tests.
 - `../src-tauri/tests/startup_shutdown_recovery_test.rs` drives the production lifecycle entry point through fresh, existing, migrated, invalid, interrupted, and encrypted storage states.
+- `../src-tauri/tests/sqlite_schema_migrations_integrity_test.rs` verifies the real schema, all supported upgrade paths, constraints, rollback, contention, reopen, and corruption behavior.
 - Real rendered React component tests and desktop end-to-end automation have not been added yet; do not report the existing simulations as those test types.
 
 ## Isolated Rust fixtures
@@ -26,4 +27,5 @@ Run the infrastructure checks with:
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml --test test_infrastructure_test
 cargo test --manifest-path src-tauri/Cargo.toml --test startup_shutdown_recovery_test
+cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test
 ```

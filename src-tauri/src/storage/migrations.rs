@@ -36,6 +36,39 @@ pub const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// Newest schema version this build can safely read and write.
+pub const LATEST_SCHEMA_VERSION: i32 = 4;
+
+/// Returns zero for an uninitialized database, otherwise the highest recorded migration.
+pub fn current_schema_version(conn: &Connection) -> Result<i32, StorageError> {
+    let has_migrations_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_migrations')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_migrations_table {
+        return Ok(0);
+    }
+
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM _migrations",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(StorageError::Database)
+}
+
+/// Rejects databases created by a newer application before any migration mutates them.
+pub fn validate_schema_version_compatibility(conn: &Connection) -> Result<i32, StorageError> {
+    let version = current_schema_version(conn)?;
+    if version < 0 || version > LATEST_SCHEMA_VERSION {
+        return Err(StorageError::Migration(format!(
+            "Unsupported database schema version {version}; this application supports versions 0 through {LATEST_SCHEMA_VERSION}. The database was left unchanged."
+        )));
+    }
+    Ok(version)
+}
+
 /// Ensures note list composite indexes are present on the database (Phase 13, Task 9)
 pub fn ensure_performance_indexes(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(NOTE_LIST_INDEXES_SQL)?;
@@ -110,15 +143,17 @@ pub fn create_pre_migration_snapshot(conn: &Connection, db_path: &std::path::Pat
 /// Runs all pending migrations inside atomic transactions in ascending version order.
 /// Idempotent: previously applied migrations are skipped, preserving all existing user data.
 pub fn run_migrations(conn: &mut Connection) -> Result<(), StorageError> {
+    validate_schema_version_compatibility(conn)?;
     run_migrations_custom(conn, MIGRATIONS)
 }
 
 /// Runs all pending migrations inside atomic transactions with optional pre-migration snapshot (Phase 13, Task 18).
 pub fn run_migrations_with_safety(conn: &mut Connection, db_path: Option<&std::path::Path>) -> Result<(), StorageError> {
+    validate_schema_version_compatibility(conn)?;
     if let Some(path) = db_path {
         let _ = create_pre_migration_snapshot(conn, path)?;
     }
-    run_migrations(conn)
+    run_migrations_custom(conn, MIGRATIONS)
 }
 
 /// Runs a custom or registered list of migrations using atomic per-migration transactions.
@@ -707,5 +742,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-
 

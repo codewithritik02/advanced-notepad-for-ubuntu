@@ -753,7 +753,13 @@ impl StorageError {
                     ErrorCategory::Internal
                 }
             }
-            StorageError::Migration(_) => ErrorCategory::Internal,
+            StorageError::Migration(msg) => {
+                if msg.to_lowercase().contains("unsupported") {
+                    ErrorCategory::UnsupportedFormat
+                } else {
+                    ErrorCategory::Internal
+                }
+            }
             StorageError::StorageUnavailable(_) => ErrorCategory::Internal,
             StorageError::InitializationFailed(msg) => {
                 let lower = msg.to_lowercase();
@@ -970,5 +976,4 @@ mod tests {
         assert!(!diag.retryable);
     }
 }
-
 

@@ -32,7 +32,10 @@ pub use errors::{
     AttachmentError, BackupError, CryptoError, ErrorCategory, ImportExportError, StorageError,
     StructuredDiagnostic, TrashError,
 };
-pub use migrations::{run_migrations, run_migrations_custom, Migration, MIGRATIONS};
+pub use migrations::{
+    current_schema_version, run_migrations, run_migrations_custom,
+    validate_schema_version_compatibility, Migration, LATEST_SCHEMA_VERSION, MIGRATIONS,
+};
 pub use models::*;
 pub use paths::StoragePaths;
 pub use repositories::*;
