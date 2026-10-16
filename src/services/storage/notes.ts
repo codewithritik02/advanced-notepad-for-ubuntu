@@ -4,6 +4,7 @@ import {
   EmptyTrashResult,
   ListNotesOptions,
   Note,
+  NoteCountsDto,
   NoteMetadata,
   PermanentDeleteResult,
   TrashedNoteItem,
@@ -13,18 +14,35 @@ import {
 export const notesStorage = {
   /**
    * Retrieves notes list ordered by pinned status and last modification date.
-   * Supports filtering by notebook or unfiled status.
+   * Supports filtering by notebook or unfiled status, and bounded previews (Phase 13, Task 9).
    */
   async list(options?: ListNotesOptions | boolean): Promise<Note[]> {
     if (typeof options === "boolean") {
       return await invoke<Note[]>("list_notes", { includeDeleted: options });
     }
-    const { includeDeleted = false, notebookId, unfiledOnly = false } = options || {};
+    const {
+      includeDeleted = false,
+      notebookId,
+      unfiledOnly = false,
+      limit,
+      offset,
+      contentLimit = 300,
+    } = options || {};
     return await invoke<Note[]>("list_notes", {
       includeDeleted,
       notebookId: notebookId ?? null,
       unfiledOnly,
+      limit: limit ?? null,
+      offset: offset ?? null,
+      contentLimit: contentLimit ?? null,
     });
+  },
+
+  /**
+   * Retrieves aggregate counts of active, favorite, unfiled, trashed, and per-notebook notes without loading full records (Task 9).
+   */
+  async getNoteCounts(): Promise<NoteCountsDto> {
+    return await invoke<NoteCountsDto>("get_note_counts");
   },
 
   /**
@@ -89,8 +107,10 @@ export const notesStorage = {
   /**
    * Lists all favorite, non-deleted notes ordered by modified date.
    */
-  async listFavorites(): Promise<Note[]> {
-    return await invoke<Note[]>("list_favorite_notes");
+  async listFavorites(contentLimit: number = 300): Promise<Note[]> {
+    return await invoke<Note[]>("list_favorite_notes", {
+      contentLimit: contentLimit ?? null,
+    });
   },
 
   /**

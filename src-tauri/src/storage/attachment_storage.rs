@@ -1,13 +1,38 @@
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::storage::errors::AttachmentError;
 use crate::storage::paths::StoragePaths;
 
+/// RAII guard to guarantee temporary staging file cleanup on any failure path
+struct TempFileGuard<'a> {
+    path: &'a Path,
+    active: bool,
+}
+
+impl<'a> TempFileGuard<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, active: true }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl<'a> Drop for TempFileGuard<'a> {
+    fn drop(&mut self) {
+        if self.active && self.path.exists() {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
 /// Default maximum allowed file size for attachments: 100 MiB
-pub const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 = 100 * 1024 * 1024;
+pub const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 = crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES;
 
 /// Result of storing a source file in managed attachment storage
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +152,19 @@ impl AttachmentStorage {
         )
         .map_err(|e| AttachmentError::InvalidRequest(e.to_string()))?;
 
+        // Containment check: prevent symlink escapes if the target exists
+        if full_path.exists() {
+            if let Ok(canon_root) = self.paths.attachments_dir.canonicalize() {
+                if let Ok(canon_full) = full_path.canonicalize() {
+                    if !canon_full.starts_with(&canon_root) {
+                        return Err(AttachmentError::InvalidRequest(
+                            "Attachment path resolves outside attachments directory".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok(full_path)
     }
 
@@ -184,90 +222,140 @@ impl AttachmentStorage {
 
         let temp_filename = format!("{stored_name}.tmp.{}", Uuid::new_v4());
         let temp_path = note_dir.join(temp_filename);
+        let mut temp_guard = TempFileGuard::new(&temp_path);
 
         if let Some(key) = dek {
             let aad = format!("attachments:{}:{stored_name}", note_id.trim());
-            if let Err(e) = crate::storage::crypto::encrypt_file_to_file(source_path, &temp_path, key, aad.as_bytes()) {
-                let _ = fs::remove_file(&temp_path);
-                return Err(AttachmentError::FileOperationFailed(format!("Failed to encrypt attachment file: {e}")));
-            }
-        } else {
-            let copy_result = (|| -> Result<u64, AttachmentError> {
-                let mut tmp_file = File::create(&temp_path).map_err(|e| match e.kind() {
-                    io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
-                        "Permission denied creating managed temporary file".to_string(),
-                    ),
-                    _ if e.raw_os_error() == Some(28) => AttachmentError::InsufficientDiskSpace,
-                    _ => AttachmentError::FileOperationFailed(format!(
-                        "Failed to create temporary file: {e}"
-                    )),
+            crate::storage::crypto::encrypt_file_to_file(source_path, &temp_path, key, aad.as_bytes())
+                .map_err(|e| match e {
+                    crate::storage::errors::CryptoError::EncryptionFailed(ref msg)
+                        if msg.contains("Insufficient disk space") =>
+                    {
+                        AttachmentError::InsufficientDiskSpace
+                    }
+                    other => AttachmentError::FileOperationFailed(format!("Failed to encrypt attachment file: {other}")),
                 })?;
 
-                let mut buffer = [0u8; 64 * 1024]; // 64 KiB chunk buffer
-                let mut bytes_copied: u64 = 0;
+            // Verify stored encrypted file size on disk matches expected envelope
+            let meta = fs::metadata(&temp_path).map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => {
+                    AttachmentError::PermissionDenied("Permission denied inspecting staged encrypted attachment".to_string())
+                }
+                _ => AttachmentError::FileOperationFailed(format!("Failed to inspect staged encrypted attachment: {e}")),
+            })?;
 
-                loop {
-                    let read_bytes = validated.file.read(&mut buffer).map_err(|e| {
-                        AttachmentError::FileOperationFailed(format!("Error reading source file: {e}"))
-                    })?;
+            let expected_size = validated.file_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
+            if meta.len() != expected_size {
+                return Err(AttachmentError::FileOperationFailed(format!(
+                    "Encrypted file size mismatch: expected {expected_size} bytes, found {} bytes",
+                    meta.len()
+                )));
+            }
+        } else {
+            let mut tmp_file = File::create(&temp_path).map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
+                    "Permission denied creating managed temporary file".to_string(),
+                ),
+                _ if e.raw_os_error() == Some(28) => AttachmentError::InsufficientDiskSpace,
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to create temporary file: {e}"
+                )),
+            })?;
 
-                    if read_bytes == 0 {
-                        break;
-                    }
+            let mut buffer = [0u8; 64 * 1024]; // 64 KiB chunk buffer
+            let mut bytes_copied: u64 = 0;
+            let mut src_hasher = Sha256::new();
 
-                    bytes_copied += read_bytes as u64;
-                    if bytes_copied > self.max_file_size {
-                        return Err(AttachmentError::FileTooLarge {
-                            size_bytes: bytes_copied,
-                            max_bytes: self.max_file_size,
-                        });
-                    }
+            loop {
+                let read_bytes = validated.file.read(&mut buffer).map_err(|e| {
+                    AttachmentError::FileOperationFailed(format!("Error reading source file: {e}"))
+                })?;
 
-                    tmp_file.write_all(&buffer[..read_bytes]).map_err(|e| {
-                        if e.raw_os_error() == Some(28) {
-                            AttachmentError::InsufficientDiskSpace
-                        } else {
-                            AttachmentError::FileOperationFailed(format!(
-                                "Error writing to temporary attachment file: {e}"
-                            ))
-                        }
-                    })?;
+                if read_bytes == 0 {
+                    break;
                 }
 
-                tmp_file.flush().map_err(|e| {
+                bytes_copied += read_bytes as u64;
+                if bytes_copied > self.max_file_size {
+                    return Err(AttachmentError::FileTooLarge {
+                        size_bytes: bytes_copied,
+                        max_bytes: self.max_file_size,
+                    });
+                }
+
+                src_hasher.update(&buffer[..read_bytes]);
+
+                tmp_file.write_all(&buffer[..read_bytes]).map_err(|e| {
                     if e.raw_os_error() == Some(28) {
                         AttachmentError::InsufficientDiskSpace
                     } else {
-                        AttachmentError::FileOperationFailed(format!("Error flushing attachment file: {e}"))
+                        AttachmentError::FileOperationFailed(format!(
+                            "Error writing to temporary attachment file: {e}"
+                        ))
                     }
                 })?;
+            }
 
-                Ok(bytes_copied)
-            })();
-
-            let written_bytes = match copy_result {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    let _ = fs::remove_file(&temp_path);
-                    return Err(err);
+            tmp_file.flush().map_err(|e| {
+                if e.raw_os_error() == Some(28) {
+                    AttachmentError::InsufficientDiskSpace
+                } else {
+                    AttachmentError::FileOperationFailed(format!("Error flushing attachment file: {e}"))
                 }
-            };
+            })?;
+            drop(tmp_file);
 
-            if written_bytes != validated.file_size {
-                let _ = fs::remove_file(&temp_path);
+            if bytes_copied != validated.file_size {
                 return Err(AttachmentError::FileOperationFailed(format!(
-                    "File size mismatch after copy: expected {} bytes, wrote {written_bytes} bytes",
+                    "File size mismatch after copy: expected {} bytes, wrote {bytes_copied} bytes",
                     validated.file_size
                 )));
             }
+
+            // Stream and compute SHA-256 hash of the written staging file on disk to verify data integrity
+            let mut verify_file = File::open(&temp_path).map_err(|e| match e.kind() {
+                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
+                    "Permission denied reading staged temporary file for hash verification".to_string(),
+                ),
+                _ => AttachmentError::FileOperationFailed(format!("Failed to open staged file for verification: {e}")),
+            })?;
+
+            let mut dst_hasher = Sha256::new();
+            let mut vbuffer = [0u8; 64 * 1024];
+            let mut verify_bytes: u64 = 0;
+            loop {
+                let n = verify_file.read(&mut vbuffer).map_err(|e| {
+                    AttachmentError::FileOperationFailed(format!("Error verifying staged attachment copy: {e}"))
+                })?;
+                if n == 0 {
+                    break;
+                }
+                verify_bytes += n as u64;
+                dst_hasher.update(&vbuffer[..n]);
+            }
+            drop(verify_file);
+
+            if verify_bytes != validated.file_size {
+                return Err(AttachmentError::FileOperationFailed(format!(
+                    "Staged file size mismatch on disk: expected {} bytes, verified {verify_bytes} bytes",
+                    validated.file_size
+                )));
+            }
+
+            if src_hasher.finalize() != dst_hasher.finalize() {
+                return Err(AttachmentError::FileOperationFailed(
+                    "Attachment content integrity verification failed: SHA-256 digest mismatch".to_string(),
+                ));
+            }
         }
 
-        if let Err(e) = fs::rename(&temp_path, &final_path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(AttachmentError::FileOperationFailed(format!(
+        fs::rename(&temp_path, &final_path).map_err(|e| {
+            AttachmentError::FileOperationFailed(format!(
                 "Failed to finalize attachment file: {e}"
-            )));
-        }
+            ))
+        })?;
+
+        temp_guard.disarm();
 
         Ok(StoredAttachmentFile {
             relative_path,
@@ -388,6 +476,11 @@ impl AttachmentStorage {
         let trimmed = note_id.trim();
         if trimmed.is_empty() {
             return Ok(());
+        }
+        if trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains("..") {
+            return Err(AttachmentError::InvalidRequest(
+                "Invalid note ID for attachment directory".to_string(),
+            ));
         }
 
         let note_dir = self.paths.attachments_dir.join(trimmed);
@@ -586,6 +679,34 @@ impl AttachmentStorage {
         }
 
         Ok(cleaned_count)
+    }
+}
+
+/// Comprehensive blocklist of executable and script extensions that pose execution hazards
+pub const BLOCKED_EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "exe", "bat", "cmd", "com", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+    "ps1", "psm1", "psd1", "ps1xml", "ps2", "ps2xml", "psc1", "psc2",
+    "msc", "msi", "msp", "mst", "scr", "pif", "application", "gadget",
+    "cpl", "inf", "reg", "hta", "sh", "bash", "zsh", "csh", "ksh",
+    "run", "command", "desktop", "app", "action", "workflow", "pkg",
+    "jar",
+];
+
+/// Checks whether a given filename has a blocked executable extension.
+pub fn is_executable_extension(filename: &str) -> bool {
+    let lower = filename.trim().to_ascii_lowercase();
+    if let Some(dot_idx) = lower.rfind('.') {
+        let ext = &lower[dot_idx + 1..];
+        BLOCKED_EXECUTABLE_EXTENSIONS.contains(&ext)
+    } else {
+        false
+    }
+}
+
+impl AttachmentStorage {
+    /// Convenience helper to check if a filename is an executable extension.
+    pub fn is_executable_extension(filename: &str) -> bool {
+        is_executable_extension(filename)
     }
 }
 

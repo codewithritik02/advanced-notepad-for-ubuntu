@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { Note, NoteFormat, EditorStatus, getFormatDisplayName } from "../../types";
 import { storageService, Tag } from "../../../../services/storage";
 import { TagPicker } from "../../../tags";
@@ -8,6 +8,7 @@ import { NotePickerModal } from "../NotePicker";
 import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import { ExportNoteModal } from "../../../importExport";
+import { logger } from "../../../../utils/logger";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -241,14 +242,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   // Fetch targeted attachment count for metadata panel (Phase 7, Task 19)
   useEffect(() => {
+    let isCurrent = true;
     if (!noteId) {
       setAttachmentCount(0);
       return;
     }
     storageService.attachments
       .getAttachmentCount(noteId)
-      .then((count) => setAttachmentCount(count))
-      .catch(() => setAttachmentCount(0));
+      .then((count) => {
+        if (isCurrent) setAttachmentCount(count);
+      })
+      .catch(() => {
+        if (isCurrent) setAttachmentCount(0);
+      });
+    return () => {
+      isCurrent = false;
+    };
   }, [noteId]);
 
   // In-memory editing state
@@ -259,11 +268,53 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [viewMode, setViewMode] = useState<"edit" | "preview">("edit");
 
-  // Memoized metrics avoiding full-string allocations on large notes
-  const wordCount = useMemo(() => countWords(content), [content]);
+  // Defer expensive derived calculations off the critical typing path (React 19)
+  const deferredContent = useDeferredValue(content);
 
-  // Memoized parsed internal links for in-editor recognition and preview
-  const parsedLinks = useMemo(() => parseInternalLinks(content), [content]);
+  // Fast zero-allocation word counter for responsive performance with large notes (up to 1MB+)
+  const wordCount = useMemo(() => countWords(deferredContent), [deferredContent]);
+
+  // Outgoing internal links: debounced off the critical typing path for large notes
+  const [parsedLinks, setParsedLinks] = useState(() => parseInternalLinks(content));
+  const linksDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (linksDebounceTimerRef.current) {
+      clearTimeout(linksDebounceTimerRef.current);
+      linksDebounceTimerRef.current = null;
+    }
+
+    if (content.length < 20000) {
+      setParsedLinks(parseInternalLinks(content));
+    } else {
+      linksDebounceTimerRef.current = setTimeout(() => {
+        setParsedLinks(parseInternalLinks(content));
+      }, 300);
+    }
+
+    return () => {
+      if (linksDebounceTimerRef.current) {
+        clearTimeout(linksDebounceTimerRef.current);
+      }
+    };
+  }, [content, noteId]);
+
+  // Fast zero-allocation UTF-8 byte counter; only computed when metadata panel is open
+  const byteSize = useMemo(() => {
+    if (!isMetadataOpen) return 0;
+    let bytes = 0;
+    const len = deferredContent.length;
+    for (let i = 0; i < len; i++) {
+      const code = deferredContent.charCodeAt(i);
+      if (code <= 0x7f) bytes += 1;
+      else if (code <= 0x7ff) bytes += 2;
+      else if (code >= 0xd800 && code <= 0xdbff) {
+        bytes += 4;
+        i++;
+      } else bytes += 3;
+    }
+    return bytes;
+  }, [isMetadataOpen, deferredContent]);
 
   // Track active fetch request cancellation token
   const activeFetchIdRef = useRef<string | null>(null);
@@ -395,7 +446,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     latestDataRef.current = { title, content, format };
   }, [title, content, format]);
 
-  // Save on note switch: Preserve previous note view state and flush dirty changes before loading new note
+  // Save on note switch / unmount: Preserve previous note view state and flush dirty changes
   useEffect(() => {
     const previousId = prevNoteIdRef.current;
     if (previousId && previousId !== noteId) {
@@ -414,7 +465,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           debounceTimerRef.current = null;
         }
 
-        const dataToFlush = latestDataRef.current;
+        const dataToFlush = { ...latestDataRef.current };
         const titleToFlush = dataToFlush.title.trim() ? dataToFlush.title : "Untitled Note";
 
         // Flush save to SQLite immediately
@@ -427,8 +478,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           .then((updated) => {
             onNoteUpdated?.(updated);
           })
-          .catch(() => {
-            // Graceful catch
+          .catch((err) => {
+            logger.error("Failed to flush note changes on note switch", err, { noteId: previousId });
           });
       }
     }
@@ -436,11 +487,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     prevNoteIdRef.current = noteId;
   }, [noteId, onNoteUpdated]);
 
-  // Save before application close where supported
+  // Save before application close and flush on unmount
   useEffect(() => {
     const handleBeforeUnload = () => {
       if (noteId && isDirtyRef.current) {
-        const data = latestDataRef.current;
+        const data = { ...latestDataRef.current };
         const titleToSave = data.title.trim() ? data.title : "Untitled Note";
         storageService.notes
           .update(noteId, {
@@ -461,7 +512,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         getCurrentWindow()
           .onCloseRequested(async () => {
             if (noteId && isDirtyRef.current) {
-              const data = latestDataRef.current;
+              const data = { ...latestDataRef.current };
               const titleToSave = data.title.trim() ? data.title : "Untitled Note";
               try {
                 await storageService.notes.update(noteId, {
@@ -469,8 +520,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                   content: data.content,
                   format: data.format,
                 });
-              } catch {
-                // Ignore close-time persistence failure
+              } catch (err) {
+                logger.error("Close-time note persistence failed", err, { noteId });
               }
             }
           })
@@ -488,8 +539,35 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = null;
       }
+
+      // Flush uncommitted dirty edits on component unmount
+      if (isDirtyRef.current && noteId) {
+        const dataToFlush = { ...latestDataRef.current };
+        const titleToFlush = dataToFlush.title.trim() ? dataToFlush.title : "Untitled Note";
+        storageService.notes
+          .update(noteId, {
+            title: titleToFlush,
+            content: dataToFlush.content,
+            format: dataToFlush.format,
+          })
+          .then((updated) => {
+            onNoteUpdated?.(updated);
+          })
+          .catch((err) => {
+            logger.error("Failed to flush note changes on editor unmount", err, { noteId });
+          });
+      }
+
+      // Cache cursor and scroll position for this note
+      if (noteId && (contentRef.current || scrollAreaRef.current)) {
+        sessionViewCache.set(noteId, {
+          cursorStart: contentRef.current?.selectionStart ?? 0,
+          cursorEnd: contentRef.current?.selectionEnd ?? 0,
+          scrollTop: scrollAreaRef.current?.scrollTop ?? 0,
+        });
+      }
     };
-  }, [noteId]);
+  }, [noteId, onNoteUpdated]);
 
   // Auto-grow textarea to accommodate content without secondary scrollbars
   useEffect(() => {
@@ -499,16 +577,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [content]);
 
-  // Core persistence worker function
+  // Core persistence worker function with snapshot isolation & generation checks
   const executeSave = useCallback(
-    async (targetNoteId: string, rev: number) => {
+    async (
+      targetNoteId: string,
+      rev: number,
+      snapshotData?: { title: string; content: string; format: NoteFormat }
+    ) => {
       if (isSavingRef.current || isReadOnly) return;
       isSavingRef.current = true;
       setIsSaving(true);
-      setEditorStatus("saving");
-      setSaveError(null);
+      if (activeFetchIdRef.current === targetNoteId) {
+        setEditorStatus("saving");
+        setSaveError(null);
+      }
 
-      const dataToSave = latestDataRef.current;
+      const dataToSave = snapshotData || { ...latestDataRef.current };
       const persistedTitle = dataToSave.title.trim() ? dataToSave.title : "Untitled Note";
 
       try {
@@ -532,37 +616,47 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           });
         }
 
-        // Only commit revision if this response is not superseded by a newer save
+        // Only commit revision if this response is not superseded by a newer save FOR THIS NOTE
         if (rev >= latestPersistedRevisionRef.current) {
           latestPersistedRevisionRef.current = rev;
-          setLoadedNote(updated);
           onNoteUpdated?.(updated);
-          setLastSavedAt(updated.modified_at);
 
-          // If no new typing occurred since this save was initiated, mark as clean
-          if (revisionRef.current === rev) {
-            setIsDirty(false);
-            isDirtyRef.current = false;
-            setEditorStatus("saved");
+          // ONLY update active editor UI state if the user is still actively editing this note!
+          if (activeFetchIdRef.current === targetNoteId) {
+            setLoadedNote(updated);
+            setLastSavedAt(updated.modified_at);
+
+            // If no new typing occurred since this save was initiated, mark as clean
+            if (revisionRef.current === rev) {
+              setIsDirty(false);
+              isDirtyRef.current = false;
+              setEditorStatus("saved");
+            }
           }
         }
       } catch (err) {
-        setIsDirty(true);
         isDirtyRef.current = true;
         setEditorStatus("error");
-        setSaveError(
-          "Unable to save changes. Your changes are still available locally in the editor."
-        );
+        if (activeFetchIdRef.current === targetNoteId) {
+          setIsDirty(true);
+          setSaveError(
+            "Unable to save changes. Your changes are still available locally in the editor."
+          );
+        }
+        logger.error("Failed to execute save for note", err, { noteId: targetNoteId, revision: rev });
         throw err;
       } finally {
         isSavingRef.current = false;
-        setIsSaving(false);
+        if (activeFetchIdRef.current === targetNoteId) {
+          setIsSaving(false);
+        }
 
         // If the user continued typing while save was in-flight, schedule an immediate follow-up
-        if (revisionRef.current > latestPersistedRevisionRef.current) {
+        if (activeFetchIdRef.current === targetNoteId && revisionRef.current > latestPersistedRevisionRef.current) {
           if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = setTimeout(() => {
-            const followUpPromise = executeSave(targetNoteId, revisionRef.current).catch(() => {});
+            const followUpData = { ...latestDataRef.current };
+            const followUpPromise = executeSave(targetNoteId, revisionRef.current, followUpData).catch(() => {});
             inFlightSavePromiseRef.current = followUpPromise;
             followUpPromise.finally(() => {
               if (inFlightSavePromiseRef.current === followUpPromise) {
@@ -573,7 +667,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         }
       }
     },
-    [onSaveNote, onNoteUpdated, loadedNote]
+    [onSaveNote, onNoteUpdated, loadedNote, isReadOnly]
   );
 
   // Trigger autosave with 800ms debounce
@@ -581,11 +675,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     (targetNoteId: string) => {
       revisionRef.current += 1;
       const currentRev = revisionRef.current;
+      const currentSnapshot = { ...latestDataRef.current };
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
       debounceTimerRef.current = setTimeout(() => {
-        const savePromise = executeSave(targetNoteId, currentRev).catch(() => {});
+        const savePromise = executeSave(targetNoteId, currentRev, currentSnapshot).catch(() => {});
         inFlightSavePromiseRef.current = savePromise;
         savePromise.finally(() => {
           if (inFlightSavePromiseRef.current === savePromise) {
@@ -605,13 +700,22 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (!loadedNote) return;
     const hasChanged =
       newTitle !== loadedNote.title ||
-      newContent !== loadedNote.content ||
-      newFormat !== ((loadedNote.format as NoteFormat) === "md" ? "md" : "txt");
-    setIsDirty(hasChanged);
+      newFormat !== ((loadedNote.format as NoteFormat) === "md" ? "md" : "txt") ||
+      newContent.length !== loadedNote.content.length ||
+      newContent !== loadedNote.content;
+
     if (hasChanged) {
-      setEditorStatus("unsaved");
+      if (!isDirtyRef.current) {
+        setIsDirty(true);
+        isDirtyRef.current = true;
+        setEditorStatus("unsaved");
+      }
     } else {
-      setEditorStatus("saved");
+      if (isDirtyRef.current) {
+        setIsDirty(false);
+        isDirtyRef.current = false;
+        setEditorStatus("saved");
+      }
     }
   };
 
@@ -1344,7 +1448,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             isFavorite={loadedNote?.is_favorite}
             wordCount={wordCount}
             characterCount={content.length}
-            byteSize={new TextEncoder().encode(content).length}
+            byteSize={byteSize}
             attachmentCount={attachmentCount}
             onMoveNote={!isReadOnly && onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
             onToggleFavorite={!isReadOnly ? handleToggleFavorite : undefined}
@@ -1405,7 +1509,24 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           <span>Characters: {content.length}</span>
         </div>
 
-        <div className="status-item">
+        <div
+          className="status-item"
+          role={editorStatus === "error" ? "button" : undefined}
+          tabIndex={editorStatus === "error" ? 0 : undefined}
+          aria-label={editorStatus === "error" ? "Save failed, activate to retry saving" : undefined}
+          onClick={editorStatus === "error" ? () => handleSave() : undefined}
+          onKeyDown={
+            editorStatus === "error"
+              ? (e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleSave();
+                  }
+                }
+              : undefined
+          }
+          style={{ cursor: editorStatus === "error" ? "pointer" : "default" }}
+        >
           <span
             className={`status-indicator-dot ${editorStatus === "saving" ? "is-pulsing" : ""}`}
             style={{

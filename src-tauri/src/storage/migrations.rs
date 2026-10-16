@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use crate::storage::errors::StorageError;
 use crate::storage::schema::{
     INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL, MIGRATION_003_ATTACHMENTS_SCHEMA_SQL,
-    MIGRATION_004_TRASH_INDEXES_SQL,
+    MIGRATION_004_TRASH_INDEXES_SQL, NOTE_LIST_INDEXES_SQL,
 };
 
 /// Represents a single discrete database migration step
@@ -36,6 +36,12 @@ pub const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// Ensures note list composite indexes are present on the database (Phase 13, Task 9)
+pub fn ensure_performance_indexes(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(NOTE_LIST_INDEXES_SQL)?;
+    Ok(())
+}
+
 /// Creates the `_migrations` tracking table if it does not already exist.
 fn ensure_migrations_table(conn: &Connection) -> Result<(), StorageError> {
     conn.execute_batch(
@@ -48,10 +54,71 @@ fn ensure_migrations_table(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Creates an automatic pre-migration snapshot if there are pending migrations on an existing database (Phase 13, Task 18).
+pub fn create_pre_migration_snapshot(conn: &Connection, db_path: &std::path::Path) -> Result<Option<std::path::PathBuf>, StorageError> {
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    // Check if the database has any applied migrations (table `_migrations` exists)
+    let has_tables: bool = conn.query_row(
+        "SELECT COUNT(1) FROM sqlite_master WHERE type='table' AND name='_migrations'",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).map(|c| c > 0).unwrap_or(false);
+
+    if !has_tables {
+        return Ok(None);
+    }
+
+    // Check if there are pending migrations
+    let mut has_pending = false;
+    for migration in MIGRATIONS {
+        let is_applied: bool = conn.query_row(
+            "SELECT COUNT(1) FROM _migrations WHERE version = ?1",
+            [migration.version],
+            |row| {
+                let count: i64 = row.get(0)?;
+                Ok(count > 0)
+            },
+        ).unwrap_or(false);
+
+        if !is_applied {
+            has_pending = true;
+            break;
+        }
+    }
+
+    if !has_pending {
+        return Ok(None);
+    }
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
+    let file_name = db_path.file_name().unwrap_or_default().to_string_lossy();
+    let snapshot_name = format!("{file_name}.pre_migration.{timestamp}");
+    let snapshot_path = db_path.with_file_name(&snapshot_name);
+
+    match crate::storage::services::snapshot::SnapshotManager::create_snapshot(conn, &snapshot_path) {
+        Ok(_) => Ok(Some(snapshot_path)),
+        Err(e) => {
+            eprintln!("[Migration Warning] Failed to create pre-migration snapshot: {e}");
+            Err(StorageError::Backup(format!("Pre-migration snapshot failed: {e}")))
+        }
+    }
+}
+
 /// Runs all pending migrations inside atomic transactions in ascending version order.
 /// Idempotent: previously applied migrations are skipped, preserving all existing user data.
 pub fn run_migrations(conn: &mut Connection) -> Result<(), StorageError> {
     run_migrations_custom(conn, MIGRATIONS)
+}
+
+/// Runs all pending migrations inside atomic transactions with optional pre-migration snapshot (Phase 13, Task 18).
+pub fn run_migrations_with_safety(conn: &mut Connection, db_path: Option<&std::path::Path>) -> Result<(), StorageError> {
+    if let Some(path) = db_path {
+        let _ = create_pre_migration_snapshot(conn, path)?;
+    }
+    run_migrations(conn)
 }
 
 /// Runs a custom or registered list of migrations using atomic per-migration transactions.
@@ -105,6 +172,8 @@ pub fn run_migrations_custom(conn: &mut Connection, migrations: &[Migration]) ->
             }
         }
     }
+
+    ensure_performance_indexes(conn)?;
 
     Ok(())
 }
@@ -585,6 +654,57 @@ mod tests {
         drop(fresh_conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
         let _ = std::fs::remove_dir_all(&fresh_temp_dir);
+    }
+
+    #[test]
+    fn test_note_list_performance_indexes_ensured() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_perf_idx_{}", uuid::Uuid::new_v4()));
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init connection");
+
+        // 1. Run migrations 1..=4
+        run_migrations(&mut conn).expect("Run migrations");
+
+        // 2. Verify composite indexes exist
+        for idx in ["idx_notes_list_sort", "idx_notes_notebook_list", "idx_notes_favorite_list"] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [idx],
+                |r| r.get(0),
+            ).unwrap_or(0);
+            assert_eq!(count, 1, "Index {idx} must exist after ensure_performance_indexes");
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_pre_migration_snapshot_creation() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_pre_mig_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("database.sqlite");
+        let mut conn = init_connection(&db_path).expect("Init connection");
+
+        // 1. Run subset of migrations (e.g. migration 1 and 2 only)
+        run_migrations_custom(&mut conn, &MIGRATIONS[..2]).expect("Run initial migrations");
+
+        // 2. create_pre_migration_snapshot should create a snapshot because migration 3 and 4 are pending
+        let snapshot_path = create_pre_migration_snapshot(&conn, &db_path).expect("Create pre-migration snapshot");
+        assert!(snapshot_path.is_some(), "Must create a snapshot when pending migrations exist");
+        let path = snapshot_path.unwrap();
+        assert!(path.exists(), "Snapshot file must exist on disk");
+        assert!(path.file_name().unwrap().to_string_lossy().contains(".pre_migration."));
+
+        // 3. Now run all migrations with safety
+        run_migrations_with_safety(&mut conn, Some(&db_path)).expect("Run remaining migrations");
+
+        // 4. Running again when no pending migrations exist should return None
+        let second_snapshot = create_pre_migration_snapshot(&conn, &db_path).expect("Check when no migrations pending");
+        assert!(second_snapshot.is_none(), "Must not create snapshot when no migrations are pending");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

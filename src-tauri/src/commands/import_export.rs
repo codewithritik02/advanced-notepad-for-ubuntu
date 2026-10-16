@@ -43,6 +43,8 @@ pub fn execute_import(
     session: State<'_, CryptoSession>,
     request: ImportRequest,
 ) -> Result<ImportSummary, String> {
+    let _concurrency_guard = crate::storage::services::backup_scheduler::BackupSchedulerService::try_acquire_import_export_lock()
+        .map_err(|e| e.user_friendly_message())?;
     let dek = get_active_dek(&session)?;
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
     ImportExportService::execute_import_with_progress_and_key(&mut conn, request, dek.as_ref(), |prog| {
@@ -94,6 +96,8 @@ pub fn export_notes_batch(
     session: State<'_, CryptoSession>,
     request: ExportBatchRequest,
 ) -> Result<ExportSummary, String> {
+    let _concurrency_guard = crate::storage::services::backup_scheduler::BackupSchedulerService::try_acquire_import_export_lock()
+        .map_err(|e| e.user_friendly_message())?;
     let dek = get_active_dek(&session)?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     ImportExportService::export_notes_batch_with_progress_and_key(&conn, request, dek.as_ref(), |prog| {

@@ -63,7 +63,7 @@ const EmptyTrashIcon = () => (
   </svg>
 );
 
-export const NotesList: React.FC<NotesListProps> = ({
+export const NotesList = React.memo<NotesListProps>(({
   notes = [],
   selectedNoteId = null,
   onSelectNote = () => {},
@@ -90,6 +90,38 @@ export const NotesList: React.FC<NotesListProps> = ({
 }) => {
   const isSearchMode = mode === "search";
   const isTrashMode = isTrash || mode === "trash";
+
+  const PAGE_SIZE = 50;
+  const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
+
+  // Reset rendered limit when notes collection, search query, or mode changes (Task 9)
+  React.useEffect(() => {
+    setRenderedCount(PAGE_SIZE);
+  }, [notes, searchQuery, mode]);
+
+  // Ensure active/selected note is always rendered and visible (Task 9 selection stability)
+  const effectiveCount = React.useMemo(() => {
+    if (!selectedNoteId) return renderedCount;
+    const idx = notes.findIndex((n) => n.id === selectedNoteId);
+    return idx >= 0 ? Math.max(renderedCount, idx + 1) : renderedCount;
+  }, [renderedCount, selectedNoteId, notes]);
+
+  const visibleNotes = React.useMemo(() => {
+    return notes.slice(0, effectiveCount);
+  }, [notes, effectiveCount]);
+
+  const handleScroll = React.useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const target = e.currentTarget;
+      if (
+        effectiveCount < notes.length &&
+        target.scrollTop + target.clientHeight >= target.scrollHeight - 250
+      ) {
+        setRenderedCount((prev) => Math.min(prev + PAGE_SIZE, notes.length));
+      }
+    },
+    [effectiveCount, notes.length]
+  );
 
   const resolvedErrorTitle =
     errorTitle ??
@@ -191,7 +223,7 @@ export const NotesList: React.FC<NotesListProps> = ({
       </div>
 
       {/* Panel Body */}
-      <div className="notes-list-content">
+      <div className="notes-list-content" onScroll={handleScroll}>
         {/* Loading State */}
         {status === "loading" && (
           <LoadingState count={4} message={isSearchMode ? "Searching..." : undefined} />
@@ -234,7 +266,7 @@ export const NotesList: React.FC<NotesListProps> = ({
               role="region"
               aria-label={isTrashMode ? "Trash notes list" : isSearchMode ? "Search results" : "Notes list"}
             >
-              {notes.map((note) => (
+              {visibleNotes.map((note) => (
                 <NoteCard
                   key={note.id}
                   note={note}
@@ -254,6 +286,8 @@ export const NotesList: React.FC<NotesListProps> = ({
       </div>
     </div>
   );
-};
+});
+
+NotesList.displayName = "NotesList";
 
 export default NotesList;

@@ -275,6 +275,15 @@ export function isDeletionTargetProtected(
     return true;
   }
 
+  // Guard pre-restore recovery checkpoints
+  if (
+    normalized.includes("/checkpoints/") ||
+    normalized.startsWith("checkpoints/") ||
+    normalized.includes("checkpoint-")
+  ) {
+    return true;
+  }
+
   // Guard database path if provided
   if (liveDatabasePath) {
     const normDb = liveDatabasePath.replace(/\\/g, "/").toLowerCase();

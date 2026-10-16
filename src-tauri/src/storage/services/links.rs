@@ -240,7 +240,7 @@ impl InternalLinkService {
         dek: Option<&SecretBytes>,
     ) -> Result<ResolvedLinkTarget, InternalLinkError> {
         let trimmed_id = target_id.trim();
-        if trimmed_id.is_empty() {
+        if trimmed_id.is_empty() || trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
             return Ok(ResolvedLinkTarget {
                 target_id: target_id.to_string(),
                 title: None,
@@ -319,7 +319,7 @@ impl InternalLinkService {
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
         let trimmed_id = target_note_id.trim();
-        if trimmed_id.is_empty() {
+        if trimmed_id.is_empty() || trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
             return Ok(Vec::new());
         }
 

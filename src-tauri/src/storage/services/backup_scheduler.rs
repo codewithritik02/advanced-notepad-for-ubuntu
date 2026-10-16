@@ -28,6 +28,9 @@ static BACKUP_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 /// Global atomic flag signaling that a database restore operation is currently in progress.
 static RESTORE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
+/// Global atomic flag signaling that an import or batch export operation is currently in progress (Phase 13, Task 20).
+static IMPORT_EXPORT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 /// RAII Guard ensuring that the `BACKUP_IN_PROGRESS` flag is safely reset upon drop,
 /// even in the event of an early exit or error.
 #[derive(Debug)]
@@ -49,8 +52,18 @@ impl Drop for RestoreExecutionGuard {
     }
 }
 
+/// RAII Guard ensuring that the `IMPORT_EXPORT_IN_PROGRESS` flag is safely reset upon drop (Phase 13, Task 20).
+#[derive(Debug)]
+pub struct ImportExportExecutionGuard;
+
+impl Drop for ImportExportExecutionGuard {
+    fn drop(&mut self) {
+        IMPORT_EXPORT_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Service managing the scheduling, lifecycle evaluation, concurrency controls,
-/// and automated execution of background backups (Phase 11, Task 11).
+/// and automated execution of background backups (Phase 11, Task 11; Phase 13, Task 20).
 pub struct BackupSchedulerService;
 
 impl BackupSchedulerService {
@@ -64,17 +77,33 @@ impl BackupSchedulerService {
         RESTORE_IN_PROGRESS.load(Ordering::SeqCst)
     }
 
+    /// Returns whether an import or export operation is currently in progress (Phase 13, Task 20).
+    pub fn is_import_export_in_progress() -> bool {
+        IMPORT_EXPORT_IN_PROGRESS.load(Ordering::SeqCst)
+    }
+
     /// Sets or clears the active restore operation flag.
     pub fn set_restore_in_progress(active: bool) {
         RESTORE_IN_PROGRESS.store(active, Ordering::SeqCst);
     }
 
+    /// Sets or clears the active import/export operation flag (Phase 13, Task 20).
+    pub fn set_import_export_in_progress(active: bool) {
+        IMPORT_EXPORT_IN_PROGRESS.store(active, Ordering::SeqCst);
+    }
+
     /// Attempts to acquire an exclusive lock for backup execution.
-    /// Fails if a restore is underway or another backup is already in progress.
+    /// Fails if a restore, import/export, or another backup is already in progress.
     pub fn try_acquire_backup_lock() -> Result<BackupExecutionGuard, BackupError> {
         if Self::is_restore_in_progress() {
             return Err(BackupError::ConcurrentOperation(
                 "A database restore operation is currently in progress.".to_string(),
+            ));
+        }
+
+        if Self::is_import_export_in_progress() {
+            return Err(BackupError::ConcurrentOperation(
+                "An import or export operation is currently in progress.".to_string(),
             ));
         }
 
@@ -91,11 +120,17 @@ impl BackupSchedulerService {
     }
 
     /// Attempts to acquire an exclusive lock for restore execution.
-    /// Fails if a backup is underway or another restore is already in progress.
+    /// Fails if a backup, import/export, or another restore is already in progress.
     pub fn try_acquire_restore_lock() -> Result<RestoreExecutionGuard, BackupError> {
         if Self::is_backup_in_progress() {
             return Err(BackupError::ConcurrentOperation(
                 "A database backup operation is currently executing.".to_string(),
+            ));
+        }
+
+        if Self::is_import_export_in_progress() {
+            return Err(BackupError::ConcurrentOperation(
+                "An import or export operation is currently in progress.".to_string(),
             ));
         }
 
@@ -109,6 +144,33 @@ impl BackupSchedulerService {
         }
 
         Ok(RestoreExecutionGuard)
+    }
+
+    /// Attempts to acquire an exclusive lock for import or batch export execution (Phase 13, Task 20).
+    /// Fails if a backup, restore, or another import/export is already in progress.
+    pub fn try_acquire_import_export_lock() -> Result<ImportExportExecutionGuard, BackupError> {
+        if Self::is_restore_in_progress() {
+            return Err(BackupError::ConcurrentOperation(
+                "A database restore operation is currently in progress.".to_string(),
+            ));
+        }
+
+        if Self::is_backup_in_progress() {
+            return Err(BackupError::ConcurrentOperation(
+                "A database backup operation is currently executing.".to_string(),
+            ));
+        }
+
+        if IMPORT_EXPORT_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(BackupError::ConcurrentOperation(
+                "Another import or export operation is currently executing.".to_string(),
+            ));
+        }
+
+        Ok(ImportExportExecutionGuard)
     }
 
     /// Loads the persistent scheduler state from SQLite settings.

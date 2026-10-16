@@ -9,12 +9,21 @@ use crate::storage::repositories::NoteRepository;
 pub struct TrashService;
 
 impl TrashService {
-    /// Moves an active note into Trash (Phase 8, Task 5: Soft-Delete Service).
-    pub fn soft_delete(conn: &Connection, note_id: &str) -> Result<Note, TrashError> {
+    /// Validates note ID format, ensuring it is non-empty and contains no path separators or traversal characters.
+    fn validate_note_id(note_id: &str) -> Result<&str, TrashError> {
         let trimmed_id = note_id.trim();
         if trimmed_id.is_empty() {
             return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
         }
+        if trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
+            return Err(TrashError::InvalidRequest("Invalid note ID format".to_string()));
+        }
+        Ok(trimmed_id)
+    }
+
+    /// Moves an active note into Trash (Phase 8, Task 5: Soft-Delete Service).
+    pub fn soft_delete(conn: &Connection, note_id: &str) -> Result<Note, TrashError> {
+        let trimmed_id = Self::validate_note_id(note_id)?;
 
         let existing = match NoteRepository::get_by_id(conn, trimmed_id)? {
             Some(n) => n,
@@ -40,10 +49,7 @@ impl TrashService {
         note_id: &str,
         dek: Option<&SecretBytes>,
     ) -> Result<Note, TrashError> {
-        let trimmed_id = note_id.trim();
-        if trimmed_id.is_empty() {
-            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
-        }
+        let trimmed_id = Self::validate_note_id(note_id)?;
 
         let existing = match NoteRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
             Some(n) => n,
@@ -66,10 +72,7 @@ impl TrashService {
 
     /// Restores a trashed note back to active state (Phase 8, Task 6: Restore Service).
     pub fn restore(conn: &Connection, note_id: &str) -> Result<Note, TrashError> {
-        let trimmed_id = note_id.trim();
-        if trimmed_id.is_empty() {
-            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
-        }
+        let trimmed_id = Self::validate_note_id(note_id)?;
 
         let existing = match NoteRepository::get_by_id(conn, trimmed_id)? {
             Some(n) => n,
@@ -95,10 +98,7 @@ impl TrashService {
         note_id: &str,
         dek: Option<&SecretBytes>,
     ) -> Result<Note, TrashError> {
-        let trimmed_id = note_id.trim();
-        if trimmed_id.is_empty() {
-            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
-        }
+        let trimmed_id = Self::validate_note_id(note_id)?;
 
         let existing = match NoteRepository::get_by_id_with_key(conn, trimmed_id, dek)? {
             Some(n) => n,
@@ -125,10 +125,7 @@ impl TrashService {
         storage: &AttachmentStorage,
         note_id: &str,
     ) -> Result<PermanentDeleteResult, TrashError> {
-        let trimmed_id = note_id.trim();
-        if trimmed_id.is_empty() {
-            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
-        }
+        let trimmed_id = Self::validate_note_id(note_id)?;
 
         let is_deleted: Option<bool> = conn
             .query_row(
@@ -154,19 +151,19 @@ impl TrashService {
             )));
         }
 
-        // Identify associated attachment metadata and coordinate file cleanup
-        let (attachment_cleanup_failed, cleanup_err) = match storage.remove_note_directory(trimmed_id) {
-            Ok(()) => (false, None),
-            Err(e) => (true, Some(e.user_friendly_message())),
-        };
-
-        // Remove note-related records from database (cascades note_tags, attachments, FTS triggers)
+        // 1. Remove note-related records from database FIRST (cascades note_tags, attachments, FTS triggers)
         let deleted = NoteRepository::delete(conn, trimmed_id, false)?;
         if !deleted {
             return Err(TrashError::NoteNotFound(format!(
                 "Note with id '{trimmed_id}' was not found during final deletion"
             )));
         }
+
+        // 2. Coordinate associated attachment file cleanup after DB commit
+        let (attachment_cleanup_failed, cleanup_err) = match storage.remove_note_directory(trimmed_id) {
+            Ok(()) => (false, None),
+            Err(e) => (true, Some(e.user_friendly_message())),
+        };
 
         Ok(PermanentDeleteResult {
             note_id: trimmed_id.to_string(),

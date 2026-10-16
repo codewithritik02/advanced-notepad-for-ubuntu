@@ -17,9 +17,7 @@ impl NotebookRepository {
 
     pub fn create(conn: &Connection, dto: CreateNotebookDto) -> Result<Notebook, StorageError> {
         let name = dto.name.trim();
-        if name.is_empty() {
-            return Err(StorageError::Validation("Notebook name cannot be empty".to_string()));
-        }
+        crate::storage::limits::validate_notebook_name(name)?;
 
         // Validate parent_id exists if specified
         if let Some(ref pid) = dto.parent_id {
@@ -83,9 +81,7 @@ impl NotebookRepository {
             .ok_or_else(|| StorageError::NotFound(format!("Notebook with id '{id}' not found")))?;
 
         let name = dto.name.trim();
-        if name.is_empty() {
-            return Err(StorageError::Validation("Notebook name cannot be empty".to_string()));
-        }
+        crate::storage::limits::validate_notebook_name(name)?;
 
         let now = chrono::Utc::now().to_rfc3339();
 

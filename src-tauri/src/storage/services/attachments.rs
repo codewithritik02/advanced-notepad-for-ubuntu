@@ -166,11 +166,17 @@ impl AttachmentService {
             ));
         }
 
-        // 1. Remove managed file from storage first.
-        storage.remove_file(&attachment.relative_path)?;
-
-        // 2. Remove from database
+        // 1. Remove from database first to prevent orphaned database records pointing to missing files
         AttachmentRepository::delete(conn, trimmed_id)?;
+
+        // 2. Remove managed file from storage. If filesystem removal fails (e.g. locked file),
+        // log a warning but do not fail the completed database deletion, leaving the file for deferred orphan cleanup.
+        if let Err(cleanup_err) = storage.remove_file(&attachment.relative_path) {
+            eprintln!(
+                "Warning: Attachment record '{}' removed from DB, but filesystem cleanup failed for '{}': {}",
+                trimmed_id, attachment.relative_path, cleanup_err
+            );
+        }
 
         Ok(())
     }
@@ -206,9 +212,21 @@ impl AttachmentService {
             }
         };
 
+        // Enforce executable blocking policy: never execute or open untrusted executables
+        if AttachmentStorage::is_executable_extension(&attachment.file_name) {
+            return Err(AttachmentError::ExecutableBlocked(attachment.file_name.clone()));
+        }
+
         let safe_path = storage.resolve_safe_path(&attachment.relative_path)?;
         if !safe_path.exists() {
             return Err(AttachmentError::ManagedFileMissing(attachment.relative_path));
+        }
+
+        // Secondary check on safe_path file name
+        if let Some(disk_name) = safe_path.file_name().and_then(|s| s.to_str()) {
+            if AttachmentStorage::is_executable_extension(disk_name) {
+                return Err(AttachmentError::ExecutableBlocked(attachment.file_name.clone()));
+            }
         }
 
         // Determine whether file is encrypted (without relying on file extensions)
@@ -335,6 +353,21 @@ impl AttachmentService {
         older_than_seconds: u64,
     ) -> Result<usize, AttachmentError> {
         storage.cleanup_abandoned_temp_files(older_than_seconds)
+    }
+
+    /// Cleans up unreferenced managed files identified during consistency checks.
+    pub fn cleanup_unreferenced_files(
+        conn: &Connection,
+        storage: &AttachmentStorage,
+    ) -> Result<usize, AttachmentError> {
+        let report = Self::check_consistency(conn, storage)?;
+        let mut count = 0;
+        for rel_path in report.unreferenced_managed_files {
+            if storage.remove_file(&rel_path).is_ok() {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 }
 

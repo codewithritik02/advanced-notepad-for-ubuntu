@@ -71,6 +71,24 @@ impl SnapshotManager {
             let _ = fs::remove_file(&temp_path);
         }
 
+        struct SnapshotTempGuard<'a> {
+            path: &'a Path,
+            committed: bool,
+        }
+
+        impl<'a> Drop for SnapshotTempGuard<'a> {
+            fn drop(&mut self) {
+                if !self.committed && self.path.exists() {
+                    let _ = fs::remove_file(self.path);
+                }
+            }
+        }
+
+        let mut guard = SnapshotTempGuard {
+            path: &temp_path,
+            committed: false,
+        };
+
         // 2. Perform online backup via SQLite Backup API inside an enclosed block to drop dest_conn
         {
             let mut dest_conn = Connection::open(&temp_path).map_err(BackupError::Database)?;
@@ -96,7 +114,32 @@ impl SnapshotManager {
         if dest_path.exists() {
             fs::remove_file(dest_path).map_err(BackupError::Io)?;
         }
-        fs::rename(&temp_path, dest_path).map_err(BackupError::Io)?;
+        match fs::rename(&temp_path, dest_path) {
+            Ok(_) => {
+                guard.committed = true;
+            }
+            Err(rename_err) => {
+                match fs::copy(&temp_path, dest_path) {
+                    Ok(_) => {
+                        let _ = fs::remove_file(&temp_path);
+                        guard.committed = true;
+                    }
+                    Err(copy_err) => {
+                        if dest_path.exists() {
+                            let _ = fs::remove_file(dest_path);
+                        }
+                        if let Some(28) = copy_err.raw_os_error() {
+                            return Err(BackupError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Insufficient disk space to complete database snapshot.",
+                            )));
+                        } else {
+                            return Err(BackupError::Io(rename_err));
+                        }
+                    }
+                }
+            }
+        }
 
         // 4. Validate the newly created snapshot independently
         Self::verify_snapshot_database(dest_path)

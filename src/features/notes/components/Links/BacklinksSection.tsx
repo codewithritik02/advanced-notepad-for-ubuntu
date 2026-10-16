@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { BacklinkItem } from "../../../../services/storage/types";
 import { storageService } from "../../../../services/storage";
 import "./InternalLinks.css";
@@ -37,23 +37,34 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
   const [isExpanded, setIsExpanded] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Request sequencing counter to discard out-of-order or stale backlink responses
+  const activeRequestIdRef = useRef<number>(0);
+
   const fetchBacklinks = useCallback(async (targetId: string) => {
+    const currentRequestId = ++activeRequestIdRef.current;
     setIsLoading(true);
     setError(null);
     try {
       const items = await storageService.links.getBacklinks(targetId);
-      setBacklinks(items || []);
+      if (activeRequestIdRef.current === currentRequestId) {
+        setBacklinks(items || []);
+      }
     } catch (err) {
-      console.error("[BacklinksSection] Failed to fetch backlinks:", err);
-      setError("Unable to load backlinks.");
-      setBacklinks([]);
+      if (activeRequestIdRef.current === currentRequestId) {
+        console.error("[BacklinksSection] Failed to fetch backlinks:", err);
+        setError("Unable to load backlinks.");
+        setBacklinks([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (activeRequestIdRef.current === currentRequestId) {
+        setIsLoading(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     if (!noteId) {
+      activeRequestIdRef.current += 1;
       setBacklinks([]);
       setIsLoading(false);
       setError(null);
@@ -62,6 +73,13 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
 
     fetchBacklinks(noteId);
   }, [noteId, refreshTrigger, fetchBacklinks]);
+
+  // Invalidate any in-flight backlink requests on unmount
+  useEffect(() => {
+    return () => {
+      activeRequestIdRef.current += 1;
+    };
+  }, []);
 
   const handleToggleExpand = () => {
     setIsExpanded((prev) => !prev);

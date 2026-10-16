@@ -68,7 +68,7 @@ export function searchResultToNoteListItem(
 export function filterSearchResultsByFavorite(
   results: SearchResult[],
   isFavoritesActive: boolean,
-  notesLookup?: Map<string, { is_favorite: boolean }>
+  notesLookup?: Map<string, { is_favorite: boolean; notebook_id?: string | null; title?: string }>
 ): SearchResult[] {
   if (!isFavoritesActive) return results;
   return results.filter((result) => {
@@ -89,7 +89,7 @@ export interface SearchScopeOptions {
   location: NoteLocation;
   tags?: Array<{ id: string; name: string }>;
   noteTagsMap?: Record<string, string[]>;
-  notesLookup?: Map<string, { is_favorite: boolean }>;
+  notesLookup?: Map<string, { is_favorite: boolean; notebook_id?: string | null; title?: string }>;
 }
 
 /**
@@ -126,7 +126,11 @@ export function scopeSearchResults(
 
   // Task 41: Notebook — scope results to the currently selected notebook.
   if (location.type === "notebook") {
-    return results.filter((result) => result.notebookId === location.notebookId);
+    return results.filter((result) => {
+      const live = notesLookup?.get(result.noteId);
+      const nbId = live && live.notebook_id !== undefined ? live.notebook_id : result.notebookId;
+      return nbId === location.notebookId;
+    });
   }
 
   return results;

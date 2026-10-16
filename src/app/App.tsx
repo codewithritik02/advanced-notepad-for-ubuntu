@@ -88,6 +88,7 @@ export function App() {
     clearSearch,
     searchNow,
     cancelPendingDebounce,
+    removeResult,
   } = useSearch({
     debounceMs: 200,
     limit: 50,
@@ -483,30 +484,20 @@ export function App() {
   const refreshNoteCounts = useCallback(async () => {
     if (!isStorageReady || isAppLocked) return;
     try {
-      const allActiveNotes = await storageService.notes.list();
-      const counts: Record<string, number> = {};
-      let favCount = 0;
-      let unfiledCount = 0;
-      let allCount = 0;
-      for (const note of allActiveNotes) {
-        if (!note.is_deleted) {
-          allCount++;
-          if (note.is_favorite) favCount++;
-          if (!note.notebook_id) unfiledCount++;
-          if (note.notebook_id) {
-            counts[note.notebook_id] = (counts[note.notebook_id] || 0) + 1;
-          }
-        }
-      }
-      counts["favorites"] = favCount;
-      counts["unfiled"] = unfiledCount;
-      counts["all-notes"] = allCount;
+      const noteCounts = await storageService.notes.getNoteCounts();
+      const counts: Record<string, number> = {
+        "all-notes": noteCounts.total,
+        "favorites": noteCounts.favorites,
+        "unfiled": noteCounts.unfiled,
+        "trash": noteCounts.trash,
+        ...noteCounts.byNotebook,
+      };
 
       try {
         const trashed = await storageService.notes.listTrashed();
         counts["trash"] = trashed.length;
       } catch {
-        counts["trash"] = 0;
+        // Retain backend aggregate trash count if listTrashed fails
       }
 
       setNoteCounts(counts);
@@ -534,14 +525,20 @@ export function App() {
 
   const handleDeleteTag = useCallback(
     async (id: string) => {
-      await deleteTag(id);
-      if (selectedTagId === id) {
-        selectAllNotes();
-        setActiveNavId("all-notes");
-      }
-      await refreshNoteCounts();
-      if (selectedNoteId) {
-        await loadNoteTags();
+      if (inFlightMutationsRef.current.has(id)) return;
+      inFlightMutationsRef.current.add(id);
+      try {
+        await deleteTag(id);
+        if (selectedTagId === id) {
+          selectAllNotes();
+          setActiveNavId("all-notes");
+        }
+        await refreshNoteCounts();
+        if (selectedNoteId) {
+          await loadNoteTags();
+        }
+      } finally {
+        inFlightMutationsRef.current.delete(id);
       }
     },
     [deleteTag, selectedTagId, selectAllNotes, refreshNoteCounts, selectedNoteId, loadNoteTags]
@@ -680,6 +677,15 @@ export function App() {
     isCreatingRef.current = true;
 
     try {
+      // Flush in-flight/dirty edits from currently selected note before switching to the newly created note
+      if (editorSaveRef.current) {
+        try {
+          await editorSaveRef.current();
+        } catch (saveErr) {
+          logger.error("AutoFlushOnNewNote", saveErr);
+        }
+      }
+
       // If user was viewing trash or has an active search filter, reset to all-notes to reveal the new note
       if (activeNavId === "trash") {
         setActiveNavId("all-notes");
@@ -849,6 +855,8 @@ export function App() {
   }, []);
 
   const handleConfirmEmptyTrash = useCallback(async () => {
+    if (inFlightMutationsRef.current.has("__empty_trash__")) return;
+    inFlightMutationsRef.current.add("__empty_trash__");
     try {
       const result = await storageService.notes.emptyTrash();
 
@@ -905,6 +913,8 @@ export function App() {
         message: msg,
       });
       throw err;
+    } finally {
+      inFlightMutationsRef.current.delete("__empty_trash__");
     }
   }, [activeNavId, loadNotes, refreshNoteCounts]);
 
@@ -940,6 +950,11 @@ export function App() {
         // 4. Remove it from the active note list
         setNotes((prev) => prev.filter((n) => n.id !== targetId));
 
+        // When search is active, remove it immediately from search results to preserve consistency (Phase 13, Task 10)
+        if (isSearchActive) {
+          removeResult(targetId);
+        }
+
         // 5. Update navigation and any Trash count
         await refreshNoteCounts();
 
@@ -957,7 +972,7 @@ export function App() {
         inFlightMutationsRef.current.delete(targetId);
       }
     },
-    [selectedNoteId, activeNavId, refreshNoteCounts]
+    [selectedNoteId, activeNavId, refreshNoteCounts, isSearchActive, removeResult]
   );
 
   const handleFocusSearch = useCallback(async () => {
@@ -1398,36 +1413,53 @@ export function App() {
 
   const handleDeleteNotebook = useCallback(
     async (id: string) => {
-      await editorSaveRef.current?.();
-      await deleteNotebook(id);
-      if (selectedNotebookId === id) {
-        selectUnfiled();
-        setActiveNavId("unfiled");
-        await loadNotes("unfiled", null);
-      } else {
-        await loadNotes();
+      if (inFlightMutationsRef.current.has(id)) return;
+      inFlightMutationsRef.current.add(id);
+      try {
+        await editorSaveRef.current?.();
+        await deleteNotebook(id);
+        if (selectedNotebookId === id) {
+          selectUnfiled();
+          setActiveNavId("unfiled");
+          await loadNotes("unfiled", null);
+        } else {
+          await loadNotes();
+        }
+        await loadNotebooks();
+        await refreshNoteCounts();
+      } finally {
+        inFlightMutationsRef.current.delete(id);
       }
-      await loadNotebooks();
-      await refreshNoteCounts();
     },
     [deleteNotebook, selectedNotebookId, selectUnfiled, loadNotes, loadNotebooks, refreshNoteCounts]
   );
 
   const handleMoveNote = useCallback(
     async (noteId: string, targetNotebookId: string | null) => {
-      await editorSaveRef.current?.();
-      await storageService.notes.moveToNotebook(noteId, targetNotebookId);
-      await loadNotes();
-      await loadNotebooks();
-      await refreshNoteCounts();
+      if (inFlightMutationsRef.current.has(noteId)) return;
+      inFlightMutationsRef.current.add(noteId);
+      try {
+        await editorSaveRef.current?.();
+        await storageService.notes.moveToNotebook(noteId, targetNotebookId);
+        await loadNotes();
+        await loadNotebooks();
+        await refreshNoteCounts();
+      } finally {
+        inFlightMutationsRef.current.delete(noteId);
+      }
     },
     [loadNotes, loadNotebooks, refreshNoteCounts]
   );
 
   const handleToggleNoteFavorite = useCallback(
     async (noteId: string) => {
+      if (inFlightMutationsRef.current.has(noteId)) return;
+      inFlightMutationsRef.current.add(noteId);
       const note = notes.find((n) => n.id === noteId);
-      if (!note) return;
+      if (!note) {
+        inFlightMutationsRef.current.delete(noteId);
+        return;
+      }
       const nextFavorite = !note.is_favorite;
       // Optimistic state update
       setNotes((prev) =>
@@ -1444,6 +1476,8 @@ export function App() {
         setNotes((prev) =>
           prev.map((n) => (n.id === noteId ? { ...n, is_favorite: note.is_favorite } : n))
         );
+      } finally {
+        inFlightMutationsRef.current.delete(noteId);
       }
     },
     [notes, refreshNoteCounts]
@@ -1460,6 +1494,18 @@ export function App() {
       return true;
     });
   }, [notes, activeNavId, selectedNotebookId]);
+
+  // Precompute notebook path map to avoid repeated O(N) tree traversals per note (Task 9)
+  const notebookPathMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const nb of notebooks) {
+      const p = computeNotebookPath(nb.id, notebooks);
+      if (p && p !== "Unfiled") {
+        map.set(nb.id, p);
+      }
+    }
+    return map;
+  }, [notebooks]);
 
   // Convert SQLite domain Notes to UI NoteListItems
   const noteListItems = useMemo<NoteListItem[]>(() => {
@@ -1506,9 +1552,7 @@ export function App() {
         }
       }
 
-      const notebookPath = n.notebook_id
-        ? computeNotebookPath(n.notebook_id, notebooks)
-        : undefined;
+      const notebookPath = n.notebook_id ? notebookPathMap.get(n.notebook_id) : undefined;
 
       return {
         id: n.id,
@@ -1517,19 +1561,19 @@ export function App() {
         updatedAt,
         isFavorite: n.is_favorite,
         notebookId: n.notebook_id ?? undefined,
-        notebookPath: notebookPath && notebookPath !== "Unfiled" ? notebookPath : undefined,
+        notebookPath,
         tags: noteTagsMap[n.id] ?? [],
         attachmentCount: (n as any).attachment_count,
         isDeleted: n.is_deleted,
         deletedAt: deletedAtDisplay ?? n.deleted_at ?? undefined,
       };
     });
-  }, [filteredNotes, noteTagsMap, notebooks]);
+  }, [filteredNotes, noteTagsMap, notebookPathMap]);
 
   const notesLookup = useMemo(() => {
-    const map = new Map<string, { is_favorite: boolean }>();
+    const map = new Map<string, { is_favorite: boolean; notebook_id?: string | null; title?: string }>();
     for (const n of notes) {
-      map.set(n.id, { is_favorite: n.is_favorite });
+      map.set(n.id, { is_favorite: n.is_favorite, notebook_id: n.notebook_id, title: n.title });
     }
     return map;
   }, [notes]);
@@ -1564,16 +1608,19 @@ export function App() {
     if (isSearchActive) {
       return scopedSearchResults.map((result) => {
         const liveNote = notesLookup.get(result.noteId);
-        const nbPath = computeNotebookPath(result.notebookId, notebooks);
+        const nbPath = result.notebookId ? notebookPathMap.get(result.notebookId) : undefined;
         const item = searchResultToNoteListItem(result, nbPath, noteTagsMap[result.noteId]);
         if (liveNote) {
+          if (liveNote.title !== undefined) {
+            item.title = liveNote.title;
+          }
           item.isFavorite = liveNote.is_favorite;
         }
         return item;
       });
     }
     return noteListItems;
-  }, [isSearchActive, scopedSearchResults, notesLookup, notebooks, noteTagsMap, noteListItems]);
+  }, [isSearchActive, scopedSearchResults, notesLookup, notebookPathMap, noteTagsMap, noteListItems]);
 
   // Unified status for NotesList (idle | loading | error | empty)
   const displayedStatus = useMemo<NotesListStatus>(() => {

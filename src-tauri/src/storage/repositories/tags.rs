@@ -34,20 +34,11 @@ impl TagRepository {
         }
     }
 
-    pub const MAX_TAG_NAME_LENGTH: usize = 100;
+    pub const MAX_TAG_NAME_LENGTH: usize = crate::storage::limits::MAX_TAG_NAME_CHARS;
 
     pub fn validate_tag_name(name: &str) -> Result<String, StorageError> {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(StorageError::Validation("Tag name cannot be empty".to_string()));
-        }
-        if trimmed.chars().count() > Self::MAX_TAG_NAME_LENGTH {
-            return Err(StorageError::Validation(format!(
-                "Tag name cannot exceed {} characters",
-                Self::MAX_TAG_NAME_LENGTH
-            )));
-        }
-        Ok(trimmed.to_string())
+        crate::storage::limits::validate_tag_name(name)?;
+        Ok(name.trim().to_string())
     }
 
     pub fn create(conn: &Connection, name: &str) -> Result<Tag, StorageError> {

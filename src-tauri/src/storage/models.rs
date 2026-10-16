@@ -68,6 +68,28 @@ pub struct UpdateNoteDto {
     pub is_deleted: Option<bool>,
 }
 
+/// Lightweight aggregate note counts DTO (Phase 13, Task 9)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCountsDto {
+    pub total: usize,
+    pub favorites: usize,
+    pub unfiled: usize,
+    pub trash: usize,
+    pub by_notebook: std::collections::HashMap<String, usize>,
+}
+
+/// Query options for bounded, paginated note listing (Phase 13, Task 9)
+#[derive(Debug, Clone, Default)]
+pub struct ListNotesQueryOptions<'a> {
+    pub include_deleted: bool,
+    pub notebook_id: Option<&'a str>,
+    pub unfiled_only: bool,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+    pub content_limit: Option<usize>,
+}
+
 /// Persistent Notebook model
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notebook {
@@ -288,6 +310,19 @@ pub struct SearchResult {
     pub modified_at: String,
     pub notebook_id: Option<String>,
     pub favorite: bool,
+}
+
+/// Search index diagnostic and health status (Phase 13, Task 10)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchIndexDiagnostic {
+    pub is_encrypted: bool,
+    pub fts_table_exists: bool,
+    pub triggers_intact: bool,
+    pub integrity_check_passed: bool,
+    pub active_notes_count: usize,
+    pub fts_entries_count: usize,
+    pub is_consistent: bool,
 }
 
 /// Lightweight item representation for trashed notes listing (Phase 8, Task 10)

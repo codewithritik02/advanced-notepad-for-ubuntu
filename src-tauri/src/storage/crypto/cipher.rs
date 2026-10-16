@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -168,23 +168,61 @@ pub fn encrypt_file_to_file(
     let mut file = File::open(src_path).map_err(|e| {
         CryptoError::EncryptionFailed(format!("Failed to open source file for encryption: {e}"))
     })?;
-    let mut plaintext = Vec::new();
+
+    let meta = file.metadata().map_err(|e| {
+        CryptoError::EncryptionFailed(format!("Failed to read source file metadata: {e}"))
+    })?;
+
+    let file_len = meta.len();
+    if file_len > crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES {
+        return Err(CryptoError::EncryptionFailed(format!(
+            "File size ({} bytes) exceeds maximum permitted attachment size ({} bytes)",
+            file_len,
+            crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES
+        )));
+    }
+
+    let mut plaintext = Vec::with_capacity(file_len as usize);
     file.read_to_end(&mut plaintext).map_err(|e| {
         CryptoError::EncryptionFailed(format!("Failed to read source file: {e}"))
     })?;
 
     let envelope = encrypt_payload(&plaintext, dek, associated_data)?;
 
-    let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
-        CryptoError::EncryptionFailed(format!("Failed to create destination file for encryption: {e}"))
-    })?);
+    let write_res = (|| -> Result<(), CryptoError> {
+        let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
+            if e.raw_os_error() == Some(28) {
+                CryptoError::EncryptionFailed("Insufficient disk space while creating encrypted file".to_string())
+            } else {
+                CryptoError::EncryptionFailed(format!("Failed to create destination file for encryption: {e}"))
+            }
+        })?);
 
-    out_file.write_all(&envelope).map_err(|e| {
-        CryptoError::EncryptionFailed(format!("Failed to write encrypted payload to disk: {e}"))
-    })?;
-    out_file.flush().map_err(|e| {
-        CryptoError::EncryptionFailed(format!("Failed to flush encrypted payload to disk: {e}"))
-    })?;
+        for chunk in envelope.chunks(64 * 1024) {
+            out_file.write_all(chunk).map_err(|e| {
+                if e.raw_os_error() == Some(28) {
+                    CryptoError::EncryptionFailed("Insufficient disk space while writing encrypted payload to disk".to_string())
+                } else {
+                    CryptoError::EncryptionFailed(format!("Failed to write encrypted payload to disk: {e}"))
+                }
+            })?;
+        }
+
+        out_file.flush().map_err(|e| {
+            if e.raw_os_error() == Some(28) {
+                CryptoError::EncryptionFailed("Insufficient disk space while flushing encrypted payload to disk".to_string())
+            } else {
+                CryptoError::EncryptionFailed(format!("Failed to flush encrypted payload to disk: {e}"))
+            }
+        })?;
+
+        Ok(())
+    })();
+
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(dst_path);
+        return Err(err);
+    }
 
     Ok(())
 }
@@ -199,23 +237,59 @@ pub fn decrypt_file_to_file(
     let mut file = BufReader::new(File::open(src_path).map_err(|e| {
         CryptoError::DecryptionFailed(format!("Failed to open encrypted file for decryption: {e}"))
     })?);
-    let mut envelope = Vec::new();
+
+    let meta = file.get_ref().metadata().map_err(|e| {
+        CryptoError::DecryptionFailed(format!("Failed to read encrypted file metadata: {e}"))
+    })?;
+
+    let file_len = meta.len();
+    if file_len > crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES + MIN_ENVELOPE_LEN as u64 {
+        return Err(CryptoError::DecryptionFailed(format!(
+            "Encrypted file size ({file_len} bytes) exceeds maximum permitted attachment size"
+        )));
+    }
+
+    let mut envelope = Vec::with_capacity(file_len as usize);
     file.read_to_end(&mut envelope).map_err(|e| {
         CryptoError::DecryptionFailed(format!("Failed to read encrypted file: {e}"))
     })?;
 
     let plaintext = decrypt_payload(&envelope, dek, associated_data)?;
 
-    let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
-        CryptoError::DecryptionFailed(format!("Failed to create destination file for decryption: {e}"))
-    })?);
+    let write_res = (|| -> Result<(), CryptoError> {
+        let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
+            if e.raw_os_error() == Some(28) {
+                CryptoError::DecryptionFailed("Insufficient disk space while creating decrypted file".to_string())
+            } else {
+                CryptoError::DecryptionFailed(format!("Failed to create destination file for decryption: {e}"))
+            }
+        })?);
 
-    out_file.write_all(&plaintext).map_err(|e| {
-        CryptoError::DecryptionFailed(format!("Failed to write decrypted payload: {e}"))
-    })?;
-    out_file.flush().map_err(|e| {
-        CryptoError::DecryptionFailed(format!("Failed to flush decrypted payload: {e}"))
-    })?;
+        for chunk in plaintext.chunks(64 * 1024) {
+            out_file.write_all(chunk).map_err(|e| {
+                if e.raw_os_error() == Some(28) {
+                    CryptoError::DecryptionFailed("Insufficient disk space while writing decrypted payload".to_string())
+                } else {
+                    CryptoError::DecryptionFailed(format!("Failed to write decrypted payload: {e}"))
+                }
+            })?;
+        }
+
+        out_file.flush().map_err(|e| {
+            if e.raw_os_error() == Some(28) {
+                CryptoError::DecryptionFailed("Insufficient disk space while flushing decrypted payload".to_string())
+            } else {
+                CryptoError::DecryptionFailed(format!("Failed to flush decrypted payload: {e}"))
+            }
+        })?;
+
+        Ok(())
+    })();
+
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(dst_path);
+        return Err(err);
+    }
 
     Ok(())
 }

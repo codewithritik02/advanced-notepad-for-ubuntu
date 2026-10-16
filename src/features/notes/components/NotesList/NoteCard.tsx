@@ -15,7 +15,7 @@ export interface NoteCardProps {
   onPermanentlyDelete?: (noteId: string) => void;
 }
 
-export const NoteCard: React.FC<NoteCardProps> = ({
+export const NoteCard = React.memo<NoteCardProps>(({
   note,
   isSelected,
   onSelect,
@@ -265,6 +265,8 @@ export const NoteCard: React.FC<NoteCardProps> = ({
       )}
     </article>
   );
-};
+});
+
+NoteCard.displayName = "NoteCard";
 
 export default NoteCard;

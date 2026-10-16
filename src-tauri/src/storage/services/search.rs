@@ -44,6 +44,11 @@ impl SearchService {
     pub fn purge_plaintext_index(conn: &Connection) -> Result<(), StorageError> {
         SearchRepository::purge_plaintext_index(conn)
     }
+
+    /// Diagnoses search index health, trigger status, and consistency (Phase 13, Task 10).
+    pub fn diagnose_index(conn: &Connection) -> Result<crate::storage::models::SearchIndexDiagnostic, StorageError> {
+        SearchRepository::diagnose_index(conn)
+    }
 }
 
 #[cfg(test)]

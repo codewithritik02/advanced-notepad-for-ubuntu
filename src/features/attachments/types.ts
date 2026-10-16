@@ -26,6 +26,7 @@ export type AttachmentErrorKind =
   | "InsufficientDiskSpace"
   | "ManagedFileMissing"
   | "FileOperationFailed"
+  | "ExecutableBlocked"
   | "OpenFailed"
   | "Database"
   | "Unknown";

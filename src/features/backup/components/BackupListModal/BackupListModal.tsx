@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Modal, Button, Badge } from "../../../../components/ui";
 import { BackupListItem, BackupValidationResult } from "../../../../services/storage/types";
 import { backupStorage } from "../../../../services/storage/backup";
@@ -36,11 +36,24 @@ export const BackupListModal: React.FC<BackupListModalProps> = ({
     text: string;
   } | null>(null);
 
+  const requestIdRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      requestIdRef.current += 1;
+    };
+  }, []);
+
   const fetchBackups = useCallback(async () => {
+    const currentRequestId = ++requestIdRef.current;
     setIsLoading(true);
     setFeedback(null);
     try {
       const items = await backupStorage.listBackups();
+      if (currentRequestId !== requestIdRef.current || !isMountedRef.current) return;
       setBackups(items);
       setIsLoading(false);
 
@@ -55,6 +68,7 @@ export const BackupListModal: React.FC<BackupListModalProps> = ({
         setSelectedBackup(null);
       }
     } catch (err: unknown) {
+      if (currentRequestId !== requestIdRef.current || !isMountedRef.current) return;
       setIsLoading(false);
       const msg = err instanceof Error ? err.message : String(err);
       setFeedback({ type: "error", text: `Failed to load backups: ${msg}` });

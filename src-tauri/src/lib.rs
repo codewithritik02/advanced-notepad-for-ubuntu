@@ -1,7 +1,7 @@
 pub mod commands;
 pub mod storage;
 
-use storage::{init_connection, run_migrations, Database, StoragePaths};
+use storage::{init_connection, Database, StoragePaths};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,14 +16,21 @@ pub fn run() {
                 .ensure_directories()
                 .map_err(|e| e.to_string())?;
 
-            // Recover from any interrupted restore before opening active database (Phase 11, Task 19)
+            // 1. Clean up orphan temp files from crashed previous runs (Phase 13, Task 19)
+            let _ = storage_paths.cleanup_orphan_temp_files();
+
+            // 2. Acquire single instance lock (Phase 13, Task 19)
+            let instance_lock = storage::paths::AppInstanceLock::acquire(&storage_paths)
+                .map_err(|e| e.to_string())?;
+
+            // 3. Recover from any interrupted restore before opening active database (Phase 11, Task 19)
             let _ = storage::services::RestoreService::recover_if_interrupted(&storage_paths);
 
             let mut conn =
                 init_connection(&storage_paths.database_file).map_err(|e| e.to_string())?;
 
-            // Execute all pending migrations in order
-            run_migrations(&mut conn).map_err(|e| e.to_string())?;
+            // Execute all pending migrations in order with pre-migration snapshot safety
+            storage::migrations::run_migrations_with_safety(&mut conn, Some(&storage_paths.database_file)).map_err(|e| e.to_string())?;
 
             let crypto_session = storage::crypto::CryptoSession::init_and_recover(&conn, &storage_paths)
                 .map_err(|e| e.to_string())?;
@@ -31,10 +38,21 @@ pub fn run() {
             app.manage(storage_paths);
             app.manage(crypto_session);
             app.manage(Database::new(conn));
+            app.manage(instance_lock);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                if let Some(db) = window.try_state::<Database>() {
+                    if let Ok(conn) = db.conn.lock() {
+                        let _ = storage::database::checkpoint_wal(&conn);
+                    }
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_storage_info,
+            commands::get_note_counts,
             commands::list_notes,
             commands::get_note,
             commands::create_note,
@@ -72,6 +90,8 @@ pub fn run() {
             commands::get_setting,
             commands::set_setting,
             commands::search_notes,
+            commands::diagnose_search_index,
+            commands::rebuild_search_index,
             commands::add_attachment,
             commands::list_attachments,
             commands::remove_attachment,
@@ -116,6 +136,7 @@ pub fn run() {
             commands::resume_interrupted_migration,
             commands::disable_encryption,
             commands::get_security_diagnostics,
+            commands::flush_and_checkpoint_db,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -23,6 +23,7 @@ export interface UseSearchResult {
   clearSearch: () => void;
   searchNow: (overrideQuery?: string) => Promise<void>;
   cancelPendingDebounce: () => void;
+  removeResult: (noteId: string) => void;
 }
 
 /**
@@ -182,6 +183,18 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
     };
   }, []);
 
+  const removeResult = useCallback((noteId: string) => {
+    setSearchState((prev) => {
+      if (prev.status === "success") {
+        return {
+          ...prev,
+          results: prev.results.filter((r) => r.noteId !== noteId),
+        };
+      }
+      return prev;
+    });
+  }, []);
+
   const results = searchState.status === "success" ? searchState.results : [];
 
   return {
@@ -193,6 +206,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
     clearSearch,
     searchNow,
     cancelPendingDebounce,
+    removeResult,
   };
 }
 

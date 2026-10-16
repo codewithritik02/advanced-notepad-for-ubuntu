@@ -27,6 +27,20 @@ export const searchStorage = {
       limit: searchLimit ?? null,
     });
   },
+
+  /**
+   * Safely rebuilds the full-text search index (Phase 13, Task 10).
+   */
+  async rebuildIndex(): Promise<void> {
+    return await invoke<void>("rebuild_search_index");
+  },
+
+  /**
+   * Diagnoses search index health, triggers, and consistency (Phase 13, Task 10).
+   */
+  async diagnoseIndex(): Promise<import("./types").SearchIndexDiagnostic> {
+    return await invoke<import("./types").SearchIndexDiagnostic>("diagnose_search_index");
+  },
 };
 
 export default searchStorage;

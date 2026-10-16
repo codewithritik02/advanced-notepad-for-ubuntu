@@ -77,6 +77,7 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
   const [isConfirmed, setIsConfirmed] = useState(false);
 
   useEffect(() => {
+    let isCurrent = true;
     if (isOpen && backupFilePath) {
       setIsLoading(true);
       setError(null);
@@ -85,19 +86,26 @@ export const RestorePreviewModal: React.FC<RestorePreviewModalProps> = ({
       backupStorage
         .previewRestore(backupFilePath)
         .then((res) => {
-          setPreview(res);
-          setIsLoading(false);
+          if (isCurrent) {
+            setPreview(res);
+            setIsLoading(false);
+          }
         })
         .catch((err: unknown) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          setError(msg);
-          setIsLoading(false);
+          if (isCurrent) {
+            const msg = err instanceof Error ? err.message : String(err);
+            setError(msg);
+            setIsLoading(false);
+          }
         });
     } else {
       setPreview(null);
       setError(null);
       setIsConfirmed(false);
     }
+    return () => {
+      isCurrent = false;
+    };
   }, [isOpen, backupFilePath]);
 
   if (!isOpen) return null;

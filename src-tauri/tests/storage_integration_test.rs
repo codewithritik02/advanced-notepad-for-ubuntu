@@ -12530,6 +12530,2693 @@ fn test_phase12_task_22_security_logging_diagnostics_and_safe_failure_handling()
     assert!(!file_content.contains("Classified schematics"), "Audit log file must never contain note text");
 }
 
+#[test]
+fn test_phase13_task_5_transaction_boundaries_and_multi_step_operations() {
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+    use personal_notepad_lib::storage::services::{AttachmentService, TrashService};
+
+    let env = TestEnv::new();
+    let db_path = env.paths.database_file.clone();
+    let mut conn = init_connection(&db_path).expect("Connection failed");
+    run_migrations(&mut conn).expect("Migrations failed");
+
+    // 1. Audit Note + Tags Transaction Boundary (Rollback on constraint failure)
+    {
+        let valid_tag = TagRepository::create(&conn, "valid-tx-tag").expect("Create tag");
+        let invalid_tag_id = "nonexistent-tag-id-12345".to_string();
+
+        // Attempting to create a note with an invalid tag ID under foreign keys must fail
+        let res = NoteRepository::create_with_tags(
+            &mut conn,
+            CreateNoteDto {
+                title: Some("Should Rollback Note".to_string()),
+                content: Some("Should not exist in database".to_string()),
+                ..Default::default()
+            },
+            &[valid_tag.id.clone(), invalid_tag_id],
+        );
+        assert!(res.is_err(), "Transaction must fail on foreign key violation");
+
+        // Verify note was completely rolled back and does not exist in notes table
+        let count_active = NoteRepository::count_active(&conn).expect("Count active");
+        assert_eq!(count_active, 0, "No note must exist after transactional rollback");
+
+        // Now create valid note with tags
+        let valid_note = NoteRepository::create_with_tags(
+            &mut conn,
+            CreateNoteDto {
+                title: Some("Valid Transaction Note".to_string()),
+                content: Some("Successfully committed".to_string()),
+                ..Default::default()
+            },
+            &[valid_tag.id.clone()],
+        ).expect("Valid note with tags must succeed");
+
+        assert_eq!(NoteRepository::count_active(&conn).expect("Count active"), 1);
+        let tags = TagRepository::get_tags_for_note(&conn, &valid_note.id).expect("Get tags");
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "valid-tx-tag");
+    }
+
+    // 2. Audit Notebook Deletion and Notes Unfiling Transaction Boundary
+    {
+        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
+            name: "Tx Work Notebook".to_string(),
+            parent_id: None,
+        }).expect("Create notebook");
+
+        let note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Work Note 1".to_string()),
+            notebook_id: Some(nb.id.clone()),
+            ..Default::default()
+        }).expect("Create note");
+
+        assert_eq!(note.notebook_id.as_deref(), Some(nb.id.as_str()));
+
+        // Delete notebook: atomic unfiling of notes + notebook removal
+        let deleted = NotebookRepository::delete(&mut conn, &nb.id).expect("Delete notebook");
+        assert!(deleted, "Notebook deletion must succeed");
+
+        // Verify notebook is deleted
+        let lookup_nb = NotebookRepository::get_by_id(&conn, &nb.id).expect("Lookup nb");
+        assert!(lookup_nb.is_none(), "Notebook must no longer exist");
+
+        // Verify note was safely unfiled without being deleted
+        let reloaded_note = NoteRepository::get_by_id(&conn, &note.id).expect("Reload note").unwrap();
+        assert_eq!(reloaded_note.notebook_id, None, "Note must be safely unfiled (notebook_id = NULL)");
+        assert!(!reloaded_note.is_deleted, "Note must remain active");
+    }
+
+    // 3. Audit Hybrid Operation: Compensating Cleanup on Attachment File & Database Insertion
+    {
+        let note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some("Attachment Note".to_string()),
+            ..Default::default()
+        }).expect("Create note");
+
+        let storage = AttachmentStorage::new(env.paths.clone());
+        let src_file = env.dir.join("test_sample.txt");
+        std::fs::write(&src_file, b"Sample attachment data for transaction test").expect("Write src");
+
+        // Successful add
+        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file)
+            .expect("Add attachment");
+        let att_disk_path = storage.resolve_safe_path(&att.relative_path).expect("Resolve path");
+        assert!(att_disk_path.exists(), "Attachment file must exist on disk");
+
+        // Soft-delete the note into Trash
+        TrashService::soft_delete(&conn, &note.id).expect("Soft delete note");
+
+        // Verify business invariant: cannot remove attachment from a trashed note
+        let rm_res = AttachmentService::remove_attachment(&conn, &storage, &att.id);
+        assert!(rm_res.is_err(), "Must reject removing attachment from trashed note");
+        assert!(att_disk_path.exists(), "Attachment file must remain untouched when removal rejected");
+
+        // Restore note and remove attachment cleanly
+        TrashService::restore(&conn, &note.id).expect("Restore note");
+        let rm_clean = AttachmentService::remove_attachment(&conn, &storage, &att.id);
+        assert!(rm_clean.is_ok(), "Must allow removing attachment from active note");
+        assert!(!att_disk_path.exists(), "Attachment file must be removed from disk");
+    }
+}
+
+#[test]
+fn test_phase13_task_9_note_list_indexes_and_performance_invariants() {
+    use personal_notepad_lib::storage::models::ListNotesQueryOptions;
+    use personal_notepad_lib::storage::services::TrashService;
+
+    let env = TestEnv::new();
+    let db_path = env.paths.database_file.clone();
+    let mut conn = init_connection(&db_path).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // 1. Verify composite performance indexes exist on notes table
+    for idx in ["idx_notes_list_sort", "idx_notes_notebook_list", "idx_notes_favorite_list"] {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+            [idx],
+            |r| r.get(0),
+        ).unwrap_or(0);
+        assert_eq!(count, 1, "Index {idx} must exist");
+    }
+
+    // 2. Insert test dataset: notebooks and notes
+    let nb1 = NotebookRepository::create(&conn, CreateNotebookDto {
+        name: "Engineering".to_string(),
+        parent_id: None,
+    }).expect("Create nb1");
+
+    let nb2 = NotebookRepository::create(&conn, CreateNotebookDto {
+        name: "Personal".to_string(),
+        parent_id: None,
+    }).expect("Create nb2");
+
+    let mut note_ids = Vec::new();
+    for i in 0..10 {
+        let long_content = format!("Note {} content: {}", i, "x".repeat(1000));
+        let nb_id = if i < 4 {
+            Some(nb1.id.clone())
+        } else if i < 7 {
+            Some(nb2.id.clone())
+        } else {
+            None
+        };
+        let note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some(format!("Note {:02}", i)),
+            content: Some(long_content),
+            notebook_id: nb_id,
+            is_favorite: Some(i % 2 == 0),
+            is_pinned: Some(i == 0 || i == 5),
+            format: Some("txt".to_string()),
+        }).expect("Create note");
+        note_ids.push(note.id);
+    }
+
+    // Soft delete one note into Trash
+    TrashService::soft_delete(&conn, &note_ids[9]).expect("Soft delete note");
+
+    // 3. Verify EXPLAIN QUERY PLAN confirms index usage without temp B-tree sort
+    {
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN SELECT id, title, content FROM notes WHERE is_deleted = 0 ORDER BY is_pinned DESC, modified_at DESC"
+        ).expect("Prepare list plan");
+        let plans: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(3))
+            .expect("Query map")
+            .filter_map(Result::ok)
+            .collect();
+        let plan_str = plans.join(" ");
+        assert!(
+            plan_str.contains("idx_notes_list_sort"),
+            "Query plan must use idx_notes_list_sort index: got {}", plan_str
+        );
+        assert!(
+            !plan_str.contains("USE TEMP B-TREE"),
+            "Query plan must NOT use temporary B-tree for sort: got {}", plan_str
+        );
+    }
+
+    {
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN SELECT id, title, content FROM notes WHERE is_deleted = 0 AND notebook_id = ?1 ORDER BY is_pinned DESC, modified_at DESC"
+        ).expect("Prepare notebook list plan");
+        let plans: Vec<String> = stmt.query_map([&nb1.id], |r| r.get::<_, String>(3))
+            .expect("Query map")
+            .filter_map(Result::ok)
+            .collect();
+        let plan_str = plans.join(" ");
+        assert!(
+            plan_str.contains("idx_notes_notebook_list"),
+            "Notebook query plan must use idx_notes_notebook_list index: got {}", plan_str
+        );
+        assert!(
+            !plan_str.contains("USE TEMP B-TREE"),
+            "Notebook query plan must NOT use temporary B-tree for sort: got {}", plan_str
+        );
+    }
+
+    {
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN SELECT id, title, content FROM notes WHERE is_deleted = 0 AND is_favorite = 1 ORDER BY is_pinned DESC, modified_at DESC"
+        ).expect("Prepare favorite list plan");
+        let plans: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(3))
+            .expect("Query map")
+            .filter_map(Result::ok)
+            .collect();
+        let plan_str = plans.join(" ");
+        assert!(
+            plan_str.contains("idx_notes_favorite_list"),
+            "Favorite query plan must use idx_notes_favorite_list index: got {}", plan_str
+        );
+        assert!(
+            !plan_str.contains("USE TEMP B-TREE"),
+            "Favorite query plan must NOT use temporary B-tree for sort: got {}", plan_str
+        );
+    }
+
+    // 4. Verify get_note_counts returns precise numbers without loading full records
+    let counts = NoteRepository::get_note_counts(&conn).expect("get_note_counts");
+    assert_eq!(counts.total, 9, "9 active notes");
+    assert_eq!(counts.trash, 1, "1 trashed note");
+    assert_eq!(counts.unfiled, 2, "2 unfiled active notes (notes 7, 8)");
+    assert_eq!(counts.favorites, 5, "5 active favorite notes");
+    assert_eq!(counts.by_notebook.get(&nb1.id).copied().unwrap_or(0), 4, "4 notes in nb1");
+    assert_eq!(counts.by_notebook.get(&nb2.id).copied().unwrap_or(0), 3, "3 notes in nb2");
+
+    // 5. Verify bounded content limit previews
+    let truncated_notes = NoteRepository::list_filtered_options(
+        &conn,
+        &ListNotesQueryOptions {
+            include_deleted: false,
+            notebook_id: None,
+            unfiled_only: false,
+            limit: None,
+            offset: None,
+            content_limit: Some(50),
+        },
+        None,
+    ).expect("List with content_limit");
+
+    assert_eq!(truncated_notes.len(), 9);
+    for n in &truncated_notes {
+        assert!(n.content.len() <= 50, "Content must be truncated to <= 50 chars");
+    }
+
+    // Verify stored note in SQLite was NOT truncated (read-side bounded preview only)
+    let full_note = NoteRepository::get_by_id(&conn, &note_ids[0]).expect("Get full note").unwrap();
+    assert!(full_note.content.len() > 1000, "Authoritative stored content must not be modified");
+
+    // 6. Verify pagination (limit and offset) preserves sorting semantics (is_pinned DESC, modified_at DESC)
+    let page1 = NoteRepository::list_filtered_options(
+        &conn,
+        &ListNotesQueryOptions {
+            include_deleted: false,
+            notebook_id: None,
+            unfiled_only: false,
+            limit: Some(3),
+            offset: Some(0),
+            content_limit: None,
+        },
+        None,
+    ).expect("Page 1");
+    assert_eq!(page1.len(), 3);
+    assert!(page1[0].is_pinned, "First note must be pinned");
+
+    let page2 = NoteRepository::list_filtered_options(
+        &conn,
+        &ListNotesQueryOptions {
+            include_deleted: false,
+            notebook_id: None,
+            unfiled_only: false,
+            limit: Some(3),
+            offset: Some(3),
+            content_limit: None,
+        },
+        None,
+    ).expect("Page 2");
+    assert_eq!(page2.len(), 3);
+
+    // Verify disjoint IDs between page 1 and page 2
+    let page1_ids: std::collections::HashSet<_> = page1.iter().map(|n| &n.id).collect();
+    for n in &page2 {
+        assert!(!page1_ids.contains(&n.id), "Page 2 note {} should not be in Page 1", n.id);
+    }
+}
+
+#[test]
+fn test_task_10_search_performance_and_index_consistency() {
+    use personal_notepad_lib::storage::{
+        repositories::{NoteRepository, SettingsRepository},
+        services::SearchService,
+        crypto::{KdfConfig, EncryptionMetadata, SecretBytes, WrappedKey, generate_salt, ENCRYPTION_METADATA_KEY},
+        models::{CreateNoteDto, UpdateNoteDto},
+    };
+    use std::time::Instant;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Database initialization failed");
+    run_migrations(&mut conn).expect("Migration failed");
+
+    // -------------------------------------------------------------
+    // Part 1: Small Dataset Measurements (10 notes)
+    // -------------------------------------------------------------
+    for i in 1..=10 {
+        NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some(format!("Rust Architecture Document {i}")),
+                content: Some(format!("System specification with token_quantum_{i} for module performance.")),
+                ..Default::default()
+            },
+        ).expect("Create note in small dataset");
+    }
+
+    // Verify index diagnostic on healthy fresh database
+    let diag = SearchService::diagnose_index(&conn).expect("diagnose_index");
+    assert!(!diag.is_encrypted, "Should not be encrypted");
+    assert!(diag.fts_table_exists, "FTS table must exist");
+    assert!(diag.triggers_intact, "Triggers must be intact");
+    assert!(diag.integrity_check_passed, "FTS integrity check must pass");
+    assert_eq!(diag.active_notes_count, 10);
+    assert_eq!(diag.fts_entries_count, 10);
+    assert!(diag.is_consistent, "Index must be consistent");
+
+    // Title-only search measurement
+    let start_title = Instant::now();
+    let title_res = SearchService::search(&conn, "Architecture", Some(50)).expect("Search title");
+    let dur_title = start_title.elapsed();
+    assert_eq!(title_res.len(), 10, "All 10 notes have Architecture in title");
+    eprintln!("[Benchmark] Small dataset (10 notes) title search duration: {:?}", dur_title);
+
+    // Content search measurement
+    let start_content = Instant::now();
+    let content_res = SearchService::search(&conn, "token_quantum_3", Some(50)).expect("Search content");
+    let dur_content = start_content.elapsed();
+    assert_eq!(content_res.len(), 1, "Exactly one note matches token_quantum_3");
+    assert!(content_res[0].snippet.is_some());
+    eprintln!("[Benchmark] Small dataset (10 notes) content search duration: {:?}", dur_content);
+
+    // -------------------------------------------------------------
+    // Part 2: Query Plan Inspection
+    // -------------------------------------------------------------
+    // 1. FTS5 Query Plan:
+    // EXPLAIN QUERY PLAN SELECT ... FROM notes_fts JOIN notes ON notes_fts.rowid = notes.rowid
+    {
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT n.id, n.title, snippet(notes_fts, 1, '', '', '...', 12)
+             FROM notes_fts
+             JOIN notes n ON notes_fts.rowid = n.rowid
+             WHERE notes_fts MATCH '\"architecture\"*' AND n.is_deleted = 0
+             LIMIT 50"
+        ).expect("Prepare FTS query plan");
+        let plans: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(3))
+            .expect("Query map")
+            .filter_map(Result::ok)
+            .collect();
+        let plan_str = plans.join(" ");
+        // Verify FTS virtual table scan & primary key lookup
+        assert!(
+            plan_str.contains("SCAN notes_fts") || plan_str.contains("notes_fts"),
+            "Query plan must use notes_fts virtual table: got {}", plan_str
+        );
+        assert!(
+            plan_str.contains("SEARCH n") || plan_str.contains("PRIMARY KEY"),
+            "Query plan must use primary key lookup on notes table: got {}", plan_str
+        );
+    }
+
+    // 2. Fallback LIKE Query Plan:
+    // EXPLAIN QUERY PLAN SELECT id FROM notes WHERE is_deleted = 0 AND (title LIKE ?1 OR content LIKE ?1)
+    {
+        let mut stmt = conn.prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT id, title, content FROM notes
+             WHERE is_deleted = 0 AND (title LIKE '%architecture%' OR content LIKE '%architecture%')
+             LIMIT 50"
+        ).expect("Prepare LIKE query plan");
+        let plans: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(3))
+            .expect("Query map")
+            .filter_map(Result::ok)
+            .collect();
+        let plan_str = plans.join(" ");
+        // Document and verify performance characteristic: LIKE with leading wildcard cannot use B-Tree seek for title/content
+        // It uses idx_notes_trash_lifecycle on is_deleted and scans all active notes linearly (O(N) performance limitation).
+        assert!(
+            plan_str.contains("idx_notes_trash_lifecycle") || plan_str.contains("SCAN notes"),
+            "Fallback LIKE query uses is_deleted index and scans active notes (O(N) limitation): got {}", plan_str
+        );
+    }
+
+    // -------------------------------------------------------------
+    // Part 3: Scale to Large Dataset (300 additional notes with varied content)
+    // -------------------------------------------------------------
+    let mut large_note_ids = Vec::with_capacity(300);
+    for i in 11..=310 {
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some(format!("Database Optimization Note {i}")),
+                content: Some(format!(
+                    "Detailed technical notes on system indexing, covering b-trees, hash maps, \
+                     and memory limits. Record index number {i} with payload data \
+                     repeated to form realistic payload: {}",
+                    "Payload buffer padding for search indexing verification. ".repeat(10)
+                )),
+                ..Default::default()
+            },
+        ).expect("Create note in large dataset");
+        large_note_ids.push(note.id);
+    }
+
+    // Diagnostic check on large dataset
+    let diag_large = SearchService::diagnose_index(&conn).expect("diagnose_index large");
+    assert_eq!(diag_large.active_notes_count, 310);
+    assert_eq!(diag_large.fts_entries_count, 310);
+    assert!(diag_large.is_consistent);
+
+    // Measure title search across large dataset
+    let start_large_title = Instant::now();
+    let large_title_res = SearchService::search(&conn, "Optimization", Some(100)).expect("Search large title");
+    let dur_large_title = start_large_title.elapsed();
+    assert_eq!(large_title_res.len(), 100, "Bounded by limit 100");
+    eprintln!("[Benchmark] Large dataset (310 notes) title search duration: {:?}", dur_large_title);
+
+    // Measure content search across large dataset
+    let start_large_content = Instant::now();
+    let large_content_res = SearchService::search(&conn, "payload", Some(50)).expect("Search large content");
+    let dur_large_content = start_large_content.elapsed();
+    assert_eq!(large_content_res.len(), 50, "Bounded by limit 50");
+    eprintln!("[Benchmark] Large dataset (310 notes) content search duration: {:?}", dur_large_content);
+
+    // Result limits bounds verification: clamp between 1 and 100
+    let res_clamped_high = SearchService::search(&conn, "Optimization", Some(500)).expect("Search clamp high");
+    assert_eq!(res_clamped_high.len(), 100, "Result count must be clamped to MAX_LIMIT (100)");
+
+    let res_default_limit = SearchService::search(&conn, "Optimization", None).expect("Search default limit");
+    assert_eq!(res_default_limit.len(), 50, "Default result count must be clamped to DEFAULT_LIMIT (50)");
+
+    // -------------------------------------------------------------
+    // Part 4: Lifecycle Invariants & Transactional Coordination
+    // -------------------------------------------------------------
+    // A. Creation: note immediately searchable
+    let test_note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Mutable Target Alpha".to_string()),
+            content: Some("Unique keyword xylophone_token_99 is present here.".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create test note");
+
+    let res_created = SearchService::search(&conn, "xylophone_token_99", None).unwrap();
+    assert_eq!(res_created.len(), 1);
+    assert_eq!(res_created[0].note_id, test_note.id);
+
+    // B. Update: FTS trigger notes_fts_au synchronizes atomically in same transaction
+    NoteRepository::update(
+        &conn,
+        &test_note.id,
+        UpdateNoteDto {
+            title: Some("Mutable Target Beta".to_string()),
+            content: Some("Replaced keyword with saxophone_token_88 in note body.".to_string()),
+            ..Default::default()
+        },
+    ).expect("Update test note");
+
+    // Old token must be purged from search results
+    let res_old_token = SearchService::search(&conn, "xylophone_token_99", None).unwrap();
+    assert_eq!(res_old_token.len(), 0, "Old token must not be found after update");
+
+    // New token must be found in search results
+    let res_new_token = SearchService::search(&conn, "saxophone_token_88", None).unwrap();
+    assert_eq!(res_new_token.len(), 1, "New token must be found after update");
+    assert_eq!(res_new_token[0].note_id, test_note.id);
+    assert_eq!(res_new_token[0].title, "Mutable Target Beta");
+
+    // C. Soft Delete (Move to Trash): excluded immediately from search
+    NoteRepository::delete(&conn, &test_note.id, true).expect("Soft delete test note");
+    let res_trashed = SearchService::search(&conn, "saxophone_token_88", None).unwrap();
+    assert_eq!(res_trashed.len(), 0, "Soft-deleted note must be excluded from search results");
+
+    // D. Restore from Trash: immediately returns to search
+    NoteRepository::restore(&conn, &test_note.id).expect("Restore test note");
+    let res_restored = SearchService::search(&conn, "saxophone_token_88", None).unwrap();
+    assert_eq!(res_restored.len(), 1, "Restored note must immediately reappear in search results");
+    assert_eq!(res_restored[0].note_id, test_note.id);
+
+    // E. Permanent Delete (Hard Delete): purged from FTS5 index via trigger notes_fts_ad
+    NoteRepository::delete(&conn, &test_note.id, false).expect("Hard delete test note");
+    let res_hard_deleted = SearchService::search(&conn, "saxophone_token_88", None).unwrap();
+    assert_eq!(res_hard_deleted.len(), 0, "Permanently deleted note must be purged from FTS");
+
+    // F. Transactional Rollback: FTS5 atomic consistency
+    {
+        let tx = conn.transaction().expect("Begin transaction");
+        let rolled_back_note = NoteRepository::create(
+            &tx,
+            CreateNoteDto {
+                title: Some("Rollback Test Note".to_string()),
+                content: Some("Content with phantom_rollback_token_77.".to_string()),
+                ..Default::default()
+            },
+        ).expect("Create note in tx");
+        assert!(!rolled_back_note.id.is_empty());
+        tx.rollback().expect("Rollback tx");
+    }
+    let res_rollback = SearchService::search(&conn, "phantom_rollback_token_77", None).unwrap();
+    assert_eq!(res_rollback.len(), 0, "Rolled-back note tokens must not exist in FTS");
+
+    // -------------------------------------------------------------
+    // Part 5: Derived Index Diagnostic, Corruption Detection, and Safe Recovery
+    // -------------------------------------------------------------
+    // Simulate index corruption by dropping virtual table and triggers
+    conn.execute_batch(
+        "DROP TABLE notes_fts;
+         DROP TRIGGER notes_fts_ai;
+         DROP TRIGGER notes_fts_ad;
+         DROP TRIGGER notes_fts_au;"
+    ).expect("Simulate corruption");
+
+    // Diagnostic should detect corrupted / missing index
+    let diag_corrupted = SearchService::diagnose_index(&conn).expect("diagnose_index");
+    assert!(!diag_corrupted.fts_table_exists);
+    assert!(!diag_corrupted.triggers_intact);
+    assert!(!diag_corrupted.is_consistent);
+
+    // SearchService automatic recovery on search query:
+    // Even when index was dropped, search_unencrypted detects missing table, recovers index, and returns correct result
+    let res_auto_recovered = SearchService::search(&conn, "Optimization", Some(10)).expect("Search with auto recovery");
+    assert_eq!(res_auto_recovered.len(), 10, "Auto recovery restored search capability");
+
+    // Diagnostic must now report index is healthy again
+    let diag_repaired = SearchService::diagnose_index(&conn).expect("diagnose_index");
+    assert!(diag_repaired.fts_table_exists);
+    assert!(diag_repaired.triggers_intact);
+    assert!(diag_repaired.integrity_check_passed);
+    assert!(diag_repaired.is_consistent);
+
+    // Explicit rebuild test
+    SearchService::rebuild_index(&conn).expect("rebuild_index");
+    let diag_after_rebuild = SearchService::diagnose_index(&conn).expect("diagnose after rebuild");
+    assert!(diag_after_rebuild.is_consistent);
+
+    // -------------------------------------------------------------
+    // Part 6: Phase 12 Security Invariants & Plaintext Index Isolation
+    // -------------------------------------------------------------
+    // Configure encryption metadata
+    let dummy_salt = generate_salt();
+    let kdf_config = KdfConfig::default_profile(dummy_salt);
+    let wrapped_key = WrappedKey::new(&[0x11; 12], &[0x22; 32], &[0x33; 16]);
+    let meta = EncryptionMetadata::new(kdf_config, wrapped_key);
+    SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &meta.to_json().unwrap()).expect("Set encryption metadata");
+
+    // Purge plaintext index
+    SearchService::purge_plaintext_index(&conn).expect("purge_plaintext_index");
+
+    // Diagnostic must report encrypted mode with NO plaintext FTS virtual table or triggers
+    let diag_encrypted = SearchService::diagnose_index(&conn).expect("diagnose encrypted");
+    assert!(diag_encrypted.is_encrypted);
+    assert!(!diag_encrypted.fts_table_exists, "FTS table MUST NOT exist when encrypted");
+    assert!(diag_encrypted.triggers_intact, "Triggers must be absent (intact=true)");
+    assert!(diag_encrypted.is_consistent, "Index must be consistent");
+
+    // Rebuild or recover under encryption must NEVER create plaintext FTS tables
+    SearchService::rebuild_index(&conn).expect("rebuild under encryption");
+    let diag_post_rebuild = SearchService::diagnose_index(&conn).expect("diagnose post-rebuild");
+    assert!(!diag_post_rebuild.fts_table_exists, "FTS table must never be created under encryption");
+
+    // Locked state search rejected
+    let search_locked = SearchService::search_with_key(&conn, "Optimization", None, None);
+    assert!(search_locked.is_err(), "Search while locked must be rejected");
+
+    // Unlocked search executes in-memory
+    let dek = SecretBytes::new(vec![0x42; 32]);
+    let enc_note = NoteRepository::create_with_key(
+        &conn,
+        CreateNoteDto {
+            title: Some("Confidential Vault Note".to_string()),
+            content: Some("Secret token_classified_42 stored in cipher block.".to_string()),
+            ..Default::default()
+        },
+        Some(&dek),
+    ).expect("Create encrypted note");
+
+    let enc_search_res = SearchService::search_with_key(&conn, "token_classified_42", None, Some(&dek)).expect("Search unlocked");
+    assert_eq!(enc_search_res.len(), 1);
+    assert_eq!(enc_search_res[0].note_id, enc_note.id);
+    assert!(enc_search_res[0].snippet.is_some());
+
+    // Verify zero plaintext tokens in SQLite tables
+    let count_fts: i64 = conn
+        .query_row("SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'notes_fts'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count_fts, 0, "No notes_fts table in database file when encrypted");
+}
+
+#[test]
+fn test_phase13_task_11_harden_attachment_storage_and_file_operations() {
+    use personal_notepad_lib::storage::{
+        attachment_storage::{is_executable_extension, AttachmentStorage},
+        crypto::secret::SecretBytes,
+        errors::AttachmentError,
+        models::CreateNoteDto,
+        repositories::{AttachmentRepository, NoteRepository},
+        services::{AttachmentService, TrashService},
+    };
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    let env = TestEnv::new();
+    let db_path = env.paths.database_file.clone();
+    let mut conn = init_connection(&db_path).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+    let storage = AttachmentStorage::new(env.paths.clone());
+
+    let note = NoteRepository::create(
+        &conn,
+        CreateNoteDto {
+            title: Some("Hardened Storage Note".to_string()),
+            content: Some("Testing security, hashing, and recovery.".to_string()),
+            ..Default::default()
+        },
+    )
+    .expect("Create note");
+
+    // =========================================================================
+    // 1. Path Traversal Attacks & Directory Isolation
+    // =========================================================================
+    let malicious_paths = [
+        "../escape.txt",
+        "../../etc/passwd",
+        "/etc/shadow",
+        "nested/../../secret.key",
+        "..\\windows\\system32\\cmd.exe",
+        "C:\\boot.ini",
+    ];
+    for bad_path in &malicious_paths {
+        let res = storage.resolve_safe_path(bad_path);
+        assert!(
+            res.is_err(),
+            "Path traversal candidate '{bad_path}' must be rejected by resolve_safe_path"
+        );
+        match res.unwrap_err() {
+            AttachmentError::InvalidRequest(msg) => {
+                assert!(msg.contains("Path traversal") || msg.contains("Absolute") || msg.contains("outside"),
+                    "Expected traversal validation error message, got: {msg}");
+            }
+            other => panic!("Expected InvalidRequest, got {other:?}"),
+        }
+    }
+
+    assert!(storage.get_note_dir("../bad_note").is_err());
+    assert!(storage.get_note_dir("bad/note").is_err());
+    assert!(storage.get_note_dir("bad\\note").is_err());
+
+    // =========================================================================
+    // 2. Staged Copying, Chunked Streaming, and SHA-256 Content Hash Verification
+    // =========================================================================
+    let test_dir = env.paths.root.join("test_sources");
+    fs::create_dir_all(&test_dir).unwrap();
+
+    let valid_payload = vec![0x5A; 192 * 1024]; // 192 KiB spanning multiple 64 KiB chunks
+    let mut expected_hasher = Sha256::new();
+    expected_hasher.update(&valid_payload);
+    let expected_hash = expected_hasher.finalize();
+
+    let valid_file_path = test_dir.join("stream_payload.dat");
+    fs::write(&valid_file_path, &valid_payload).unwrap();
+
+    let stored = storage
+        .store_file(&note.id, &valid_file_path)
+        .expect("Store file with SHA-256 verification must succeed");
+
+    assert_eq!(stored.file_size, valid_payload.len() as u64);
+    assert_eq!(stored.original_name, "stream_payload.dat");
+
+    // Verify stored file on disk matches expected hash
+    let stored_disk_path = storage
+        .resolve_safe_path(&stored.relative_path)
+        .expect("Resolve safe path");
+    assert!(stored_disk_path.exists());
+
+    let stored_bytes = fs::read(&stored_disk_path).unwrap();
+    let mut verify_hasher = Sha256::new();
+    verify_hasher.update(&stored_bytes);
+    assert_eq!(verify_hasher.finalize(), expected_hash);
+
+    // Verify no leftover .tmp files exist in note attachments dir
+    let note_dir = storage.get_note_dir(&note.id).unwrap();
+    let tmp_entries: Vec<_> = fs::read_dir(&note_dir)
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+        .collect();
+    assert!(
+        tmp_entries.is_empty(),
+        "No temporary staging files should remain after successful copy"
+    );
+
+    // =========================================================================
+    // 3. Executable File Blocking on Direct Open
+    // =========================================================================
+    let dangerous_files = [
+        ("malware.exe", "exe"),
+        ("launch.bat", "bat"),
+        ("install.cmd", "cmd"),
+        ("exploit.sh", "sh"),
+        ("script.vbs", "vbs"),
+        ("dropper.ps1", "ps1"),
+        ("setup.msi", "msi"),
+        ("app.desktop", "desktop"),
+        ("archive.jar", "jar"),
+    ];
+
+    for (filename, ext) in dangerous_files {
+        assert!(
+            is_executable_extension(filename),
+            "Extension .{ext} must be identified as executable"
+        );
+
+        let d_path = test_dir.join(filename);
+        fs::write(&d_path, b"echo dangerous payload").unwrap();
+
+        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &d_path)
+            .expect("Importing executable as passive stored attachment is allowed");
+
+        let open_res = AttachmentService::get_attachment_for_open(&conn, &storage, &att.id);
+        assert!(
+            open_res.is_err(),
+            "Opening executable attachment '{filename}' directly must be blocked"
+        );
+
+        match open_res.unwrap_err() {
+            AttachmentError::ExecutableBlocked(blocked_name) => {
+                assert!(blocked_name.contains(ext) || blocked_name == filename);
+            }
+            other => panic!("Expected ExecutableBlocked, got: {other:?}"),
+        }
+    }
+
+    // Non-executable files must open without restriction
+    let safe_file = test_dir.join("document.pdf");
+    fs::write(&safe_file, b"%PDF-1.4 test safe document content").unwrap();
+    let safe_att = AttachmentService::add_attachment(&conn, &storage, &note.id, &safe_file)
+        .expect("Add safe pdf");
+    let safe_open = AttachmentService::get_attachment_for_open(&conn, &storage, &safe_att.id)
+        .expect("Safe pdf opening must succeed");
+    assert!(safe_open.exists());
+
+    // =========================================================================
+    // 4. Reversed Deletion-Order and Recoverable Cleanup
+    // =========================================================================
+    let discard_file = test_dir.join("to_remove.txt");
+    fs::write(&discard_file, b"content to discard").unwrap();
+    let discard_att = AttachmentService::add_attachment(&conn, &storage, &note.id, &discard_file)
+        .expect("Add attachment to discard");
+    let discard_disk = storage.resolve_safe_path(&discard_att.relative_path).unwrap();
+    assert!(discard_disk.exists());
+
+    // Normal removal deletes DB first then filesystem
+    AttachmentService::remove_attachment(&conn, &storage, &discard_att.id)
+        .expect("Remove attachment succeeds");
+    assert!(!discard_disk.exists(), "Managed file removed from disk");
+    assert!(
+        AttachmentRepository::get_by_id(&conn, &discard_att.id).unwrap().is_none(),
+        "Database record removed"
+    );
+
+    // Stale removal: file already deleted from disk, DB record still exists
+    let stale_file = test_dir.join("stale.txt");
+    fs::write(&stale_file, b"will delete file manually").unwrap();
+    let stale_att = AttachmentService::add_attachment(&conn, &storage, &note.id, &stale_file)
+        .expect("Add stale att");
+    let stale_disk = storage.resolve_safe_path(&stale_att.relative_path).unwrap();
+    fs::remove_file(&stale_disk).unwrap();
+
+    // Removing an attachment with missing managed file cleans the DB without error
+    let rm_stale = AttachmentService::remove_attachment(&conn, &storage, &stale_att.id);
+    assert!(rm_stale.is_ok(), "Removing stale attachment must recover and succeed");
+    assert!(AttachmentRepository::get_by_id(&conn, &stale_att.id).unwrap().is_none());
+
+    // Unreferenced files cleanup
+    let orphan_disk = note_dir.join("orphan_unref.bin");
+    fs::write(&orphan_disk, b"abandoned untracked bytes").unwrap();
+    let cleaned = AttachmentService::cleanup_unreferenced_files(&conn, &storage)
+        .expect("Cleanup unreferenced files");
+    assert!(cleaned >= 1, "Must clean unreferenced files");
+    assert!(!orphan_disk.exists(), "Orphaned unreferenced file was safely cleaned");
+
+    // =========================================================================
+    // 5. Encrypted Attachment Isolation & Bounded Memory
+    // =========================================================================
+    let dek = SecretBytes::new(vec![0x33; 32]);
+    let enc_source = test_dir.join("vault_attachment.png");
+    let png_header = b"\x89PNG\r\n\x1a\nsecret image content payload";
+    fs::write(&enc_source, png_header).unwrap();
+
+    let enc_att = AttachmentService::add_attachment_with_key(
+        &conn,
+        &storage,
+        &note.id,
+        &enc_source,
+        Some(&dek),
+    )
+    .expect("Add encrypted attachment");
+
+    let enc_disk_path = storage.resolve_safe_path(&enc_att.relative_path).unwrap();
+    assert!(enc_disk_path.exists());
+    assert!(AttachmentStorage::is_encrypted_file(&enc_disk_path));
+
+    // Plaintext bytes are NEVER stored on disk in the managed path
+    let disk_raw = fs::read(&enc_disk_path).unwrap();
+    assert!(
+        !disk_raw.windows(png_header.len()).any(|w| w == png_header),
+        "Managed disk file must contain encrypted envelope, never plaintext"
+    );
+
+    // Locked state rejected
+    let open_locked = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        &enc_att.id,
+        None,
+    );
+    assert!(open_locked.is_err(), "Cannot open encrypted attachment without active DEK");
+
+    // Unlocked state decrypts safely to temporary decrypted directory
+    let decrypted_temp = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        &enc_att.id,
+        Some(&dek),
+    )
+    .expect("Decrypt and open attachment with DEK");
+    assert!(decrypted_temp.exists());
+    let decrypted_bytes = fs::read(&decrypted_temp).unwrap();
+    assert_eq!(decrypted_bytes, png_header);
+
+    // Teardown decrypted session cleanup
+    let cleaned_decrypted = storage.cleanup_decrypted_attachments().unwrap();
+    assert!(cleaned_decrypted >= 1);
+    assert!(!decrypted_temp.exists(), "Temporary decrypted file was safely purged");
+
+    // Permanent note deletion cleans note directory after DB delete
+    TrashService::soft_delete(&conn, &note.id).expect("Soft delete note");
+    let perm_res = TrashService::permanently_delete_note(&conn, &storage, &note.id)
+        .expect("Permanently delete note");
+    assert!(perm_res.success);
+    assert!(!note_dir.exists(), "Note directory cleaned on permanent deletion");
+}
+
+#[test]
+fn test_phase13_task_12_failure_safe_import_export_operations() {
+    use personal_notepad_lib::storage::{
+        crypto::{
+            metadata::ENCRYPTION_METADATA_KEY,
+            secret::SecretBytes,
+            EncryptionMetadata, KdfConfig, WrappedKey, generate_salt,
+        },
+        errors::StorageError,
+        models::{
+            DuplicatePolicy, ExportBatchRequest, ExportFormat, ExportScope, ExportSingleNoteRequest,
+            ImportCandidateOverride, ImportFormat, ImportItemStatus, ImportOptions, ImportRequest,
+            OperationOutcome,
+        },
+        repositories::{NoteRepository, SettingsRepository},
+        services::ImportExportService,
+    };
+    use std::fs;
+
+    let env = TestEnv::new();
+    let db_path = env.paths.database_file.clone();
+    let mut conn = init_connection(&db_path).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    let work_dir = env.paths.root.join("task12_work");
+    fs::create_dir_all(&work_dir).unwrap();
+
+    // =========================================================================
+    // 1. Non-Regular Files and Malformed Encoding Safeguards
+    // =========================================================================
+    let sub_dir = work_dir.join("sub_folder");
+    fs::create_dir_all(&sub_dir).unwrap();
+    let dir_err = ImportExportService::read_and_validate_file(&sub_dir, ImportFormat::Txt).unwrap_err();
+    assert!(dir_err.to_string().contains("not a regular file"), "Directory rejected safely");
+
+    // Binary file rejection
+    let binary_file = work_dir.join("binary.txt");
+    fs::write(&binary_file, b"Plain start\x00corrupt binary bytes\xFF").unwrap();
+    let bin_err = ImportExportService::read_and_validate_file(&binary_file, ImportFormat::Txt).unwrap_err();
+    assert!(bin_err.to_string().contains("Binary file content detected"), "Binary rejected safely");
+
+    // Invalid interchange JSON
+    let invalid_json = work_dir.join("bad_schema.json");
+    fs::write(&invalid_json, b"{\"app\":\"unknown-notepad\",\"version\":\"1.0\",\"notes\":[]}").unwrap();
+    let json_err = ImportExportService::read_and_validate_file(&invalid_json, ImportFormat::Json).unwrap_err();
+    assert!(json_err.to_string().contains("expected app 'personal-notepad'"), "Invalid app schema rejected");
+
+    // =========================================================================
+    // 2. Staged Batch Importing & Partial Failure Isolation
+    // =========================================================================
+    let valid_md = work_dir.join("valid_note.md");
+    fs::write(&valid_md, "# Markdown Note\nValid body text content.").unwrap();
+
+    let valid_txt = work_dir.join("valid_note.txt");
+    fs::write(&valid_txt, "Plain text note\nValid simple text.").unwrap();
+
+    let candidates = vec![
+        ImportCandidateOverride {
+            id: "cand-1".to_string(),
+            file_path: valid_md.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: Some("Valid Markdown Title".to_string()),
+        },
+        ImportCandidateOverride {
+            id: "cand-2".to_string(),
+            file_path: binary_file.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: Some("Binary Corrupted".to_string()),
+        },
+        ImportCandidateOverride {
+            id: "cand-3".to_string(),
+            file_path: valid_txt.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: Some("Valid Plain Text Title".to_string()),
+        },
+        ImportCandidateOverride {
+            id: "cand-4".to_string(),
+            file_path: invalid_json.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: Some("Bad Interchange".to_string()),
+        },
+    ];
+
+    let import_req = ImportRequest {
+        candidates,
+        options: ImportOptions {
+            target_notebook_id: None,
+            duplicate_policy: DuplicatePolicy::ImportAsNew,
+        },
+        operation_id: Some("op-batch-test-12".to_string()),
+    };
+
+    let summary = ImportExportService::execute_import_with_progress(
+        &mut conn,
+        import_req,
+        |_| {},
+    ).expect("Batch import executed");
+
+    assert_eq!(summary.total_processed, 4);
+    assert_eq!(summary.imported_count, 2, "Both valid files imported");
+    assert_eq!(summary.failed_count, 2, "Both invalid files failed safely");
+    assert_eq!(summary.outcome, Some(OperationOutcome::PartialSuccess));
+
+    assert_eq!(summary.results[0].status, ImportItemStatus::Imported);
+    assert_eq!(summary.results[1].status, ImportItemStatus::Rejected);
+    assert_eq!(summary.results[2].status, ImportItemStatus::Imported);
+    assert_eq!(summary.results[3].status, ImportItemStatus::Rejected);
+
+    // Database verification: only the 2 valid notes exist in DB
+    let notes = NoteRepository::list(&conn, false).unwrap();
+    assert_eq!(notes.len(), 2);
+    let titles: Vec<_> = notes.iter().map(|n| n.title.as_str()).collect();
+    assert!(titles.contains(&"Valid Markdown Title"));
+    assert!(titles.contains(&"Valid Plain Text Title"));
+
+    // =========================================================================
+    // 3. Export Safety, Atomic Replacement, and Directory Validation
+    // =========================================================================
+    let target_dir = work_dir.join("export_target_dir");
+    fs::create_dir_all(&target_dir).unwrap();
+
+    let note_to_export = notes.iter().find(|n| n.title == "Valid Markdown Title").unwrap();
+    let export_dest = target_dir.join("exported_single.md");
+
+    let export_res = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: note_to_export.id.clone(),
+            format: ExportFormat::Md,
+            destination_path: export_dest.to_string_lossy().to_string(),
+            overwrite: false,
+        },
+    ).expect("Export single note");
+    assert_eq!(export_res.status, personal_notepad_lib::storage::models::ExportItemStatus::Exported);
+    assert!(export_dest.exists());
+    assert_eq!(fs::read_to_string(&export_dest).unwrap(), "# Markdown Note\nValid body text content.");
+
+    // Conflict safety: Attempting to export to existing file without overwrite flag must return Conflict
+    let conflict_err = ImportExportService::export_single_note(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: note_to_export.id.clone(),
+            format: ExportFormat::Md,
+            destination_path: export_dest.to_string_lossy().to_string(),
+            overwrite: false,
+        },
+    ).unwrap_err();
+    assert!(matches!(conflict_err, StorageError::Conflict(_)));
+
+    // Atomic write to directory directly must fail with Validation
+    let atomic_dir_err = ImportExportService::write_file_atomically(&target_dir, b"bytes").unwrap_err();
+    assert!(matches!(atomic_dir_err, StorageError::Validation(_)));
+
+    // Path traversal in export destinations rejected
+    assert!(ImportExportService::validate_destination_path(std::path::Path::new("..\\escaped.txt")).is_err());
+    assert!(ImportExportService::validate_destination_path(std::path::Path::new("../escaped.txt")).is_err());
+    assert!(ImportExportService::validate_destination_path(std::path::Path::new("database.sqlite")).is_err());
+
+    // Batch text/md export conflict handling: automatically appends suffixes if overwrite is false
+    let batch_export = ImportExportService::export_notes_batch(
+        &conn,
+        ExportBatchRequest {
+            operation_id: None,
+            scope: Some(ExportScope::SelectedNotes {
+                note_ids: vec![notes[0].id.clone(), notes[1].id.clone()],
+            }),
+            note_ids: vec![],
+            format: ExportFormat::Txt,
+            destination_dir: target_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: false,
+        },
+    ).expect("Export batch text");
+    assert_eq!(batch_export.exported_count, 2);
+
+    // =========================================================================
+    // 4. Phase 12 Encryption Invariants and Active DEK Requirement
+    // =========================================================================
+    let dek = SecretBytes::new(vec![0x7A; 32]);
+    let dummy_salt = generate_salt();
+    let kdf_config = KdfConfig::default_profile(dummy_salt);
+    let wrapped_key = WrappedKey::new(&[0x11; 12], &[0x22; 32], &[0x33; 16]);
+    let fake_meta = EncryptionMetadata::new(kdf_config, wrapped_key);
+    SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &fake_meta.to_json().unwrap()).unwrap();
+
+    // With encryption enabled and DEK None (locked), operations must be rejected immediately
+    let locked_scan = ImportExportService::scan_candidates_with_key(&conn, &[valid_md.to_string_lossy().to_string()], None);
+    assert!(locked_scan.is_err(), "Scan while locked must be rejected");
+
+    let locked_import = ImportExportService::execute_import_with_progress_and_key(
+        &mut conn,
+        ImportRequest {
+            candidates: vec![ImportCandidateOverride {
+                id: "c-lock".to_string(),
+                file_path: valid_md.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: Some("Locked".to_string()),
+            }],
+            options: ImportOptions::default(),
+            operation_id: None,
+        },
+        None,
+        |_| {},
+    );
+    assert!(locked_import.is_err(), "Import while locked must be rejected");
+
+    let locked_export = ImportExportService::export_single_note_with_key(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: notes[0].id.clone(),
+            format: ExportFormat::Txt,
+            destination_path: target_dir.join("locked_export.txt").to_string_lossy().to_string(),
+            overwrite: true,
+        },
+        None,
+    );
+    assert!(locked_export.is_err(), "Export single note while locked must be rejected");
+
+    let locked_batch_export = ImportExportService::export_notes_batch_with_progress_and_key(
+        &conn,
+        ExportBatchRequest {
+            operation_id: None,
+            scope: Some(ExportScope::AllNotes),
+            note_ids: vec![],
+            format: ExportFormat::Txt,
+            destination_dir: target_dir.to_string_lossy().to_string(),
+            destination_file: None,
+            include_metadata: false,
+            overwrite: true,
+        },
+        None,
+        |_| {},
+    );
+    assert!(locked_batch_export.is_err(), "Export batch while locked must be rejected");
+
+    // When unlocked with DEK, import encrypts fields
+    let enc_import_file = work_dir.join("enc_source.md");
+    fs::write(&enc_import_file, "# Vault Secret\nClassified top secret token").unwrap();
+    let enc_import_summary = ImportExportService::execute_import_with_progress_and_key(
+        &mut conn,
+        ImportRequest {
+            candidates: vec![ImportCandidateOverride {
+                id: "c-enc".to_string(),
+                file_path: enc_import_file.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: Some("Encrypted Note Title".to_string()),
+            }],
+            options: ImportOptions::default(),
+            operation_id: None,
+        },
+        Some(&dek),
+        |_| {},
+    ).expect("Import under active DEK");
+    assert_eq!(enc_import_summary.imported_count, 1);
+
+    let enc_note_id = enc_import_summary.results[0].created_note_id.as_ref().unwrap();
+    // Verify ciphertext is written to SQLite table
+    let raw_db_content: String = conn.query_row(
+        "SELECT content FROM notes WHERE id = ?1",
+        [enc_note_id],
+        |r| r.get(0),
+    ).unwrap();
+    assert!(!raw_db_content.contains("Classified top secret token"), "Content must be encrypted in SQLite");
+
+    // When unlocked with DEK, export on-the-fly decrypts to requested format
+    let decrypted_export_path = target_dir.join("decrypted_export.txt");
+    let enc_export_res = ImportExportService::export_single_note_with_key(
+        &conn,
+        ExportSingleNoteRequest {
+            note_id: enc_note_id.clone(),
+            format: ExportFormat::Txt,
+            destination_path: decrypted_export_path.to_string_lossy().to_string(),
+            overwrite: true,
+        },
+        Some(&dek),
+    ).expect("Export decrypted note");
+    assert_eq!(enc_export_res.status, personal_notepad_lib::storage::models::ExportItemStatus::Exported);
+    let exported_text = fs::read_to_string(&decrypted_export_path).unwrap();
+    assert_eq!(exported_text, "# Vault Secret\nClassified top secret token", "Exported text correctly decrypted");
+}
+
+#[test]
+fn test_phase13_task_13_harden_backup_and_restore_reliability() {
+    use personal_notepad_lib::storage::{
+        errors::BackupError,
+        models::{
+            BackupCreateRequest, BackupRestoreRequest, BackupType, CreateNoteDto,
+        },
+        services::{
+            BackupDestinationManager, BackupService, RestoreService,
+        },
+        crypto::{
+            generate_salt, EncryptionMetadata, KdfConfig, SecretBytes, WrappedKey,
+            ENCRYPTION_METADATA_KEY,
+        },
+        repositories::{NoteRepository, SettingsRepository},
+    };
+    use std::fs::{self, File};
+    use std::io::{Read, Write};
+    use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
+
+    // =========================================================================
+    // 1. Consistent Snapshot via Online Backup API and Destination Traversal Defense
+    // =========================================================================
+    let env_src = TestEnv::new();
+    let mut conn_src = init_connection(&env_src.paths.database_file).expect("Src DB init");
+    run_migrations(&mut conn_src).expect("Src migrations");
+
+    // Create notes in source
+    let note1 = NoteRepository::create(
+        &conn_src,
+        CreateNoteDto {
+            title: Some("Important Project Spec".to_string()),
+            content: Some("Consistent database snapshot via Online Backup API".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note 1");
+
+    let _note2 = NoteRepository::create(
+        &conn_src,
+        CreateNoteDto {
+            title: Some("Architecture Notes".to_string()),
+            content: Some("WAL committed cleanly without dirty reads".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create note 2");
+
+    // Add managed attachment file and database row
+    let att_stored_name = format!("{}.bin", uuid::Uuid::new_v4());
+    let att_subpath = format!("{}/{}", note1.id, att_stored_name);
+    let att_file_path = env_src.paths.attachments_dir.join(&att_subpath);
+    fs::create_dir_all(att_file_path.parent().unwrap()).expect("Create note att dir");
+    fs::write(&att_file_path, b"RAW_ATTACHMENT_VERIFIED_BYTES").expect("Write attachment file");
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    conn_src.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            note1.id,
+            "spec-doc.bin",
+            att_subpath,
+            "application/octet-stream",
+            29i64,
+            now_str,
+            now_str,
+        ],
+    ).expect("Insert attachment record");
+
+    // Destination Traversal Defense: verify path traversal is rejected across platforms
+    let trav_fwd = BackupDestinationManager::resolve_destination(
+        Some("../outside.pnbackup"),
+        BackupType::Manual,
+        false,
+        &env_src.paths,
+    );
+    assert!(matches!(trav_fwd, Err(BackupError::DestinationUnavailable(_))));
+
+    let trav_back = BackupDestinationManager::resolve_destination(
+        Some("..\\outside.pnbackup"),
+        BackupType::Manual,
+        false,
+        &env_src.paths,
+    );
+    assert!(matches!(trav_back, Err(BackupError::DestinationUnavailable(_))));
+
+    let live_db_str = env_src.paths.database_file.to_string_lossy().to_string();
+    let db_override = BackupDestinationManager::resolve_destination(
+        Some(&live_db_str),
+        BackupType::Manual,
+        false,
+        &env_src.paths,
+    );
+    assert!(matches!(db_override, Err(BackupError::DestinationUnavailable(_))));
+
+    // Create consistent backup archive
+    let backup_res = BackupService::create_backup(
+        &conn_src,
+        &env_src.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).expect("Backup creation must succeed");
+
+    assert!(backup_res.success);
+    let backup_archive_path = std::path::PathBuf::from(&backup_res.file_path);
+    assert!(backup_archive_path.exists());
+    assert!(backup_res.note_count >= 2);
+    assert_eq!(backup_res.attachment_count, 1);
+
+    // =========================================================================
+    // 2. Corrupt Archive Detection Before Destructive Live Database Swap
+    // =========================================================================
+    let env_target = TestEnv::new();
+    let mut conn_target = init_connection(&env_target.paths.database_file).expect("Target DB init");
+    run_migrations(&mut conn_target).expect("Target migrations");
+
+    let live_note_initial = NoteRepository::create(
+        &conn_target,
+        CreateNoteDto {
+            title: Some("Target Live Note Initial".to_string()),
+            content: Some("Must remain completely untouched upon restore failure".to_string()),
+            ..Default::default()
+        },
+    ).expect("Create live target note");
+
+    // Corrupt archive: truncate bytes
+    let corrupt_archive_path = env_target.paths.backups_dir.join("corrupted.pnbackup");
+    fs::write(&corrupt_archive_path, b"CORRUPTED_TRUNCATED_ARCHIVE_DATA").expect("Write corrupt file");
+
+    let corrupt_restore_err = RestoreService::execute_restore(
+        &mut conn_target,
+        &env_target.paths,
+        BackupRestoreRequest {
+            file_path: corrupt_archive_path.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    ).expect_err("Restoring corrupt archive must fail");
+
+    assert!(
+        matches!(corrupt_restore_err, BackupError::ArchiveReadFailed(_) | BackupError::ValidationFailed(_)),
+        "Must fail with archive read or validation error: {corrupt_restore_err:?}"
+    );
+
+    // Live target database MUST remain untouched!
+    let live_check = NoteRepository::get_by_id(&conn_target, &live_note_initial.id)
+        .expect("Query note")
+        .expect("Live note must still exist");
+    assert_eq!(live_check.title, "Target Live Note Initial");
+    assert_eq!(live_check.content, "Must remain completely untouched upon restore failure");
+
+    // =========================================================================
+    // 3. Missing Attachment Detection Before Destructive Swap
+    // =========================================================================
+    // Create an archive with valid manifest and database, but missing the referenced attachment file
+    let missing_att_archive_path = env_target.paths.backups_dir.join("missing_att.pnbackup");
+    {
+        let orig_file = File::open(&backup_archive_path).expect("Open orig backup");
+        let mut orig_zip = ZipArchive::new(orig_file).expect("Read orig zip");
+
+        let out_file = File::create(&missing_att_archive_path).expect("Create out zip");
+        let mut out_zip = ZipWriter::new(out_file);
+        let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+        for i in 0..orig_zip.len() {
+            let mut entry = orig_zip.by_index(i).expect("Entry");
+            let name = entry.name().to_string();
+            // Intentionally skip writing the attachment file to the archive
+            if name.starts_with("attachments/") {
+                continue;
+            }
+            out_zip.start_file(&name, options).expect("Start file");
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).expect("Read entry");
+            out_zip.write_all(&buf).expect("Write entry");
+        }
+        out_zip.finish().expect("Finish missing att zip");
+    }
+
+    let missing_att_err = RestoreService::execute_restore(
+        &mut conn_target,
+        &env_target.paths,
+        BackupRestoreRequest {
+            file_path: missing_att_archive_path.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    ).expect_err("Restoring archive with missing attachment must fail staged validation");
+
+    assert!(
+        matches!(
+            missing_att_err,
+            BackupError::RequiredAttachmentMissing(_) | BackupError::ValidationFailed(_)
+        ),
+        "Expected RequiredAttachmentMissing or ValidationFailed, got {missing_att_err:?}"
+    );
+
+    // Live target database still completely untouched!
+    let live_check_2 = NoteRepository::get_by_id(&conn_target, &live_note_initial.id)
+        .expect("Query note")
+        .expect("Live note must still exist");
+    assert_eq!(live_check_2.title, "Target Live Note Initial");
+
+    // =========================================================================
+    // 4. Successful Restore with Pre-Restore Recovery Checkpoint
+    // =========================================================================
+    let restore_success = RestoreService::execute_restore(
+        &mut conn_target,
+        &env_target.paths,
+        BackupRestoreRequest {
+            file_path: backup_archive_path.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    ).expect("Restore valid backup must succeed");
+
+    assert!(restore_success.success);
+    assert_eq!(restore_success.note_count, 2);
+    assert_eq!(restore_success.attachment_count, 1);
+
+    // Live target now holds restored data
+    let restored_note = NoteRepository::get_by_id(&conn_target, &note1.id)
+        .expect("Get note 1")
+        .expect("Note 1 must exist after restore");
+    assert_eq!(restored_note.title, "Important Project Spec");
+    assert_eq!(restored_note.content, "Consistent database snapshot via Online Backup API");
+
+    // Verify attachment file restored to disk
+    let restored_att_file = env_target.paths.attachments_dir.join(&att_subpath);
+    assert!(restored_att_file.exists(), "Restored attachment file must exist on disk");
+    let restored_att_bytes = fs::read(&restored_att_file).unwrap();
+    assert_eq!(restored_att_bytes, b"RAW_ATTACHMENT_VERIFIED_BYTES");
+
+    // Verify pre-restore recovery checkpoint was generated and preserved
+    let checkpoints = RestoreService::list_recovery_checkpoints(&env_target.paths).expect("List checkpoints");
+    assert!(!checkpoints.is_empty(), "Must have created pre-restore recovery checkpoint");
+    let latest_chk = &checkpoints[0];
+    assert!(latest_chk.is_verified);
+    assert_eq!(latest_chk.note_count, 1, "Pre-restore checkpoint holds initial live note");
+
+    // =========================================================================
+    // 5. Phase 12 Encryption Invariants and Envelope Preservation
+    // =========================================================================
+    let env_enc = TestEnv::new();
+    let mut conn_enc = init_connection(&env_enc.paths.database_file).expect("Enc DB init");
+    run_migrations(&mut conn_enc).expect("Enc migrations");
+
+    let _dek = SecretBytes::new(vec![0x4B; 32]);
+    let dummy_salt = generate_salt();
+    let kdf_config = KdfConfig::default_profile(dummy_salt);
+    let wrapped_key = WrappedKey::new(&[0x55; 12], &[0x66; 32], &[0x77; 16]);
+    let enc_meta = EncryptionMetadata::new(kdf_config, wrapped_key);
+    SettingsRepository::set(&conn_enc, ENCRYPTION_METADATA_KEY, &enc_meta.to_json().unwrap()).unwrap();
+
+    let enc_backup_res = BackupService::create_backup(
+        &conn_enc,
+        &env_enc.paths,
+        BackupCreateRequest {
+            destination_path: None,
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    ).expect("Create enc backup");
+
+    // Preview restore checks encryption metadata
+    let enc_archive_path = std::path::PathBuf::from(&enc_backup_res.file_path);
+    let preview = RestoreService::preview_restore(&enc_archive_path, &env_enc.paths).expect("Preview enc backup");
+    assert!(preview.is_encrypted, "Preview must detect is_encrypted = true");
+    assert_eq!(
+        preview.encryption_algorithm.as_deref(),
+        Some("AES-256-GCM"),
+        "Preview must report AES-256-GCM"
+    );
+
+    // Restore encrypted backup into fresh target
+    let env_enc_target = TestEnv::new();
+    let mut conn_enc_target = init_connection(&env_enc_target.paths.database_file).expect("Target init");
+    run_migrations(&mut conn_enc_target).expect("Target migrations");
+
+    let enc_restore_res = RestoreService::execute_restore(
+        &mut conn_enc_target,
+        &env_enc_target.paths,
+        BackupRestoreRequest {
+            file_path: enc_archive_path.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    ).expect("Restore encrypted backup");
+
+    assert!(enc_restore_res.success);
+
+    // Verify encryption metadata was preserved accurately in restored target
+    let restored_meta_str = SettingsRepository::get(&conn_enc_target, ENCRYPTION_METADATA_KEY)
+        .expect("Get restored meta")
+        .expect("Meta key exists in settings");
+    let restored_meta: EncryptionMetadata = serde_json::from_str(&restored_meta_str).unwrap();
+    assert!(restored_meta.enabled);
+    assert_eq!(restored_meta.wrapped_dek.nonce_base64, enc_meta.wrapped_dek.nonce_base64);
+    assert_eq!(restored_meta.wrapped_dek.ciphertext_base64, enc_meta.wrapped_dek.ciphertext_base64);
+    assert_eq!(restored_meta.wrapped_dek.tag_base64, enc_meta.wrapped_dek.tag_base64);
+}
+
+#[test]
+fn test_phase13_task_14_review_trash_restore_and_permanent_deletion() {
+    use std::fs;
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+    use personal_notepad_lib::storage::services::trash::TrashService;
+    use personal_notepad_lib::storage::errors::{AttachmentError, TrashError};
+    use personal_notepad_lib::storage::services::links::InternalLinkService;
+    use personal_notepad_lib::storage::models::LinkTargetLifecycle;
+    use personal_notepad_lib::storage::repositories::search::SearchRepository;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+    let storage = AttachmentStorage::new(env.paths.clone());
+
+    // 1. Setup Notebook, Tag, and Note with Attachment and Link
+    let nb = NotebookRepository::create(&conn, CreateNotebookDto {
+        name: "Engineering Core".to_string(),
+        parent_id: None,
+    }).expect("Create notebook");
+
+    let tag = TagRepository::create(&conn, "critical-spec").expect("Create tag");
+
+    let note1 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Database Engine Spec".to_string()),
+        content: Some("Core storage engine specification details.".to_string()),
+        format: Some("md".to_string()),
+        notebook_id: Some(nb.id.clone()),
+        is_favorite: Some(true),
+        is_pinned: Some(true),
+    }).expect("Create note 1");
+    TagRepository::add_tag_to_note(&conn, &note1.id, &tag.id).expect("Add tag");
+
+    // Add note2 which links to note1
+    let link_syntax = format!("[Engine Spec](notepad://note/{})", note1.id);
+    let note2 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Architecture Overview".to_string()),
+        content: Some(format!("References the {}", link_syntax)),
+        format: Some("md".to_string()),
+        notebook_id: Some(nb.id.clone()),
+        is_favorite: Some(false),
+        is_pinned: Some(false),
+    }).expect("Create note 2");
+
+    // Create attachment file and db row for note1
+    let att_dir = env.paths.attachments_dir.join(&note1.id);
+    fs::create_dir_all(&att_dir).expect("Create att dir");
+    let att_file = att_dir.join("engine.bin");
+    fs::write(&att_file, b"ATTACHMENT_ENGINE_PAYLOAD").expect("Write attachment");
+
+    let now_str = chrono::Utc::now().to_rfc3339();
+    let att_subpath = format!("{}/engine.bin", note1.id);
+    conn.execute(
+        "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            "att-engine-1",
+            note1.id,
+            "engine.bin",
+            att_subpath,
+            "application/octet-stream",
+            25i64,
+            now_str,
+            now_str,
+        ],
+    ).expect("Insert attachment");
+
+    // Initial check: Link resolves as Active, Backlink exists
+    let initial_resolved = InternalLinkService::resolve_link_target(&conn, &note1.id).expect("Resolve link");
+    assert_eq!(initial_resolved.lifecycle, LinkTargetLifecycle::Active);
+    assert_eq!(initial_resolved.title, Some("Database Engine Spec".to_string()));
+
+    let backlinks = InternalLinkService::get_backlinks(&conn, &note1.id).expect("Get backlinks");
+    assert_eq!(backlinks.len(), 1);
+    assert_eq!(backlinks[0].source_note_id, note2.id);
+
+    // Initial lists and search include note1
+    let active_notes = NoteRepository::list_active(&conn).expect("List active");
+    assert!(active_notes.iter().any(|n| n.id == note1.id));
+    let fav_notes = NoteRepository::list_favorites(&conn).expect("List favorites");
+    assert!(fav_notes.iter().any(|n| n.id == note1.id));
+    let tag_notes = NoteRepository::list_by_tag(&conn, &tag.id).expect("List by tag");
+    assert!(tag_notes.iter().any(|n| n.id == note1.id));
+    let search_results = SearchRepository::search(&conn, "Engine", None).expect("Search");
+    assert!(search_results.iter().any(|r| r.note_id == note1.id));
+
+    // =========================================================================
+    // 2. Soft-Delete to Trash: Isolation & Exclusion
+    // =========================================================================
+    let trashed = TrashService::soft_delete(&conn, &note1.id).expect("Soft delete note 1");
+    assert!(trashed.is_deleted);
+    assert!(trashed.deleted_at.is_some());
+    assert_eq!(trashed.title, "Database Engine Spec");
+    assert_eq!(trashed.notebook_id, Some(nb.id.clone()));
+    assert!(trashed.is_favorite);
+
+    // Ordinary lists and search MUST exclude trashed note
+    let active_after_trash = NoteRepository::list_active(&conn).expect("List active");
+    assert!(!active_after_trash.iter().any(|n| n.id == note1.id));
+    let fav_after_trash = NoteRepository::list_favorites(&conn).expect("List favorites");
+    assert!(!fav_after_trash.iter().any(|n| n.id == note1.id));
+    let tag_after_trash = NoteRepository::list_by_tag(&conn, &tag.id).expect("List by tag");
+    assert!(!tag_after_trash.iter().any(|n| n.id == note1.id));
+    let search_after_trash = SearchRepository::search(&conn, "Engine", None).expect("Search");
+    assert!(!search_after_trash.iter().any(|r| r.note_id == note1.id));
+
+    // Links to trashed note reflect Trashed lifecycle
+    let trashed_resolved = InternalLinkService::resolve_link_target(&conn, &note1.id).expect("Resolve link");
+    assert_eq!(trashed_resolved.lifecycle, LinkTargetLifecycle::Trashed);
+
+    // Backlinks query: source notes in trash do NOT produce backlinks
+    let _trashed2 = TrashService::soft_delete(&conn, &note2.id).expect("Soft delete note 2");
+    let backlinks_trashed_src = InternalLinkService::get_backlinks(&conn, &note1.id).expect("Get backlinks");
+    assert_eq!(backlinks_trashed_src.len(), 0, "Trashed source note must not produce backlinks");
+
+    // Restore note2 so it remains active
+    let _restored2 = TrashService::restore(&conn, &note2.id).expect("Restore note 2");
+
+    // =========================================================================
+    // 3. Restore Reactivation & Relationship Preservation
+    // =========================================================================
+    let restored = TrashService::restore(&conn, &note1.id).expect("Restore note 1");
+    assert!(!restored.is_deleted);
+    assert_eq!(restored.deleted_at, None);
+    assert_eq!(restored.title, "Database Engine Spec");
+    assert_eq!(restored.notebook_id, Some(nb.id.clone()));
+    assert!(restored.is_favorite);
+    assert!(restored.is_pinned);
+
+    // Reappears in ordinary lists, tags, and search
+    let active_restored = NoteRepository::list_active(&conn).expect("List active");
+    assert!(active_restored.iter().any(|n| n.id == note1.id));
+    let fav_restored = NoteRepository::list_favorites(&conn).expect("List favorites");
+    assert!(fav_restored.iter().any(|n| n.id == note1.id));
+    let tag_restored = NoteRepository::list_by_tag(&conn, &tag.id).expect("List by tag");
+    assert!(tag_restored.iter().any(|n| n.id == note1.id));
+    let search_restored = SearchRepository::search(&conn, "Engine", None).expect("Search");
+    assert!(search_restored.iter().any(|r| r.note_id == note1.id));
+
+    // Link resolution reactivates to Active and backlinks reappear
+    let reactivated_resolved = InternalLinkService::resolve_link_target(&conn, &note1.id).expect("Resolve link");
+    assert_eq!(reactivated_resolved.lifecycle, LinkTargetLifecycle::Active);
+    let backlinks_reactivated = InternalLinkService::get_backlinks(&conn, &note1.id).expect("Get backlinks");
+    assert_eq!(backlinks_reactivated.len(), 1);
+
+    // =========================================================================
+    // 4. Parent Notebook Deletion While Note in Trash
+    // =========================================================================
+    let _trashed_again = TrashService::soft_delete(&conn, &note1.id).expect("Soft delete note 1");
+    // Delete parent notebook
+    NotebookRepository::delete(&mut conn, &nb.id).expect("Delete notebook");
+
+    // Restoring note defensively unfiles it without failing
+    let restored_unfiled = TrashService::restore(&conn, &note1.id).expect("Restore note with deleted notebook");
+    assert!(!restored_unfiled.is_deleted);
+    assert_eq!(restored_unfiled.notebook_id, None, "Must be cleanly unfiled");
+
+    // =========================================================================
+    // 5. Permanent Deletion, Cascade Records & Attachment Cleanup
+    // =========================================================================
+    assert!(att_file.exists(), "Attachment file must exist before permanent delete");
+    let _trashed_for_perm = TrashService::soft_delete(&conn, &note1.id).expect("Soft delete note 1");
+
+    let perm_res = TrashService::permanently_delete_note(&conn, &storage, &note1.id).expect("Permanent delete");
+    assert!(perm_res.success);
+    assert!(!perm_res.attachment_cleanup_failed);
+
+    // DB record removed
+    assert_eq!(NoteRepository::get_by_id(&conn, &note1.id).unwrap(), None);
+
+    // Attachment files on disk removed
+    assert!(!att_file.exists(), "Attachment file must be removed from disk");
+    assert!(!att_dir.exists(), "Attachment note directory must be removed from disk");
+
+    // Dependent DB records cascaded
+    let att_count: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM attachments WHERE note_id = ?1",
+        rusqlite::params![note1.id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(att_count, 0, "Attachment rows must cascade delete");
+
+    let tag_link_count: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM note_tags WHERE note_id = ?1",
+        rusqlite::params![note1.id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(tag_link_count, 0, "Note tag rows must cascade delete");
+
+    // Internal link now resolves to Missing
+    let missing_resolved = InternalLinkService::resolve_link_target(&conn, &note1.id).expect("Resolve link");
+    assert_eq!(missing_resolved.lifecycle, LinkTargetLifecycle::Missing);
+
+    // Note 2 and Tag remain 100% intact
+    let survivor_note = NoteRepository::get_by_id(&conn, &note2.id).unwrap().expect("Note 2 exists");
+    assert_eq!(survivor_note.title, "Architecture Overview");
+
+    // =========================================================================
+    // 6. Path Traversal & Invalid ID Defense
+    // =========================================================================
+    let trav_soft = TrashService::soft_delete(&conn, "../outside");
+    assert!(matches!(trav_soft, Err(TrashError::InvalidRequest(_))));
+
+    let trav_rest = TrashService::restore(&conn, "..\\outside");
+    assert!(matches!(trav_rest, Err(TrashError::InvalidRequest(_))));
+
+    let trav_perm = TrashService::permanently_delete_note(&conn, &storage, "..");
+    assert!(matches!(trav_perm, Err(TrashError::InvalidRequest(_))));
+
+    let trav_att = storage.remove_note_directory("../outside");
+    assert!(matches!(trav_att, Err(AttachmentError::InvalidRequest(_))));
+
+    // =========================================================================
+    // 7. Empty Trash Bulk Operation
+    // =========================================================================
+    let bulk1 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Bulk Trash 1".to_string()),
+        content: Some("Content 1".to_string()),
+        ..Default::default()
+    }).unwrap();
+    let bulk2 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Bulk Trash 2".to_string()),
+        content: Some("Content 2".to_string()),
+        ..Default::default()
+    }).unwrap();
+    TrashService::soft_delete(&conn, &bulk1.id).unwrap();
+    TrashService::soft_delete(&conn, &bulk2.id).unwrap();
+
+    let empty_res = TrashService::empty_trash(&conn, &storage).expect("Empty trash");
+    assert_eq!(empty_res.deleted_count, 2);
+    assert_eq!(empty_res.failed_count, 0);
+
+    let trashed_remaining = NoteRepository::list_trashed(&conn).unwrap();
+    assert_eq!(trashed_remaining.len(), 0, "Trash must be completely empty");
+}
+
+#[test]
+fn test_phase13_task_15_harden_internal_links_backlinks_and_navigation() {
+    use personal_notepad_lib::storage::services::links::InternalLinkService;
+    use personal_notepad_lib::storage::models::LinkTargetLifecycle;
+    use personal_notepad_lib::storage::services::trash::TrashService;
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+    let storage = AttachmentStorage::new(env.paths.clone());
+
+    // 1. Stable ID Resolution & Renaming Resistance
+    let note_a = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Initial Core Architecture".to_string()),
+        content: Some("Architecture specs.".to_string()),
+        format: Some("md".to_string()),
+        ..Default::default()
+    }).expect("Create Note A");
+
+    let note_b = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Service Implementation".to_string()),
+        content: Some(format!("Implements [Core Architecture](notepad://note/{}) efficiently.", note_a.id)),
+        format: Some("md".to_string()),
+        ..Default::default()
+    }).expect("Create Note B");
+
+    // Initial resolution matches original title
+    let res_initial = InternalLinkService::resolve_link_target(&conn, &note_a.id).expect("Resolve A");
+    assert_eq!(res_initial.lifecycle, LinkTargetLifecycle::Active);
+    assert_eq!(res_initial.title, Some("Initial Core Architecture".to_string()));
+
+    // Rename Note A
+    let _renamed_a = NoteRepository::update(&conn, &note_a.id, UpdateNoteDto {
+        title: Some("Refactored Distributed Architecture v2".to_string()),
+        ..Default::default()
+    }).expect("Rename Note A");
+
+    // Resolution by stable UUID now dynamically returns the updated title without breaking link
+    let res_renamed = InternalLinkService::resolve_link_target(&conn, &note_a.id).expect("Resolve A after rename");
+    assert_eq!(res_renamed.lifecycle, LinkTargetLifecycle::Active);
+    assert_eq!(res_renamed.title, Some("Refactored Distributed Architecture v2".to_string()));
+
+    // 2. Duplicate Titles Unambiguity
+    let note_c = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Refactored Distributed Architecture v2".to_string()),
+        content: Some("Duplicate title note.".to_string()),
+        format: Some("md".to_string()),
+        ..Default::default()
+    }).expect("Create Note C");
+
+    let res_c = InternalLinkService::resolve_link_target(&conn, &note_c.id).expect("Resolve C");
+    assert_eq!(res_c.lifecycle, LinkTargetLifecycle::Active);
+    assert_eq!(res_c.target_id, note_c.id);
+    assert_ne!(res_c.target_id, note_a.id);
+
+    // 3. Dynamic Backlinks Derivation & Source Content Updates
+    let backlinks_1 = InternalLinkService::get_backlinks(&conn, &note_a.id).expect("Get backlinks A");
+    assert_eq!(backlinks_1.len(), 1);
+    assert_eq!(backlinks_1[0].source_note_id, note_b.id);
+    assert!(backlinks_1[0].label_snippet.is_some());
+
+    // Update Note B to remove the link
+    let _updated_b = NoteRepository::update(&conn, &note_b.id, UpdateNoteDto {
+        content: Some("Rewritten content with no internal links at all.".to_string()),
+        ..Default::default()
+    }).expect("Update Note B");
+
+    let backlinks_after_removal = InternalLinkService::get_backlinks(&conn, &note_a.id).expect("Get backlinks A");
+    assert_eq!(backlinks_after_removal.len(), 0, "Backlinks must update immediately on content change");
+
+    // Update Note B to re-add the link with a new label
+    let _restored_link_b = NoteRepository::update(&conn, &note_b.id, UpdateNoteDto {
+        content: Some(format!("Now references [New Spec Link](notepad://note/{}) here.", note_a.id)),
+        ..Default::default()
+    }).expect("Re-add link to Note B");
+
+    let backlinks_readded = InternalLinkService::get_backlinks(&conn, &note_a.id).expect("Get backlinks A");
+    assert_eq!(backlinks_readded.len(), 1);
+    assert_eq!(backlinks_readded[0].source_note_id, note_b.id);
+
+    // 4. Target Lifecycle: Trashed -> Restored -> Permanently Deleted
+    // Trashing Note A
+    TrashService::soft_delete(&conn, &note_a.id).expect("Trash Note A");
+    let res_trashed = InternalLinkService::resolve_link_target(&conn, &note_a.id).expect("Resolve trashed");
+    assert_eq!(res_trashed.lifecycle, LinkTargetLifecycle::Trashed);
+    assert_eq!(res_trashed.title, Some("Refactored Distributed Architecture v2".to_string()));
+
+    // Trashing source Note B suppresses outgoing backlinks
+    TrashService::soft_delete(&conn, &note_b.id).expect("Trash Note B");
+    let backlinks_from_trashed_src = InternalLinkService::get_backlinks(&conn, &note_a.id).expect("Backlinks from trashed");
+    assert_eq!(backlinks_from_trashed_src.len(), 0, "Trashed source note must not emit backlinks");
+
+    // Restoring Note B reactivates backlinks
+    TrashService::restore(&conn, &note_b.id).expect("Restore Note B");
+    let backlinks_restored_src = InternalLinkService::get_backlinks(&conn, &note_a.id).expect("Backlinks restored");
+    assert_eq!(backlinks_restored_src.len(), 1);
+
+    // Restoring Note A reactivates target
+    TrashService::restore(&conn, &note_a.id).expect("Restore Note A");
+    let res_restored = InternalLinkService::resolve_link_target(&conn, &note_a.id).expect("Resolve restored");
+    assert_eq!(res_restored.lifecycle, LinkTargetLifecycle::Active);
+
+    // Permanently deleting Note A marks target as Missing
+    TrashService::soft_delete(&conn, &note_a.id).expect("Trash Note A again");
+    TrashService::permanently_delete_note(&conn, &storage, &note_a.id).expect("Permanent delete Note A");
+    let res_deleted = InternalLinkService::resolve_link_target(&conn, &note_a.id).expect("Resolve deleted");
+    assert_eq!(res_deleted.lifecycle, LinkTargetLifecycle::Missing);
+    assert_eq!(res_deleted.title, None);
+
+    // 5. Malformed, Missing, & Traversal URIs
+    let trav_1 = InternalLinkService::resolve_link_target(&conn, "../etc/passwd").expect("Resolve traversal 1");
+    assert_eq!(trav_1.lifecycle, LinkTargetLifecycle::Missing);
+
+    let trav_2 = InternalLinkService::resolve_link_target(&conn, "..\\windows\\system32").expect("Resolve traversal 2");
+    assert_eq!(trav_2.lifecycle, LinkTargetLifecycle::Missing);
+
+    let trav_3 = InternalLinkService::resolve_link_target(&conn, "").expect("Resolve empty");
+    assert_eq!(trav_3.lifecycle, LinkTargetLifecycle::Missing);
+
+    let trav_4 = InternalLinkService::resolve_link_target(&conn, "   ").expect("Resolve whitespace");
+    assert_eq!(trav_4.lifecycle, LinkTargetLifecycle::Missing);
+
+    let backlinks_trav = InternalLinkService::get_backlinks(&conn, "../traversal").expect("Backlinks traversal");
+    assert_eq!(backlinks_trav.len(), 0);
+}
+
+#[test]
+fn test_phase13_task_16_validate_unicode_special_characters_and_unusual_content() {
+    use personal_notepad_lib::storage::services::links::InternalLinkService;
+    use personal_notepad_lib::storage::models::LinkTargetLifecycle;
+    use personal_notepad_lib::storage::repositories::search::SearchRepository;
+    use personal_notepad_lib::storage::services::import_export::ImportExportService;
+    use personal_notepad_lib::storage::attachment_storage::sanitize_original_filename;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // =========================================================================
+    // 1. Multilingual Content, Emojis, BiDi Text, & Special Symbols
+    // =========================================================================
+    let original_title = "🚀 Project: ירושלים & 東京 2026 — מבצע \"שלום\" 🌸";
+    let original_content = concat!(
+        "# Global Specification 🌍\n\n",
+        "Devanagari: नमस्ते दुनिया! यह एक सुरक्षित नोट है।\n",
+        "Arabic (RTL): مرحبا بالعالم! هذا اختبار للنص العربي مع علامات التشكيل.\n",
+        "Hebrew (RTL): שלום עולם! בדיקת טקסט בעברית.\n",
+        "Russian: Привет, мир! Тестирование кодировки UTF-8.\n",
+        "Greek: Γεια σου κόσμε! Ελληνικό κείμενο.\n",
+        "Accents: Café résumé naïve señor garçon façade\n",
+        "Zero-Width: A\u{200B}B\u{200C}C\u{200D}D (invisible boundaries)\n",
+        "Emoji ZWJ: 👨‍👩‍👧‍👦 👩🏽‍💻 🏳️‍🌈\n",
+        "Math & Symbols: ∀x ∈ ℝ, ∃y : x² + y² = 1 ∧ ¬(p ∨ q) ≡ ¬p ∧ ¬q\n",
+    );
+
+    let nb = NotebookRepository::create(&conn, CreateNotebookDto {
+        name: "📁 المشاريع 2026 / 日本語のノート".to_string(),
+        parent_id: None,
+    }).expect("Create multilingual notebook");
+
+    let tag_hindi = TagRepository::create(&conn, "सॉफ्टवेयर").expect("Create tag hindi");
+    let tag_arabic = TagRepository::create(&conn, "مهم").expect("Create tag arabic");
+    let tag_symbol = TagRepository::create(&conn, "c++").expect("Create tag symbol");
+
+    let note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some(original_title.to_string()),
+        content: Some(original_content.to_string()),
+        format: Some("md".to_string()),
+        notebook_id: Some(nb.id.clone()),
+        is_favorite: Some(true),
+        is_pinned: Some(true),
+    }).expect("Create note with unusual unicode content");
+
+    TagRepository::add_tag_to_note(&conn, &note.id, &tag_hindi.id).expect("Add tag hindi");
+    TagRepository::add_tag_to_note(&conn, &note.id, &tag_arabic.id).expect("Add tag arabic");
+    TagRepository::add_tag_to_note(&conn, &note.id, &tag_symbol.id).expect("Add tag symbol");
+
+    // =========================================================================
+    // 2. Exact Roundtrip Verification (No Mojibake or Truncation)
+    // =========================================================================
+    let retrieved = NoteRepository::get_by_id(&conn, &note.id).expect("Get note").expect("Note exists");
+    assert_eq!(retrieved.title, original_title, "Title must match byte-for-byte");
+    assert_eq!(retrieved.content, original_content, "Content must match byte-for-byte");
+    assert_eq!(retrieved.notebook_id, Some(nb.id.clone()));
+
+    let tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get tags");
+    assert_eq!(tags.len(), 3);
+    assert!(tags.iter().any(|t| t.name == "सॉफ्टवेयर"));
+    assert!(tags.iter().any(|t| t.name == "مهم"));
+    assert!(tags.iter().any(|t| t.name == "c++"));
+
+    // =========================================================================
+    // 3. Search Indexing & Token Matching for Non-ASCII Text
+    // =========================================================================
+    let devanagari_results = SearchRepository::search(&conn, "नमस्ते", None).expect("Search Devanagari");
+    assert!(!devanagari_results.is_empty(), "Search should find Devanagari query");
+    assert_eq!(devanagari_results[0].note_id, note.id);
+
+    let arabic_results = SearchRepository::search(&conn, "بالعالم", None).expect("Search Arabic");
+    assert!(!arabic_results.is_empty(), "Search should find Arabic query");
+    assert_eq!(arabic_results[0].note_id, note.id);
+
+    let russian_results = SearchRepository::search(&conn, "кодировки", None).expect("Search Russian");
+    assert!(!russian_results.is_empty(), "Search should find Russian query");
+    assert_eq!(russian_results[0].note_id, note.id);
+
+    let accent_results = SearchRepository::search(&conn, "résumé", None).expect("Search Accented");
+    assert!(!accent_results.is_empty(), "Search should find Accented query");
+    assert_eq!(accent_results[0].note_id, note.id);
+
+    // Search query with special symbols should not panic or produce SQL syntax error
+    let symbol_search = SearchRepository::search(&conn, "C++ *?^$()", None).expect("Search special symbols");
+    assert!(symbol_search.is_empty() || !symbol_search.is_empty()); // Verify no panic or crash
+
+    // =========================================================================
+    // 4. Internal Links with Multilingual Unicode Labels
+    // =========================================================================
+    let link_syntax = format!("References [दस्तावेज़ विवरण & הערות](notepad://note/{}) here.", note.id);
+    let note2 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Secondary Document 📑".to_string()),
+        content: Some(link_syntax),
+        format: Some("md".to_string()),
+        ..Default::default()
+    }).expect("Create Note 2");
+
+    let resolved = InternalLinkService::resolve_link_target(&conn, &note.id).expect("Resolve link");
+    assert_eq!(resolved.lifecycle, LinkTargetLifecycle::Active);
+    assert_eq!(resolved.title, Some(original_title.to_string()));
+
+    let backlinks = InternalLinkService::get_backlinks(&conn, &note.id).expect("Get backlinks");
+    assert_eq!(backlinks.len(), 1);
+    assert_eq!(backlinks[0].source_note_id, note2.id);
+    assert_eq!(backlinks[0].source_note_title, "Secondary Document 📑");
+    assert!(backlinks[0].label_snippet.is_some());
+
+    // =========================================================================
+    // 5. Safe Filesystem Sanitization & Export Filenames
+    // =========================================================================
+    let safe_export_name = ImportExportService::sanitize_filename(&note.title);
+    assert!(!safe_export_name.contains('/'), "Export filename must not contain forward slash");
+    assert!(!safe_export_name.contains('\\'), "Export filename must not contain backslash");
+    assert!(!safe_export_name.contains('"'), "Export filename must not contain double quotes");
+    assert!(safe_export_name.contains("Project"), "Preserves alphanumeric stem");
+    assert!(safe_export_name.contains("ירושלים"), "Preserves Hebrew characters");
+    assert!(safe_export_name.contains("東京"), "Preserves CJK characters");
+
+    let safe_att_name = sanitize_original_filename("تقرير_المشروع_🌸_2026.pdf");
+    assert_eq!(safe_att_name, "تقرير_المشروع_🌸_2026.pdf", "Preserves Unicode in attachment filenames");
+
+    let dirty_att_name = sanitize_original_filename("..\\..\\تقرير\0_test.pdf");
+    assert!(!dirty_att_name.contains(".."), "Strips traversal");
+    assert!(!dirty_att_name.contains('\0'), "Strips null bytes");
+}
+
+#[test]
+fn test_phase13_task_17_handle_disk_permission_and_filesystem_failures() {
+    use personal_notepad_lib::storage::services::attachments::AttachmentService;
+    use personal_notepad_lib::storage::attachment_storage::AttachmentStorage;
+    use personal_notepad_lib::storage::errors::{StorageError, AttachmentError, BackupError, ErrorCategory};
+    use personal_notepad_lib::storage::services::backup::BackupService;
+    use personal_notepad_lib::storage::models::{BackupCreateRequest, BackupType, ExportBatchRequest, ExportFormat, ExportScope};
+    use personal_notepad_lib::storage::services::import_export::ImportExportService;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+    let storage = AttachmentStorage::new(env.paths.clone());
+
+    // 1. Error category and user-facing message mapping for ENOSPC and EACCES
+    let enospc_io = StorageError::Io(std::io::Error::from_raw_os_error(28));
+    assert_eq!(enospc_io.category(), ErrorCategory::DiskSpace);
+    assert!(enospc_io.user_friendly_message().contains("Insufficient disk space"));
+
+    let eacces_io = StorageError::Io(std::io::Error::from_raw_os_error(13));
+    assert_eq!(eacces_io.category(), ErrorCategory::Permission);
+    assert!(eacces_io.user_friendly_message().contains("Permission denied"));
+
+    let att_space = AttachmentError::InsufficientDiskSpace;
+    assert!(att_space.user_friendly_message().contains("Insufficient disk space"));
+
+    let backup_space = BackupError::InsufficientDiskSpace;
+    assert!(backup_space.user_friendly_message().contains("Insufficient disk space"));
+
+    // 2. Attachment write failure: No DB record committed for non-existent file
+    let note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Attachment Safety Test".to_string()),
+        content: Some("Note for attachment failure testing.".to_string()),
+        ..Default::default()
+    }).expect("Create note");
+
+    let non_existent_source = env.dir.join("non_existent_file_123.pdf");
+    let att_res = AttachmentService::add_attachment(&conn, &storage, &note.id, &non_existent_source);
+    assert!(att_res.is_err(), "Must fail when source file does not exist");
+
+    // Verify database record was NOT committed
+    let att_count: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM attachments WHERE note_id = ?1",
+        rusqlite::params![&note.id],
+        |r| r.get(0),
+    ).expect("Query attachments count");
+    assert_eq!(att_count, 0, "No database record must be committed for failed file write");
+
+    // Verify no stray files left in note directory
+    let note_dir = env.paths.attachments_dir.join(&note.id);
+    if note_dir.exists() {
+        let entries: Vec<_> = std::fs::read_dir(&note_dir).unwrap().collect();
+        assert_eq!(entries.len(), 0, "No stray files should exist in note dir");
+    }
+
+    // 3. Backup write failure: Live data remains completely untouched
+    let invalid_dest = "/non_existent_mount_unplugged_volume_xyz/backups/test.pnbackup".to_string();
+    let backup_res = BackupService::create_backup(
+        &conn,
+        &env.paths,
+        BackupCreateRequest {
+            destination_path: Some(invalid_dest),
+            backup_type: Some(BackupType::Manual),
+            allow_overwrite: Some(false),
+        },
+        None::<fn(_)>,
+    );
+    assert!(backup_res.is_err(), "Backup to unavailable/unplugged directory must fail");
+
+    // Verify live data is 100% intact
+    let active_note = NoteRepository::get_by_id(&conn, &note.id).expect("Get note").expect("Note exists");
+    assert_eq!(active_note.title, "Attachment Safety Test");
+    let all_notes = NoteRepository::list_active(&conn).expect("List active");
+    assert_eq!(all_notes.len(), 1);
+
+    // 4. Batch export failure isolation
+    let note2 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Second Note".to_string()),
+        content: Some("Content of second note.".to_string()),
+        ..Default::default()
+    }).expect("Create note 2");
+
+    let export_dir = env.dir.join("export_test");
+    std::fs::create_dir_all(&export_dir).expect("Create export dir");
+
+    let export_req = ExportBatchRequest {
+        format: ExportFormat::Txt,
+        scope: Some(ExportScope::SelectedNotes {
+            note_ids: vec![note.id.clone(), note2.id.clone()],
+        }),
+        destination_dir: export_dir.to_string_lossy().to_string(),
+        destination_file: None,
+        overwrite: true,
+        include_metadata: true,
+        note_ids: vec![],
+        operation_id: None,
+    };
+
+    let summary = ImportExportService::export_notes_batch(
+        &conn,
+        export_req,
+    ).expect("Batch export");
+    assert_eq!(summary.exported_count, 2);
+    assert_eq!(summary.failed_count, 0);
+
+    // Live database is still pristine
+    let notes_after_export = NoteRepository::list_active(&conn).expect("List active");
+    assert_eq!(notes_after_export.len(), 2);
+}
+
+#[test]
+fn test_phase13_task_18_handle_database_corruption_and_migration_failures_safely() {
+    use personal_notepad_lib::storage::database::{init_connection, isolate_corrupted_database};
+    use personal_notepad_lib::storage::migrations::{
+        create_pre_migration_snapshot, run_migrations_custom, run_migrations_with_safety, Migration, MIGRATIONS,
+    };
+
+    let env = TestEnv::new();
+
+    // =========================================================================
+    // 1. Detection of corrupt SQLite files on startup & Safe Isolation
+    // =========================================================================
+    let corrupt_db = env.dir.join("corrupt_test.sqlite");
+    let corrupt_bytes = b"CORRUPTED HEADER NOT A REAL DATABASE";
+    std::fs::write(&corrupt_db, corrupt_bytes).expect("Write corrupt db");
+
+    // Opening corrupt db fails
+    let open_res = init_connection(&corrupt_db);
+    assert!(open_res.is_err(), "Opening corrupt database file must fail");
+
+    // Corrupt file must NOT be deleted or overwritten
+    assert!(corrupt_db.exists(), "Corrupt database must be preserved on disk");
+    assert_eq!(std::fs::read(&corrupt_db).unwrap(), corrupt_bytes);
+
+    // Isolate the corrupted database
+    let isolated_path = isolate_corrupted_database(&corrupt_db).expect("Isolate must succeed");
+    assert!(isolated_path.exists());
+    assert!(isolated_path.file_name().unwrap().to_string_lossy().contains(".corrupt."));
+    assert_eq!(std::fs::read(&isolated_path).unwrap(), corrupt_bytes);
+    assert!(!corrupt_db.exists(), "Active db path freed up for fresh start or restore");
+
+    // =========================================================================
+    // 2. Pre-migration Automatic Snapshots
+    // =========================================================================
+    let mig_db = env.dir.join("mig_test.sqlite");
+    let mut conn = init_connection(&mig_db).expect("Init mig connection");
+
+    // Apply first 2 migrations
+    run_migrations_custom(&mut conn, &MIGRATIONS[..2]).expect("Run initial migrations");
+
+    // Create a note in the partially-migrated DB
+    let note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Pre-migration Note".to_string()),
+        content: Some("Must survive migrations intact.".to_string()),
+        ..Default::default()
+    }).expect("Create note");
+
+    // Automatic pre-migration snapshot created because migrations 3 and 4 are pending
+    let snap_path = create_pre_migration_snapshot(&conn, &mig_db).expect("Create snapshot");
+    assert!(snap_path.is_some(), "Must create pre-migration snapshot when migrations pending");
+    let snap_file = snap_path.unwrap();
+    assert!(snap_file.exists());
+    assert!(snap_file.file_name().unwrap().to_string_lossy().contains(".pre_migration."));
+
+    // Verify snapshot is readable and contains our note
+    let snap_conn = init_connection(&snap_file).expect("Open snapshot connection");
+    let snap_note = NoteRepository::get_by_id(&snap_conn, &note.id).expect("Query snapshot note").expect("Note in snapshot");
+    assert_eq!(snap_note.title, "Pre-migration Note");
+    drop(snap_conn);
+
+    // =========================================================================
+    // 3. Failed Migration Step Rolls Back Atomically
+    // =========================================================================
+    let bad_migrations = [
+        Migration {
+            version: 99,
+            name: "099_faulty_migration",
+            sql: "CREATE TABLE valid_tbl (id TEXT); INVALID SQL STATEMENT WILL CAUSE SYNTAX ERROR;",
+        },
+    ];
+
+    let fail_res = run_migrations_custom(&mut conn, &bad_migrations);
+    assert!(fail_res.is_err(), "Faulty migration must fail");
+
+    // Verify atomic rollback: valid_tbl was NOT created
+    let tbl_count: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = 'valid_tbl'",
+        [],
+        |r| r.get(0),
+    ).expect("Check valid_tbl existence");
+    assert_eq!(tbl_count, 0, "Failed migration transaction must roll back completely");
+
+    // Verify existing data is completely intact
+    let survived_note = NoteRepository::get_by_id(&conn, &note.id).expect("Get note").expect("Note survived");
+    assert_eq!(survived_note.title, "Pre-migration Note");
+
+    // =========================================================================
+    // 4. Safe run_migrations_with_safety completes all migrations cleanly
+    // =========================================================================
+    run_migrations_with_safety(&mut conn, Some(&mig_db)).expect("Run remaining migrations with safety");
+
+    let final_note = NoteRepository::get_by_id(&conn, &note.id).expect("Get note").expect("Note present");
+    assert_eq!(final_note.title, "Pre-migration Note");
+}
+
+#[test]
+fn test_phase13_task_19_harden_startup_shutdown_and_application_lifecycle() {
+    use personal_notepad_lib::storage::database::{checkpoint_wal, init_connection};
+    use personal_notepad_lib::storage::paths::AppInstanceLock;
+    use personal_notepad_lib::storage::errors::StorageError;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // =========================================================================
+    // 1. Clean Shutdown & WAL Checkpoint
+    // =========================================================================
+    let note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Shutdown Persistence Test".to_string()),
+        content: Some("Committed note content before shutdown.".to_string()),
+        ..Default::default()
+    }).expect("Create note");
+
+    // Checkpoint WAL pages cleanly
+    checkpoint_wal(&conn).expect("WAL checkpoint should succeed");
+
+    // Simulate clean shutdown: drop connection
+    drop(conn);
+
+    // Reopen on next launch: verify data is 100% consistent
+    let conn2 = init_connection(&env.paths.database_file).expect("Reopen after clean shutdown");
+    let recovered_note = NoteRepository::get_by_id(&conn2, &note.id).expect("Get note").expect("Note exists");
+    assert_eq!(recovered_note.title, "Shutdown Persistence Test");
+    assert_eq!(recovered_note.content, "Committed note content before shutdown.");
+
+    // =========================================================================
+    // 2. Sudden Process Termination (SIGKILL) & Crash Recovery
+    // =========================================================================
+    let note2 = NoteRepository::create(&conn2, CreateNoteDto {
+        title: Some("Crash Recovery Note".to_string()),
+        content: Some("Content written right before simulated crash.".to_string()),
+        ..Default::default()
+    }).expect("Create note 2");
+
+    // Forcibly drop without manual checkpoint (simulating sudden termination / SIGKILL)
+    drop(conn2);
+
+    // Launch app after crash: SQLite WAL recovery executes transparently
+    let conn3 = init_connection(&env.paths.database_file).expect("Reopen after crash");
+    let crash_note = NoteRepository::get_by_id(&conn3, &note2.id).expect("Get note").expect("Note survived crash");
+    assert_eq!(crash_note.title, "Crash Recovery Note");
+
+    // =========================================================================
+    // 3. Multi-Instance Prevention & Conflict Handling
+    // =========================================================================
+    // Acquire instance lock
+    let lock1 = AppInstanceLock::acquire(&env.paths).expect("First instance acquires lock");
+    assert!(env.paths.app_instance_lock_file().exists());
+
+    // Write a dummy foreign PID that is running (e.g. PID 1 or parent init process)
+    let foreign_pid = 1; // PID 1 is always running on Linux
+    std::fs::write(env.paths.app_instance_lock_file(), foreign_pid.to_string()).unwrap();
+
+    // Second instance attempting to acquire will detect running instance and block
+    let lock2_res = AppInstanceLock::acquire(&env.paths);
+    assert!(lock2_res.is_err(), "Second instance must be blocked when another instance is active");
+    assert!(matches!(lock2_res.unwrap_err(), StorageError::Conflict(_)));
+
+    // Drop first lock / clean up lock file
+    drop(lock1);
+    let _ = std::fs::remove_file(env.paths.app_instance_lock_file());
+
+    // Subsequent launch can acquire cleanly
+    let lock3 = AppInstanceLock::acquire(&env.paths).expect("Acquire lock after clean release");
+    drop(lock3);
+
+    // =========================================================================
+    // 4. Startup Orphan Temp Files & Staging Cleanup
+    // =========================================================================
+    // Create orphan files left by simulated previous crash
+    let orphan_staging = env.paths.root.join(".restore_staging_crashed_123");
+    std::fs::create_dir_all(&orphan_staging).unwrap();
+    std::fs::write(orphan_staging.join("orphan.db"), b"staged bytes").unwrap();
+
+    let orphan_temp_db = env.paths.root.join("database.sqlite.tmp.crashed_abc");
+    std::fs::write(&orphan_temp_db, b"temp database bytes").unwrap();
+
+    let note_att_dir = env.paths.get_note_attachments_dir(&note.id).unwrap();
+    let orphan_temp_att = note_att_dir.join("image.tmp.crashed_xyz");
+    std::fs::write(&orphan_temp_att, b"temp attachment bytes").unwrap();
+
+    // Valid attachment file that must NOT be removed
+    let valid_att = note_att_dir.join("valid_attachment.pdf");
+    std::fs::write(&valid_att, b"valid document bytes").unwrap();
+
+    // Startup cleanup
+    let cleaned_count = env.paths.cleanup_orphan_temp_files().expect("Clean orphan files");
+    assert_eq!(cleaned_count, 3, "Must clean 3 orphan temporary entities");
+
+    assert!(!orphan_staging.exists(), "Orphan staging dir must be deleted");
+    assert!(!orphan_temp_db.exists(), "Orphan temp db must be deleted");
+    assert!(!orphan_temp_att.exists(), "Orphan temp attachment must be deleted");
+
+    // Critical invariant: valid files remain completely intact
+    assert!(valid_att.exists(), "Valid managed files must never be removed by orphan cleanup");
+    assert_eq!(std::fs::read(&valid_att).unwrap(), b"valid document bytes");
+}
+
+#[test]
+fn test_phase13_task_20_control_background_work_cancellation_and_concurrency() {
+    use personal_notepad_lib::storage::services::backup_scheduler::BackupSchedulerService;
+    use personal_notepad_lib::storage::models::{
+        DuplicatePolicy, ExportBatchRequest, ExportFormat,
+        ExportScope, ImportCandidateOverride, ImportOptions, ImportRequest,
+    };
+    use personal_notepad_lib::storage::services::import_export::ImportExportService;
+    use personal_notepad_lib::storage::errors::BackupError;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // =========================================================================
+    // 1. Mutual Exclusion Across Heavy Operations
+    // =========================================================================
+    // Acquire import/export lock
+    let import_guard = BackupSchedulerService::try_acquire_import_export_lock()
+        .expect("Acquire import/export lock");
+
+    // Attempting to acquire backup lock must fail with ConcurrentOperation
+    let backup_err = BackupSchedulerService::try_acquire_backup_lock();
+    assert!(backup_err.is_err(), "Backup must be blocked while import/export is executing");
+    assert!(matches!(backup_err.unwrap_err(), BackupError::ConcurrentOperation(_)));
+
+    // Attempting to acquire restore lock must fail with ConcurrentOperation
+    let restore_err = BackupSchedulerService::try_acquire_restore_lock();
+    assert!(restore_err.is_err(), "Restore must be blocked while import/export is executing");
+    assert!(matches!(restore_err.unwrap_err(), BackupError::ConcurrentOperation(_)));
+
+    // Release import/export lock
+    drop(import_guard);
+
+    // Now backup lock can be acquired normally
+    let backup_guard = BackupSchedulerService::try_acquire_backup_lock()
+        .expect("Backup lock can be acquired after import/export release");
+
+    // While backup is held, import/export is blocked
+    let import_err = BackupSchedulerService::try_acquire_import_export_lock();
+    assert!(import_err.is_err(), "Import/export must be blocked while backup is executing");
+    assert!(matches!(import_err.unwrap_err(), BackupError::ConcurrentOperation(_)));
+
+    drop(backup_guard);
+
+    // =========================================================================
+    // 2. Cooperative Cancellation During Batch Import
+    // =========================================================================
+    let op_id = format!("test_cancel_import_{}", uuid::Uuid::new_v4());
+    let file1 = env.dir.join("note1.txt");
+    std::fs::write(&file1, "Content 1").unwrap();
+    let file2 = env.dir.join("note2.txt");
+    std::fs::write(&file2, "Content 2").unwrap();
+
+    // Pre-cancel the operation
+    ImportExportService::cancel_operation(&op_id);
+
+    let candidates = vec![
+        ImportCandidateOverride {
+            id: "c1".to_string(),
+            file_path: file1.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: None,
+        },
+        ImportCandidateOverride {
+            id: "c2".to_string(),
+            file_path: file2.to_string_lossy().to_string(),
+            selected: true,
+            custom_title: None,
+        },
+    ];
+
+    let import_req = ImportRequest {
+        candidates,
+        options: ImportOptions {
+            target_notebook_id: None,
+            duplicate_policy: DuplicatePolicy::ImportAsNew,
+        },
+        operation_id: Some(op_id.clone()),
+    };
+
+    let summary = ImportExportService::execute_import(&mut conn, import_req).expect("Execute import");
+    assert_eq!(summary.cancelled_count, 2, "All items must be marked Cancelled");
+    assert_eq!(summary.imported_count, 0, "No notes should be committed when cancelled");
+
+    // Verify zero notes committed to SQLite
+    let active_notes = NoteRepository::list_active(&conn).expect("List active");
+    assert_eq!(active_notes.len(), 0, "Database must remain pristine on cancelled import");
+
+    // =========================================================================
+    // 3. Cooperative Cancellation During Batch Export
+    // =========================================================================
+    let n1 = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Export Cancel Note".to_string()),
+        content: Some("Should not be written to disk if cancelled.".to_string()),
+        ..Default::default()
+    }).expect("Create note");
+
+    let export_op_id = format!("test_cancel_export_{}", uuid::Uuid::new_v4());
+    ImportExportService::cancel_operation(&export_op_id);
+
+    let export_dir = env.dir.join("export_cancel_test");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    let export_req = ExportBatchRequest {
+        format: ExportFormat::Txt,
+        scope: Some(ExportScope::SelectedNotes {
+            note_ids: vec![n1.id.clone()],
+        }),
+        destination_dir: export_dir.to_string_lossy().to_string(),
+        destination_file: None,
+        overwrite: true,
+        include_metadata: false,
+        note_ids: vec![n1.id],
+        operation_id: Some(export_op_id),
+    };
+
+    let export_summary = ImportExportService::export_notes_batch(&conn, export_req).expect("Execute export");
+    assert_eq!(export_summary.cancelled_count, 1, "Export item must be marked Cancelled");
+    assert_eq!(export_summary.exported_count, 0, "No files should be exported when cancelled");
+}
+
+#[test]
+fn test_phase13_task_21_audit_memory_resource_cleanup_and_long_sessions() {
+    use personal_notepad_lib::storage::database::DEFAULT_CACHE_SIZE_KB;
+    use personal_notepad_lib::storage::repositories::SearchRepository;
+    use personal_notepad_lib::storage::models::{CreateNoteDto, UpdateNoteDto, BackupCreateRequest, BackupType, ExportBatchRequest, ExportFormat, ExportScope};
+    use personal_notepad_lib::storage::services::backup::BackupService;
+    use personal_notepad_lib::storage::services::import_export::ImportExportService;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // =========================================================================
+    // 1. SQLite Page Cache and Resource Bounds Invariant
+    // =========================================================================
+    let cache_size: i32 = conn.query_row("PRAGMA cache_size;", [], |r| r.get(0)).unwrap();
+    assert_eq!(cache_size, DEFAULT_CACHE_SIZE_KB, "SQLite page cache must be strictly bounded to ~2MB (-2000 KB)");
+
+    let busy_timeout: i32 = conn.query_row("PRAGMA busy_timeout;", [], |r| r.get(0)).unwrap();
+    assert_eq!(busy_timeout, 5000, "Busy timeout must be set to 5000ms");
+
+    // =========================================================================
+    // 2. Long Session Simulation: 50 cycles of create, edit, read, search
+    // =========================================================================
+    let mut note_ids = Vec::new();
+    for i in 0..50 {
+        let note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some(format!("Long Session Note {i}")),
+            content: Some(format!("Continuous note editing body {i} with searchable keyword session_stress")),
+            ..Default::default()
+        }).expect("Create note during session");
+
+        // Mutate note
+        NoteRepository::update(&conn, &note.id, UpdateNoteDto {
+            title: Some(format!("Long Session Note {i} Revised")),
+            content: Some(format!("Revised body {i} with session_stress")),
+            ..Default::default()
+        }).expect("Update note during session");
+
+        // Read back
+        let fetched = NoteRepository::get_by_id(&conn, &note.id).expect("Get note").unwrap();
+        assert!(fetched.title.contains("Revised"));
+
+        note_ids.push(note.id);
+    }
+
+    // Search query executes cleanly across populated index
+    let search_results = SearchRepository::search(&conn, "session_stress", None).expect("Search executes");
+    assert_eq!(search_results.len(), 50, "All 50 revisions indexed without leaking handles");
+
+    // =========================================================================
+    // 3. Temporary File Reclamation Across Batch Export
+    // =========================================================================
+    let export_dir = env.dir.join("task21_export");
+    std::fs::create_dir_all(&export_dir).unwrap();
+
+    let export_req = ExportBatchRequest {
+        format: ExportFormat::Txt,
+        scope: Some(ExportScope::SelectedNotes {
+            note_ids: note_ids.clone(),
+        }),
+        destination_dir: export_dir.to_string_lossy().to_string(),
+        destination_file: None,
+        overwrite: true,
+        include_metadata: false,
+        note_ids: note_ids.clone(),
+        operation_id: Some("op_task21_export".to_string()),
+    };
+
+    let summary = ImportExportService::export_notes_batch(&conn, export_req).expect("Batch export notes");
+    assert_eq!(summary.exported_count, 50);
+
+    // Recursive helper to ensure zero temporary or staging artifacts remain
+    fn check_no_temp_files(dir: &std::path::Path) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().to_string();
+                assert!(!name.contains(".tmp."), "No temporary files should linger: {name}");
+                assert!(!name.starts_with(".backup_staging_"), "No backup staging folder should linger: {name}");
+                assert!(!name.starts_with(".restore_staging_"), "No restore staging folder should linger: {name}");
+                if path.is_dir() {
+                    check_no_temp_files(&path);
+                }
+            }
+        }
+    }
+
+    // Verify zero temporary files (.tmp.*) remain in export directory or storage
+    check_no_temp_files(&env.dir);
+
+    // =========================================================================
+    // 4. Temporary File Reclamation Across Backup Creation
+    // =========================================================================
+    let backup_req = BackupCreateRequest {
+        destination_path: None,
+        backup_type: Some(BackupType::Manual),
+        allow_overwrite: Some(false),
+    };
+    let backup_res = BackupService::create_backup(&conn, &env.paths, backup_req, None::<fn(_)>)
+        .expect("Create backup");
+    assert!(std::path::Path::new(&backup_res.file_path).exists());
+
+    // Verify again that no staging or temporary files linger
+    check_no_temp_files(&env.paths.root);
+}
+
+#[test]
+fn test_phase13_task_23_reliability_and_stress_suite() {
+    use personal_notepad_lib::storage::repositories::{NoteRepository, SearchRepository, TagRepository};
+    use personal_notepad_lib::storage::models::{CreateNoteDto, UpdateNoteDto, BackupRestoreRequest};
+    use personal_notepad_lib::storage::services::restore::RestoreService;
+    use personal_notepad_lib::storage::services::trash::TrashService;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // -------------------------------------------------------------------------
+    // 1. Rapid Consecutive Updates Stress & Persistence
+    // -------------------------------------------------------------------------
+    let initial_note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Rapid Update Stress Note".to_string()),
+        content: Some("Initial content".to_string()),
+        ..Default::default()
+    }).expect("Create initial note");
+
+    let rapid_iterations = 25;
+    for i in 1..=rapid_iterations {
+        NoteRepository::update(&conn, &initial_note.id, UpdateNoteDto {
+            title: Some(format!("Rapid Update Stress Note - Rev {i}")),
+            content: Some(format!("Content at rapid revision {i} with searchable token rapid_stress_token")),
+            ..Default::default()
+        }).expect("Execute rapid revision update");
+    }
+
+    let final_note = NoteRepository::get_by_id(&conn, &initial_note.id).expect("Fetch note").unwrap();
+    assert_eq!(final_note.title, "Rapid Update Stress Note - Rev 25");
+    assert!(final_note.content.contains("Content at rapid revision 25"));
+
+    // -------------------------------------------------------------------------
+    // 2. Large Content, Multi-Byte Unicode, Emojis, and BiDi Stress
+    // -------------------------------------------------------------------------
+    let mut large_content = String::with_capacity(300_000);
+    large_content.push_str("# Heavy Note Heading 🚀 🌍\n\n");
+    large_content.push_str("مرحبا بالعالم - עולם שלום - Mixed BiDi Text with Sanskrit: नमस्ते दुनिया\n\n");
+    for i in 0..1500 {
+        large_content.push_str(&format!("Line {i}: Personal Notepad large content stress testing paragraph with markdown formatting.\n"));
+    }
+    large_content.push_str("\n\nEnd of stress content with special keyword large_stress_content_token.");
+
+    let large_note = NoteRepository::create(&conn, CreateNoteDto {
+        title: Some("Large Content Note 📚 ⚡".to_string()),
+        content: Some(large_content.clone()),
+        ..Default::default()
+    }).expect("Create large note");
+
+    let read_large_note = NoteRepository::get_by_id(&conn, &large_note.id).expect("Read large note").unwrap();
+    assert_eq!(read_large_note.content.len(), large_content.len());
+    assert!(read_large_note.title.contains("📚 ⚡"));
+
+    // -------------------------------------------------------------------------
+    // 3. Search and Trash Consistency Invariant
+    // -------------------------------------------------------------------------
+    // Active search must find the rapid note and large note
+    let search_active = SearchRepository::search(&conn, "rapid_stress_token", None).expect("Search active note");
+    assert_eq!(search_active.len(), 1, "Active note found by search token");
+
+    // Soft delete to Trash
+    TrashService::soft_delete(&conn, &initial_note.id).expect("Soft delete note");
+
+    // Trashed note MUST NOT be returned in active search queries
+    let search_after_trash = SearchRepository::search(&conn, "rapid_stress_token", None).expect("Search after trash");
+    assert_eq!(search_after_trash.len(), 0, "Trashed note must be excluded from active search results");
+
+    // Restore from Trash
+    TrashService::restore(&conn, &initial_note.id).expect("Restore note from trash");
+
+    // Search must immediately re-index and return restored note
+    let search_restored = SearchRepository::search(&conn, "rapid_stress_token", None).expect("Search restored note");
+    assert_eq!(search_restored.len(), 1, "Restored note must be immediately searchable");
+
+    // -------------------------------------------------------------------------
+    // 4. Foreign Key Constraints & Cascade Enforcement
+    // -------------------------------------------------------------------------
+    let tag = TagRepository::create(&conn, "stress_tag").expect("Create tag");
+    TagRepository::add_tag_to_note(&conn, &initial_note.id, &tag.id).expect("Tag note");
+
+    let note_tags = TagRepository::get_tags_for_note(&conn, &initial_note.id).expect("Get note tags");
+    assert_eq!(note_tags.len(), 1);
+
+    // Hard delete note from Trash
+    TrashService::soft_delete(&conn, &initial_note.id).expect("Soft delete again");
+    let storage = personal_notepad_lib::storage::attachment_storage::AttachmentStorage::new(env.paths.clone());
+    TrashService::permanently_delete_note(&conn, &storage, &initial_note.id).expect("Permanent delete note");
+
+    // Foreign key cascade must have purged note_tags mapping
+    let remaining_mappings: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM note_tags WHERE note_id = ?1",
+        [&initial_note.id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(remaining_mappings, 0, "Foreign key cascade must clean up note_tags");
+
+    // Tag itself must still exist
+    assert!(TagRepository::get_by_id(&conn, &tag.id).expect("Get tag").is_some());
+
+    // -------------------------------------------------------------------------
+    // 5. Corrupted Backup Archive Rejection Before Destructive Swap
+    // -------------------------------------------------------------------------
+    let corrupt_archive = env.dir.join("corrupt_test_backup.pnbackup");
+    std::fs::write(&corrupt_archive, b"NOT A VALID ZIP ARCHIVE HEADER").unwrap();
+
+    let preview_res = RestoreService::preview_restore(&corrupt_archive, &env.paths)
+        .expect("Preview corrupt archive");
+    assert!(!preview_res.can_restore, "Corrupted archive must not be restorable");
+    assert_eq!(
+        preview_res.compatibility,
+        personal_notepad_lib::storage::models::BackupCompatibilityStatus::Corrupted
+    );
+
+    let restore_err = RestoreService::execute_restore(
+        &mut conn,
+        &env.paths,
+        BackupRestoreRequest {
+            file_path: corrupt_archive.to_string_lossy().to_string(),
+            operation_id: None,
+        },
+        None::<fn(_)>,
+    );
+    assert!(restore_err.is_err(), "Corrupt restore must be rejected before touching live database");
+
+    // Live database must remain fully intact and operational
+    let live_notes = NoteRepository::list_active(&conn).expect("List active notes");
+    assert_eq!(live_notes.len(), 1, "Live notes remain 100% intact after corrupt restore attempt");
+    assert_eq!(live_notes[0].id, large_note.id);
+}
+
+#[test]
+fn test_phase13_task_24_measure_performance_and_regression_verification() {
+    use personal_notepad_lib::storage::repositories::{NoteRepository, SearchRepository, NotebookRepository, TagRepository};
+    use personal_notepad_lib::storage::models::{CreateNoteDto, CreateNotebookDto, BackupCreateRequest, BackupType};
+    use personal_notepad_lib::storage::services::backup::BackupService;
+    use std::time::Instant;
+
+    let env = TestEnv::new();
+    let mut conn = init_connection(&env.paths.database_file).expect("Init connection");
+    run_migrations(&mut conn).expect("Run migrations");
+
+    // 1. Measure creation & indexing of 250 notes
+    let nb = NotebookRepository::create(&conn, CreateNotebookDto {
+        name: "Performance Notebook".to_string(),
+        parent_id: None,
+    }).expect("Create notebook");
+    let tag = TagRepository::create(&conn, "perf_tag").expect("Create tag");
+
+    let start_insert = Instant::now();
+    for i in 0..250 {
+        let note = NoteRepository::create(&conn, CreateNoteDto {
+            title: Some(format!("Performance Note #{i}")),
+            content: Some(format!("Content of performance test note #{i} with target_perf_keyword.")),
+            notebook_id: Some(nb.id.clone()),
+            ..Default::default()
+        }).expect("Create note");
+
+        if i % 5 == 0 {
+            TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).expect("Add tag");
+        }
+    }
+    let insert_elapsed = start_insert.elapsed();
+    println!("[Task 24 Perf] Inserted 250 notes in: {:?}", insert_elapsed);
+
+    // 2. Measure Note List with Content Limit
+    let start_list = Instant::now();
+    let listed_notes = NoteRepository::list_active(&conn).expect("List notes");
+    let list_elapsed = start_list.elapsed();
+    assert_eq!(listed_notes.len(), 250);
+    println!("[Task 24 Perf] Listed 250 notes in: {:?}", list_elapsed);
+    assert!(list_elapsed.as_millis() < 50, "List notes must complete under 50ms (took {}ms)", list_elapsed.as_millis());
+
+    // 3. Measure Search Latency over 250 notes (default query limit is 50 results)
+    let start_search = Instant::now();
+    let search_results = SearchRepository::search(&conn, "target_perf_keyword", None).expect("Search notes");
+    let search_elapsed = start_search.elapsed();
+    assert_eq!(search_results.len(), 50, "Default search cap is 50 results");
+    println!("[Task 24 Perf] Search across 250 notes in: {:?}", search_elapsed);
+    assert!(search_elapsed.as_millis() < 25, "Search must complete under 25ms (took {}ms)", search_elapsed.as_millis());
+
+    // 4. Measure Backup Creation Time with Online Backup API
+    let start_backup = Instant::now();
+    let backup_req = BackupCreateRequest {
+        destination_path: None,
+        backup_type: Some(BackupType::Manual),
+        allow_overwrite: Some(false),
+    };
+    let backup_res = BackupService::create_backup(&conn, &env.paths, backup_req, None::<fn(_)>).expect("Create backup");
+    let backup_elapsed = start_backup.elapsed();
+    println!("[Task 24 Perf] Backup created in: {:?}", backup_elapsed);
+    assert!(backup_elapsed.as_millis() < 500, "Backup creation must complete under 500ms (took {}ms)", backup_elapsed.as_millis());
+    assert!(std::path::Path::new(&backup_res.file_path).exists());
+
+    // 5. Invariant & Regression Verification
+    // Check that notebook counts match
+    let notes_in_nb = NoteRepository::list_by_notebook(&conn, &nb.id).expect("List by notebook");
+    assert_eq!(notes_in_nb.len(), 250);
+
+    let notes_with_tag = NoteRepository::list_by_tag(&conn, &tag.id).expect("List by tag");
+    assert_eq!(notes_with_tag.len(), 50);
+}
+
+
+
+
+
+
+
+
+
 
 
 

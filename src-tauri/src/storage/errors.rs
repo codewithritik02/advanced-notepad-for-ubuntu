@@ -1,4 +1,47 @@
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Standard failure classification categories across Personal Notepad subsystems (Phase 13, Task 3).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ErrorCategory {
+    /// Validation errors (e.g. empty names, oversized payloads, invalid formats). Non-retryable without user edit.
+    Validation,
+    /// Missing records, entities, or files.
+    NotFound,
+    /// Permission denied, read-only filesystem, access violations.
+    Permission,
+    /// Disk full or quota exceeded.
+    DiskSpace,
+    /// Transient database contention, locked connection, or concurrent background lock. Retryable.
+    DatabaseBusy,
+    /// Cryptographic session is locked or password required.
+    Locked,
+    /// Data integrity failures, corrupted databases, checksum mismatches, or tampered ciphertext.
+    Corruption,
+    /// Incompatible schema or archive format version.
+    UnsupportedFormat,
+    /// User or system initiated cancellation (not a crash).
+    Cancelled,
+    /// Unique constraint violation, naming collision, or hierarchy conflict.
+    Conflict,
+    /// Unexpected internal runtime or database failure.
+    Internal,
+}
+
+/// Structured diagnostic error details safe for developer inspection and UI error classification (Phase 13, Task 3).
+/// Guarantees that sensitive data (passwords, encryption keys, decrypted secrets, note bodies) are never included.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StructuredDiagnostic {
+    pub code: &'static str,
+    pub category: ErrorCategory,
+    pub message: String,
+    pub retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub safe_entity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -96,6 +139,9 @@ pub enum AttachmentError {
     #[error("Insufficient disk space")]
     InsufficientDiskSpace,
 
+    #[error("Opening executable attachments is blocked for security: {0}")]
+    ExecutableBlocked(String),
+
     #[error("Managed attachment file missing on disk: {0}")]
     ManagedFileMissing(String),
 
@@ -130,6 +176,9 @@ impl AttachmentError {
             }
             AttachmentError::InsufficientDiskSpace => {
                 "Insufficient disk space to save attachment.".to_string()
+            }
+            AttachmentError::ExecutableBlocked(_) => {
+                "Opening executable attachment files directly is blocked for security reasons.".to_string()
             }
             AttachmentError::ManagedFileMissing(_) => {
                 "Attachment file is missing from storage.".to_string()
@@ -604,10 +653,16 @@ impl StorageError {
             StorageError::Database(_) => "A database error occurred while processing your request.".to_string(),
             StorageError::Io(err) => match err.kind() {
                 std::io::ErrorKind::PermissionDenied => {
-                    "Permission denied when accessing application storage directory.".to_string()
+                    "Permission denied when accessing application storage directory. Please check file permissions.".to_string()
                 }
                 std::io::ErrorKind::NotFound => {
                     "Requested storage file or directory was not found.".to_string()
+                }
+                _ if err.raw_os_error() == Some(28) => {
+                    "Insufficient disk space to complete the operation. Please free disk space and try again.".to_string()
+                }
+                _ if err.raw_os_error() == Some(13) || err.raw_os_error() == Some(1) => {
+                    "Permission denied when accessing application storage directory. Please check file permissions.".to_string()
                 }
                 _ => "A filesystem IO error occurred.".to_string(),
             },
@@ -619,6 +674,132 @@ impl StorageError {
             StorageError::StorageUnavailable(msg) => msg.clone(),
             StorageError::Migration(msg) => format!("Database schema migration error: {msg}"),
             StorageError::InitializationFailed(msg) => format!("Storage initialization error: {msg}"),
+        }
+    }
+
+    /// Classifies the failure into standard semantic category (Phase 13, Task 3).
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            StorageError::Validation(_) | StorageError::InvalidHierarchy(_) => ErrorCategory::Validation,
+            StorageError::NotFound(_) => ErrorCategory::NotFound,
+            StorageError::Conflict(_) | StorageError::DeleteBlocked(_) => ErrorCategory::Conflict,
+            StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => match err.code {
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => ErrorCategory::DatabaseBusy,
+                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::ReadOnly => ErrorCategory::Permission,
+                rusqlite::ErrorCode::ConstraintViolation => ErrorCategory::Validation,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase => ErrorCategory::Corruption,
+                _ => ErrorCategory::Internal,
+            },
+            StorageError::Database(_) => ErrorCategory::Internal,
+            StorageError::Io(err) => match err.kind() {
+                std::io::ErrorKind::PermissionDenied => ErrorCategory::Permission,
+                std::io::ErrorKind::NotFound => ErrorCategory::NotFound,
+                _ if err.raw_os_error() == Some(28) => ErrorCategory::DiskSpace,
+                _ if err.raw_os_error() == Some(13) || err.raw_os_error() == Some(1) => ErrorCategory::Permission,
+                _ => ErrorCategory::Internal,
+            },
+            StorageError::Crypto(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("locked") {
+                    ErrorCategory::Locked
+                } else if lower.contains("authentication failed") || lower.contains("tampered") || lower.contains("corrupt") {
+                    ErrorCategory::Corruption
+                } else {
+                    ErrorCategory::Internal
+                }
+            }
+            StorageError::AttachmentError(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("disk space") {
+                    ErrorCategory::DiskSpace
+                } else if lower.contains("permission") {
+                    ErrorCategory::Permission
+                } else if lower.contains("not found") {
+                    ErrorCategory::NotFound
+                } else if lower.contains("exceeds") || lower.contains("too large") {
+                    ErrorCategory::Validation
+                } else {
+                    ErrorCategory::Internal
+                }
+            }
+            StorageError::InternalLink(_) => ErrorCategory::Validation,
+            StorageError::ImportExport(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("cancelled") {
+                    ErrorCategory::Cancelled
+                } else if lower.contains("unsupported") {
+                    ErrorCategory::UnsupportedFormat
+                } else if lower.contains("permission") {
+                    ErrorCategory::Permission
+                } else if lower.contains("collision") || lower.contains("already exists") {
+                    ErrorCategory::Conflict
+                } else {
+                    ErrorCategory::Validation
+                }
+            }
+            StorageError::Backup(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("cancelled") {
+                    ErrorCategory::Cancelled
+                } else if lower.contains("disk space") {
+                    ErrorCategory::DiskSpace
+                } else if lower.contains("concurrent") {
+                    ErrorCategory::DatabaseBusy
+                } else if lower.contains("unsupported") || lower.contains("schema") {
+                    ErrorCategory::UnsupportedFormat
+                } else if lower.contains("checksum") || lower.contains("corrupt") || lower.contains("invalid") {
+                    ErrorCategory::Corruption
+                } else {
+                    ErrorCategory::Internal
+                }
+            }
+            StorageError::Migration(_) => ErrorCategory::Internal,
+            StorageError::StorageUnavailable(_) => ErrorCategory::Internal,
+            StorageError::InitializationFailed(msg) => {
+                let lower = msg.to_lowercase();
+                if lower.contains("corrupt") || lower.contains("integrity") {
+                    ErrorCategory::Corruption
+                } else if lower.contains("busy") || lower.contains("locked") {
+                    ErrorCategory::DatabaseBusy
+                } else {
+                    ErrorCategory::Internal
+                }
+            }
+            StorageError::SearchError(_) => ErrorCategory::Internal,
+        }
+    }
+
+    /// Determines whether the error is transient and safe to retry automatically.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self.category(), ErrorCategory::DatabaseBusy)
+    }
+
+    /// Stable machine-readable error code.
+    pub fn error_code(&self) -> &'static str {
+        match self.category() {
+            ErrorCategory::Validation => "VALIDATION_FAILED",
+            ErrorCategory::NotFound => "NOT_FOUND",
+            ErrorCategory::Permission => "PERMISSION_DENIED",
+            ErrorCategory::DiskSpace => "INSUFFICIENT_DISK_SPACE",
+            ErrorCategory::DatabaseBusy => "DATABASE_BUSY",
+            ErrorCategory::Locked => "APP_LOCKED",
+            ErrorCategory::Corruption => "DATA_CORRUPTION",
+            ErrorCategory::UnsupportedFormat => "UNSUPPORTED_FORMAT",
+            ErrorCategory::Cancelled => "OPERATION_CANCELLED",
+            ErrorCategory::Conflict => "RESOURCE_CONFLICT",
+            ErrorCategory::Internal => "INTERNAL_ERROR",
+        }
+    }
+
+    /// Produces a safe, structured diagnostic representation free from sensitive secrets or note bodies.
+    pub fn to_diagnostic(&self, operation: Option<&str>, safe_entity_id: Option<&str>) -> StructuredDiagnostic {
+        StructuredDiagnostic {
+            code: self.error_code(),
+            category: self.category(),
+            message: self.user_friendly_message(),
+            retryable: self.is_retryable(),
+            safe_entity_id: safe_entity_id.map(|s| s.to_string()),
+            operation: operation.map(|s| s.to_string()),
         }
     }
 }
@@ -649,6 +830,14 @@ mod tests {
             "Access denied",
         ));
         assert!(io_err.user_friendly_message().contains("Permission denied"));
+
+        let enospc_err = StorageError::Io(std::io::Error::from_raw_os_error(28));
+        assert!(enospc_err.user_friendly_message().contains("Insufficient disk space"));
+        assert_eq!(enospc_err.category(), ErrorCategory::DiskSpace);
+
+        let eacces_err = StorageError::Io(std::io::Error::from_raw_os_error(13));
+        assert!(eacces_err.user_friendly_message().contains("Permission denied"));
+        assert_eq!(eacces_err.category(), ErrorCategory::Permission);
 
         let att_err = StorageError::AttachmentError("Attachment not found.".to_string());
         assert_eq!(att_err.user_friendly_message(), "Attachment not found.");
@@ -752,6 +941,33 @@ mod tests {
 
         let converted: StorageError = unsupp.into();
         assert!(converted.user_friendly_message().contains("Unsupported backup version 2"));
+    }
+
+    #[test]
+    fn test_error_classification_and_diagnostics() {
+        let val_err = StorageError::Validation("Too long".to_string());
+        assert_eq!(val_err.category(), ErrorCategory::Validation);
+        assert!(!val_err.is_retryable());
+        assert_eq!(val_err.error_code(), "VALIDATION_FAILED");
+
+        let not_found = StorageError::NotFound("Missing note".to_string());
+        assert_eq!(not_found.category(), ErrorCategory::NotFound);
+        assert!(!not_found.is_retryable());
+
+        let busy_err = StorageError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some("database is locked".to_string()),
+        ));
+        assert_eq!(busy_err.category(), ErrorCategory::DatabaseBusy);
+        assert!(busy_err.is_retryable());
+        assert_eq!(busy_err.error_code(), "DATABASE_BUSY");
+
+        let diag = val_err.to_diagnostic(Some("create_note"), Some("note-123"));
+        assert_eq!(diag.code, "VALIDATION_FAILED");
+        assert_eq!(diag.category, ErrorCategory::Validation);
+        assert_eq!(diag.operation.as_deref(), Some("create_note"));
+        assert_eq!(diag.safe_entity_id.as_deref(), Some("note-123"));
+        assert!(!diag.retryable);
     }
 }
 

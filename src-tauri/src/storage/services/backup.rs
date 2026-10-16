@@ -105,7 +105,29 @@ impl BackupService {
         fs::create_dir_all(&temp_staging_dir).map_err(BackupError::Io)?;
         let temp_db_snapshot_path = temp_staging_dir.join("database.sqlite");
 
-        // Cleanup guard helper
+        struct BackupTempGuard<'a> {
+            temp_archive: &'a PathBuf,
+            temp_staging: &'a PathBuf,
+            committed: bool,
+        }
+
+        impl<'a> Drop for BackupTempGuard<'a> {
+            fn drop(&mut self) {
+                if !self.committed && self.temp_archive.exists() {
+                    let _ = fs::remove_file(self.temp_archive);
+                }
+                if self.temp_staging.exists() {
+                    let _ = fs::remove_dir_all(self.temp_staging);
+                }
+            }
+        }
+
+        let mut temp_guard = BackupTempGuard {
+            temp_archive: &temp_archive_path,
+            temp_staging: &temp_staging_dir,
+            committed: false,
+        };
+
         let cleanup_temp_files = || {
             if temp_archive_path.exists() {
                 let _ = fs::remove_file(&temp_archive_path);
@@ -233,9 +255,32 @@ impl BackupService {
         if target_file_path.exists() {
             let _ = fs::remove_file(&target_file_path);
         }
-        if let Err(e) = fs::rename(&temp_archive_path, &target_file_path) {
-            cleanup_temp_files();
-            return Err(BackupError::Io(e));
+        match fs::rename(&temp_archive_path, &target_file_path) {
+            Ok(_) => {
+                temp_guard.committed = true;
+            }
+            Err(rename_err) => {
+                match fs::copy(&temp_archive_path, &target_file_path) {
+                    Ok(_) => {
+                        let _ = fs::remove_file(&temp_archive_path);
+                        temp_guard.committed = true;
+                    }
+                    Err(copy_err) => {
+                        if target_file_path.exists() {
+                            let _ = fs::remove_file(&target_file_path);
+                        }
+                        cleanup_temp_files();
+                        if let Some(28) = copy_err.raw_os_error() {
+                            return Err(BackupError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Insufficient disk space to complete backup.",
+                            )));
+                        } else {
+                            return Err(BackupError::Io(rename_err));
+                        }
+                    }
+                }
+            }
         }
 
         // Clean up temporary staging directory

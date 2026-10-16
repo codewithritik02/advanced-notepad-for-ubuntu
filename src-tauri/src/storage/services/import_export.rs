@@ -25,16 +25,16 @@ fn cancelled_set() -> &'static Mutex<HashSet<String>> {
 }
 
 /// Maximum allowed file size for an individual imported file (10 MB per specification)
-pub const MAX_INDIVIDUAL_FILE_SIZE: u64 = 10 * 1024 * 1024;
+pub const MAX_INDIVIDUAL_FILE_SIZE: u64 = crate::storage::limits::MAX_IMPORT_FILE_SIZE_BYTES;
 
 /// Maximum aggregate byte size for an entire batch of imports (100 MB per specification)
-pub const MAX_BATCH_AGGREGATE_SIZE: u64 = 100 * 1024 * 1024;
+pub const MAX_BATCH_AGGREGATE_SIZE: u64 = crate::storage::limits::MAX_IMPORT_BATCH_SIZE_BYTES;
 
 /// Maximum number of files processed in a single batch operation
-pub const MAX_BATCH_FILE_COUNT: usize = 500;
+pub const MAX_BATCH_FILE_COUNT: usize = crate::storage::limits::MAX_BATCH_FILE_COUNT;
 
 /// Maximum notebook hierarchy nesting depth supported during structured import
-pub const MAX_NOTEBOOK_NESTING_DEPTH: usize = 3;
+pub const MAX_NOTEBOOK_NESTING_DEPTH: usize = crate::storage::limits::MAX_NOTEBOOK_NESTING_DEPTH;
 
 /// Container for verified, safe-to-import file content
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,8 +171,8 @@ impl ImportExportService {
             return Err(StorageError::Validation("Empty notebook path".to_string()));
         }
 
-        let segments = if raw_segments.len() > 3 {
-            &raw_segments[0..3]
+        let segments = if raw_segments.len() > MAX_NOTEBOOK_NESTING_DEPTH {
+            &raw_segments[0..MAX_NOTEBOOK_NESTING_DEPTH]
         } else {
             &raw_segments[..]
         };
@@ -251,7 +251,7 @@ impl ImportExportService {
                         }
                     }
                 }
-            } else if path.is_file() {
+            } else {
                 resolved.push(path);
             }
 
@@ -278,6 +278,13 @@ impl ImportExportService {
         let metadata = std::fs::metadata(path).map_err(|e| {
             ImportExportError::CannotReadFile(format!("Cannot read metadata for '{}': {e}", path.display()))
         })?;
+
+        if !metadata.is_file() {
+            return Err(ImportExportError::CannotReadFile(format!(
+                "Path '{}' is not a regular file (directories, devices, and special files cannot be imported directly).",
+                path.display()
+            )));
+        }
 
         let file_size = metadata.len();
         if file_size > MAX_INDIVIDUAL_FILE_SIZE {
@@ -615,6 +622,26 @@ impl ImportExportService {
                 }
             };
 
+            if !metadata.is_file() {
+                invalid_count += 1;
+                candidates.push(ImportCandidate {
+                    id,
+                    file_path,
+                    file_name,
+                    file_size: 0,
+                    detected_format: ImportFormat::Txt,
+                    proposed_title,
+                    validation_status: ValidationStatus::Invalid,
+                    warnings: Vec::new(),
+                    error_message: Some("Path is not a regular file (directories, FIFOs, and special devices cannot be imported).".to_string()),
+                    is_duplicate: false,
+                    duplicate_note_id: None,
+                    duplicate_note_title: None,
+                    selected: false,
+                });
+                continue;
+            }
+
             let file_size = metadata.len();
             total_size_bytes += file_size;
 
@@ -849,6 +876,13 @@ impl ImportExportService {
 
         let operation_id = request.operation_id.clone();
         let total = request.candidates.len();
+
+        if total > MAX_BATCH_FILE_COUNT {
+            Self::clear_operation(operation_id.as_deref());
+            return Err(StorageError::Validation(format!(
+                "Import batch item count ({total}) exceeds maximum allowed limit of {MAX_BATCH_FILE_COUNT} files."
+            )));
+        }
 
         // 1. Validate target notebook existence if provided
         if let Some(ref target_nb_id) = request.options.target_notebook_id {
@@ -1345,6 +1379,14 @@ impl ImportExportService {
             return Err(StorageError::Validation("Destination path cannot be empty".to_string()));
         }
 
+        // Cross-platform check: handle Windows-style '\' as well as Unix '/'
+        let normalized = path_str.replace('\\', "/");
+        if normalized.split('/').any(|comp| comp == "..") {
+            return Err(StorageError::Validation(
+                "Path traversal ('..') is not permitted in export destinations".to_string(),
+            ));
+        }
+
         for component in path.components() {
             if let std::path::Component::ParentDir = component {
                 return Err(StorageError::Validation(
@@ -1416,9 +1458,36 @@ impl ImportExportService {
 
         // Write content to temporary file
         {
-            let mut file = std::fs::File::create(&temp_path)?;
-            file.write_all(content)?;
-            file.flush()?;
+            let mut file = std::fs::File::create(&temp_path).map_err(|e| {
+                if let Some(28) = e.raw_os_error() {
+                    StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Insufficient disk space to complete export.",
+                    ))
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
+            file.write_all(content).map_err(|e| {
+                if let Some(28) = e.raw_os_error() {
+                    StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Insufficient disk space to complete export.",
+                    ))
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
+            file.flush().map_err(|e| {
+                if let Some(28) = e.raw_os_error() {
+                    StorageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Insufficient disk space to complete export.",
+                    ))
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
             let _ = file.sync_all(); // best effort fsync to commit data to disk
         }
 
@@ -1428,14 +1497,28 @@ impl ImportExportService {
                 cleanup.committed = true;
                 Ok(())
             }
-            Err(e) => {
+            Err(rename_err) => {
                 // If rename failed (e.g. cross-filesystem or OS restriction), attempt safe copy fallback
-                if std::fs::copy(&temp_path, dest_path).is_ok() {
-                    let _ = std::fs::remove_file(&temp_path);
-                    cleanup.committed = true;
-                    Ok(())
-                } else {
-                    Err(StorageError::Io(e))
+                match std::fs::copy(&temp_path, dest_path) {
+                    Ok(_) => {
+                        let _ = std::fs::remove_file(&temp_path);
+                        cleanup.committed = true;
+                        Ok(())
+                    }
+                    Err(copy_err) => {
+                        // Crucial: Clean up partially written dest_path so no corrupted destination file remains!
+                        if dest_path.exists() {
+                            let _ = std::fs::remove_file(dest_path);
+                        }
+                        if let Some(28) = copy_err.raw_os_error() {
+                            Err(StorageError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "Insufficient disk space to complete export.",
+                            )))
+                        } else {
+                            Err(StorageError::Io(rename_err))
+                        }
+                    }
                 }
             }
         }
@@ -1908,6 +1991,13 @@ impl ImportExportService {
         // 2. Resolve preview to obtain eligible note IDs and skip counts
         let preview = Self::resolve_export_selection_with_key(conn, &scope, dek)?;
         let total = preview.notes.len();
+
+        if total > MAX_BATCH_FILE_COUNT {
+            Self::clear_operation(operation_id.as_deref());
+            return Err(StorageError::Validation(format!(
+                "Export batch size ({total}) exceeds maximum allowed limit of {MAX_BATCH_FILE_COUNT} notes."
+            )));
+        }
 
         // 3. Process export based on format
         let mut results = Vec::new();
@@ -3972,6 +4062,14 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             Err(StorageError::Validation(_))
         ));
         assert!(matches!(
+            ImportExportService::validate_destination_path(Path::new("folder\\..\\escape.txt")),
+            Err(StorageError::Validation(_))
+        ));
+        assert!(matches!(
+            ImportExportService::validate_destination_path(Path::new("..\\escape.txt")),
+            Err(StorageError::Validation(_))
+        ));
+        assert!(matches!(
             ImportExportService::validate_destination_path(Path::new("database.sqlite")),
             Err(StorageError::Validation(_))
         ));
@@ -4539,6 +4637,54 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         // Database remains unmutated
         assert!(NoteRepository::get_by_id(&conn, &note_b.id).unwrap().is_some());
         assert!(NoteRepository::get_by_id(&conn, &note_c.id).unwrap().is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_task_12_failure_safe_unit_invariants() {
+        let mut conn = setup_test_db();
+
+        let temp_dir = std::env::temp_dir().join(format!("test_task12_unit_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. Non-regular file rejection (directories, FIFOs, special devices)
+        let sub_dir = temp_dir.join("a_directory");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let read_res = ImportExportService::read_and_validate_file(&sub_dir, ImportFormat::Txt);
+        assert!(read_res.is_err());
+        assert!(read_res.unwrap_err().to_string().contains("not a regular file"));
+
+        // 2. Batch limit check in execute_import (> 500 candidates)
+        let oversized_candidates: Vec<ImportCandidateOverride> = (0..501).map(|i| ImportCandidateOverride {
+            id: format!("cand-{i}"),
+            file_path: format!("/tmp/fake_{i}.txt"),
+            selected: true,
+            custom_title: Some(format!("Fake {i}")),
+        }).collect();
+
+        let req = ImportRequest {
+            candidates: oversized_candidates,
+            options: ImportOptions::default(),
+            operation_id: None,
+        };
+        let err = ImportExportService::execute_import(&mut conn, req).unwrap_err();
+        assert!(matches!(err, StorageError::Validation(_)));
+        assert!(err.to_string().contains("exceeds maximum allowed limit of 500 files"));
+
+        // 3. Destination atomic write to directory error
+        let dir_dest = temp_dir.join("dir_target");
+        std::fs::create_dir_all(&dir_dest).unwrap();
+        let atomic_err = ImportExportService::write_file_atomically(&dir_dest, b"test content").unwrap_err();
+        assert!(matches!(atomic_err, StorageError::Validation(_)));
+        assert!(atomic_err.to_string().contains("is a directory, not a file"));
+
+        // 4. Validate destination path traversal across separators
+        assert!(ImportExportService::validate_destination_path(Path::new("normal/dest/note.txt")).is_ok());
+        assert!(ImportExportService::validate_destination_path(Path::new("..\\outside.txt")).is_err());
+        assert!(ImportExportService::validate_destination_path(Path::new("../outside.txt")).is_err());
+        assert!(ImportExportService::validate_destination_path(Path::new("sub\\..\\outside.txt")).is_err());
+        assert!(ImportExportService::validate_destination_path(Path::new("sub/../outside.txt")).is_err());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

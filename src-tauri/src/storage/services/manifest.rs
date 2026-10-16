@@ -19,10 +19,10 @@ use crate::storage::services::attachment_capture::CapturedAttachment;
 pub const CURRENT_APP_SCHEMA_VERSION: i32 = 4;
 
 /// Maximum allowed archive entry count to prevent decompression bomb denial-of-service.
-pub const MAX_ARCHIVE_ENTRY_COUNT: usize = 10_000;
+pub const MAX_ARCHIVE_ENTRY_COUNT: usize = crate::storage::limits::MAX_BACKUP_ENTRY_COUNT;
 
 /// Maximum total uncompressed archive size (5 GiB limit).
-pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+pub const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = crate::storage::limits::MAX_BACKUP_UNCOMPRESSED_BYTES;
 
 /// Service responsible for constructing, serializing, inspecting, and verifying backup manifests (Phase 11, Task 7).
 pub struct ManifestManager;

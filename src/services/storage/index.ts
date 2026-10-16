@@ -33,6 +33,8 @@ export const storageService = {
 
 export * from "./types";
 export * from "./crypto";
+export * from "./limits";
+export * from "../../utils/errorClassification";
 export { notesStorage } from "./notes";
 export { notebooksStorage } from "./notebooks";
 export { tagsStorage } from "./tags";

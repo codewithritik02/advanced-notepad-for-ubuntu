@@ -35,6 +35,9 @@ CREATE INDEX IF NOT EXISTS idx_notes_modified_at ON notes(modified_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notes_notebook_id ON notes(notebook_id);
 CREATE INDEX IF NOT EXISTS idx_notes_is_deleted ON notes(is_deleted);
 CREATE INDEX IF NOT EXISTS idx_notes_is_favorite ON notes(is_favorite);
+CREATE INDEX IF NOT EXISTS idx_notes_list_sort ON notes(is_deleted, is_pinned DESC, modified_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_notebook_list ON notes(notebook_id, is_deleted, is_pinned DESC, modified_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_favorite_list ON notes(is_favorite, is_deleted, is_pinned DESC, modified_at DESC);
 
 -- 3. Tags table
 CREATE TABLE IF NOT EXISTS tags (
@@ -136,6 +139,18 @@ CREATE INDEX IF NOT EXISTS idx_notes_deleted_at ON notes(deleted_at DESC);
 
 -- 2. Create compound index on (is_deleted, deleted_at DESC) for optimal trash view filtering and sorting
 CREATE INDEX IF NOT EXISTS idx_notes_trash_lifecycle ON notes(is_deleted, deleted_at DESC);
+"#;
+
+/// SQL DDL for Note listing and ordering optimization (Phase 13, Task 9)
+pub const NOTE_LIST_INDEXES_SQL: &str = r#"
+-- 1. Covering index for active notes listing and sorting
+CREATE INDEX IF NOT EXISTS idx_notes_list_sort ON notes(is_deleted, is_pinned DESC, modified_at DESC);
+
+-- 2. Covering index for notebook-filtered notes listing and sorting
+CREATE INDEX IF NOT EXISTS idx_notes_notebook_list ON notes(notebook_id, is_deleted, is_pinned DESC, modified_at DESC);
+
+-- 3. Covering index for favorite notes listing and sorting
+CREATE INDEX IF NOT EXISTS idx_notes_favorite_list ON notes(is_favorite, is_deleted, is_pinned DESC, modified_at DESC);
 "#;
 
 /// Applies the initial schema to the provided database connection.

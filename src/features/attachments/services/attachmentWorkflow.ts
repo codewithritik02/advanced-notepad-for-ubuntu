@@ -123,6 +123,9 @@ export function mapToAttachmentErrorState(
   ) {
     return { kind: "InsufficientDiskSpace", message: msg };
   }
+  if (msg.includes("blocked for security") || msg.includes("ExecutableBlocked")) {
+    return { kind: "ExecutableBlocked", message: msg };
+  }
   if (msg.includes("Failed to open") || msg.includes("OpenFailed")) {
     return { kind: "OpenFailed", message: msg };
   }

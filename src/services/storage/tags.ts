@@ -75,8 +75,11 @@ export const tagsStorage = {
   /**
    * Retrieves all non-deleted notes associated with a specific tag (Task 24).
    */
-  async getNotesForTag(tagId: string): Promise<Note[]> {
-    return await invoke<Note[]>("get_notes_for_tag", { tagId });
+  async getNotesForTag(tagId: string, contentLimit: number = 300): Promise<Note[]> {
+    return await invoke<Note[]>("get_notes_for_tag", {
+      tagId,
+      contentLimit: contentLimit ?? null,
+    });
   },
 
   /**

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { notebookService } from "../services/notebookService";
 import type { Notebook, NotebooksStatus } from "../types";
 import { logger } from "../../../utils/logger";
@@ -21,19 +21,35 @@ export function useNotebooks(isStorageReady = true): UseNotebooksReturn {
   const [status, setStatus] = useState<NotebooksStatus>("loading");
   const [error, setError] = useState<string | null>(null);
 
+  const requestIdRef = useRef<number>(0);
+  const isMountedRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      requestIdRef.current += 1;
+    };
+  }, []);
+
   const loadNotebooks = useCallback(async () => {
     if (!isStorageReady) return;
+    const currentRequestId = ++requestIdRef.current;
     setStatus("loading");
     setError(null);
     try {
       const data = await notebookService.list();
-      setNotebooks(data);
-      setStatus("idle");
+      if (currentRequestId === requestIdRef.current && isMountedRef.current) {
+        setNotebooks(data);
+        setStatus("idle");
+      }
     } catch (err) {
-      logger.notebook.databaseFailed("list notebooks", err);
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg || "Failed to load notebooks");
-      setStatus("error");
+      if (currentRequestId === requestIdRef.current && isMountedRef.current) {
+        logger.notebook.databaseFailed("list notebooks", err);
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg || "Failed to load notebooks");
+        setStatus("error");
+      }
     }
   }, [isStorageReady]);
 

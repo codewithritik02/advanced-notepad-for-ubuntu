@@ -83,11 +83,22 @@ export interface NoteMetadata {
   attachment_count?: number;
 }
 
+export interface NoteCountsDto {
+  total: number;
+  favorites: number;
+  unfiled: number;
+  trash: number;
+  byNotebook: Record<string, number>;
+}
+
 export interface ListNotesOptions {
   includeDeleted?: boolean;
   notebookId?: string | null;
   unfiledOnly?: boolean;
   favoritesOnly?: boolean;
+  limit?: number;
+  offset?: number;
+  contentLimit?: number;
 }
 
 export interface CreateNoteInput {
@@ -162,6 +173,16 @@ export interface SearchResult {
   modifiedAt: string;
   notebookId: string | null;
   favorite: boolean;
+}
+
+export interface SearchIndexDiagnostic {
+  isEncrypted: boolean;
+  ftsTableExists: boolean;
+  triggersIntact: boolean;
+  integrityCheckPassed: boolean;
+  activeNotesCount: number;
+  ftsEntriesCount: number;
+  isConsistent: boolean;
 }
 
 export interface Attachment {

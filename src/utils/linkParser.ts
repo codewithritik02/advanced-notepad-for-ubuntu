@@ -66,13 +66,14 @@ export function formatInternalLink(targetId: string, label?: string): string {
   return `[${safeLabel}](${INTERNAL_LINK_PROTOCOL_PREFIX}${sanitizedId})`;
 }
 
+const FAST_PREFIX_REGEX = /notepad:\/\/note\//i;
+
 /**
  * Quickly checks if content contains any internal links without constructing full array.
  */
 export function hasInternalLinks(content: string): boolean {
   if (!content || typeof content !== "string") return false;
-  const lower = content.toLowerCase();
-  if (!lower.includes(INTERNAL_LINK_PROTOCOL_PREFIX)) return false;
+  if (!FAST_PREFIX_REGEX.test(content)) return false;
   const regex = new RegExp(INTERNAL_LINK_REGEX.source, "i");
   return regex.test(content);
 }
@@ -84,8 +85,8 @@ export function hasInternalLinks(content: string): boolean {
 export function parseInternalLinks(content: string): ParsedInternalLink[] {
   if (!content || typeof content !== "string") return [];
 
-  // Fast pre-filter: if lowercase string doesn't even contain "notepad://note/", return empty
-  if (!content.toLowerCase().includes(INTERNAL_LINK_PROTOCOL_PREFIX)) {
+  // Fast pre-filter: Zero-allocation regex check avoids creating a full lowercase string copy
+  if (!FAST_PREFIX_REGEX.test(content)) {
     return [];
   }
 

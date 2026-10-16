@@ -70,6 +70,14 @@ impl BackupDestinationManager {
     ) -> Result<PathBuf, BackupError> {
         let requested_raw = custom_path.unwrap_or("").trim();
 
+        // Cross-platform traversal protection (Phase 13, Task 13)
+        let normalized = requested_raw.replace('\\', "/");
+        if normalized.split('/').any(|comp| comp == "..") {
+            return Err(BackupError::DestinationUnavailable(
+                "Path traversal ('..') is not permitted in backup destinations".to_string(),
+            ));
+        }
+
         let target_path: PathBuf = if requested_raw.is_empty() {
             // Default destination inside managed backups directory
             paths
@@ -441,4 +449,59 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_phase13_task13_destination_traversal_rejection() {
+        let temp_dir = std::env::temp_dir().join(format!("pn_test_trav_{}", Uuid::new_v4()));
+        let paths = StoragePaths::from_root(temp_dir.clone());
+        paths.ensure_directories().expect("Ensure directories");
+
+        // Forward slash traversal
+        let err1 = BackupDestinationManager::resolve_destination(
+            Some("../outside.pnbackup"),
+            BackupType::Manual,
+            false,
+            &paths,
+        )
+        .expect_err("Must reject forward-slash traversal");
+        match err1 {
+            BackupError::DestinationUnavailable(msg) => {
+                assert!(msg.contains("Path traversal"));
+            }
+            other => panic!("Expected DestinationUnavailable, got {other:?}"),
+        }
+
+        // Backslash traversal
+        let err2 = BackupDestinationManager::resolve_destination(
+            Some("..\\outside.pnbackup"),
+            BackupType::Manual,
+            false,
+            &paths,
+        )
+        .expect_err("Must reject backslash traversal");
+        match err2 {
+            BackupError::DestinationUnavailable(msg) => {
+                assert!(msg.contains("Path traversal"));
+            }
+            other => panic!("Expected DestinationUnavailable, got {other:?}"),
+        }
+
+        // Nested traversal
+        let err3 = BackupDestinationManager::resolve_destination(
+            Some("safe/../../outside.pnbackup"),
+            BackupType::Manual,
+            false,
+            &paths,
+        )
+        .expect_err("Must reject nested traversal");
+        match err3 {
+            BackupError::DestinationUnavailable(msg) => {
+                assert!(msg.contains("Path traversal"));
+            }
+            other => panic!("Expected DestinationUnavailable, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
 }
+

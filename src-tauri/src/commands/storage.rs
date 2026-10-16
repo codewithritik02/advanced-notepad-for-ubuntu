@@ -7,8 +7,8 @@ use crate::storage::{
     errors::{AttachmentError, CryptoError, StorageError},
     models::{
         AttachmentConsistencyReport, AttachmentMetadataDto, BacklinkItem, CreateNotebookDto, CreateNoteDto,
-        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, ResolvedLinkTarget, SearchResult, Tag,
-        TrashedNoteItem, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
+        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, ResolvedLinkTarget, SearchIndexDiagnostic,
+        SearchResult, Tag, TrashedNoteItem, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
         AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
@@ -46,20 +46,34 @@ pub fn get_storage_info(paths: State<'_, StoragePaths>) -> Result<StorageInfo, S
 }
 
 #[tauri::command]
+pub fn get_note_counts(db: State<'_, Database>) -> Result<crate::storage::models::NoteCountsDto, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::get_note_counts(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn list_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     include_deleted: Option<bool>,
     notebook_id: Option<String>,
     unfiled_only: Option<bool>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    content_limit: Option<usize>,
 ) -> Result<Vec<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_filtered_with_key(
+    NoteRepository::list_filtered_options(
         &conn,
-        include_deleted.unwrap_or(false),
-        notebook_id.as_deref(),
-        unfiled_only.unwrap_or(false),
+        &crate::storage::models::ListNotesQueryOptions {
+            include_deleted: include_deleted.unwrap_or(false),
+            notebook_id: notebook_id.as_deref(),
+            unfiled_only: unfiled_only.unwrap_or(false),
+            limit,
+            offset,
+            content_limit,
+        },
         dek.as_ref(),
     )
     .map_err(|e| e.to_string())
@@ -223,10 +237,11 @@ pub fn toggle_note_favorite(
 pub fn list_favorite_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
+    content_limit: Option<usize>,
 ) -> Result<Vec<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_favorites_with_key(&conn, dek.as_ref()).map_err(|e| e.to_string())
+    NoteRepository::list_favorites_with_options(&conn, content_limit, dek.as_ref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -341,10 +356,11 @@ pub fn get_notes_for_tag(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     tag_id: String,
+    content_limit: Option<usize>,
 ) -> Result<Vec<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_by_tag_with_key(&conn, &tag_id, dek.as_ref()).map_err(|e| e.to_string())
+    NoteRepository::list_by_tag_with_options(&conn, &tag_id, content_limit, dek.as_ref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -428,6 +444,26 @@ pub fn search_notes(
         StorageError::SearchError(_) | StorageError::Database(_) => "Unable to search notes.".to_string(),
         other => other.user_friendly_message(),
     })
+}
+
+/// Diagnoses search index health, trigger status, and consistency (Phase 13, Task 10).
+#[tauri::command]
+pub fn diagnose_search_index(
+    db: State<'_, Database>,
+    _session: State<'_, CryptoSession>,
+) -> Result<SearchIndexDiagnostic, String> {
+    let conn = db.conn.lock().map_err(|_| "Unable to diagnose search index.".to_string())?;
+    SearchService::diagnose_index(&conn).map_err(|e| e.user_friendly_message())
+}
+
+/// Safely rebuilds or recovers search index (Phase 13, Task 10).
+#[tauri::command]
+pub fn rebuild_search_index(
+    db: State<'_, Database>,
+    _session: State<'_, CryptoSession>,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|_| "Unable to rebuild search index.".to_string())?;
+    SearchService::rebuild_index(&conn).map_err(|e| e.user_friendly_message())
 }
 
 /// Adds a file as an attachment to a note (Phase 7, Task 8; Phase 12, Task 10).
@@ -637,5 +673,18 @@ pub fn get_backlinks(
         None => InternalLinkService::get_backlinks(&conn, &target_note_id),
     }
     .map_err(|e| e.user_friendly_message())
+}
+
+/// Flushes committed SQLite WAL pages to disk and checkpoints the database (Phase 13, Task 19).
+#[tauri::command]
+pub fn flush_and_checkpoint_db(
+    db: State<'_, Database>,
+) -> Result<(), String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+
+    crate::storage::database::checkpoint_wal(&conn).map_err(|e| e.user_friendly_message())
 }
 

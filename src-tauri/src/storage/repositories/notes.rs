@@ -1,7 +1,9 @@
 use rusqlite::{params, Connection, Row};
 use crate::storage::crypto::{decrypt_string, encrypt_string, is_encrypted_string, SecretBytes};
 use crate::storage::errors::StorageError;
-use crate::storage::models::{CreateNoteDto, Note, TrashedNoteItem, UpdateNoteDto};
+use crate::storage::models::{
+    CreateNoteDto, ListNotesQueryOptions, Note, NoteCountsDto, TrashedNoteItem, UpdateNoteDto,
+};
 
 pub struct NoteRepository;
 
@@ -106,6 +108,8 @@ impl NoteRepository {
         let now = chrono::Utc::now().to_rfc3339();
         let title = dto.title.unwrap_or_else(|| "Untitled Note".to_string());
         let content = dto.content.unwrap_or_default();
+        crate::storage::limits::validate_note_title(Some(&title))?;
+        crate::storage::limits::validate_note_content(Some(&content))?;
         let format = dto.format.unwrap_or_else(|| "txt".to_string());
         let is_favorite = dto.is_favorite.unwrap_or(false);
         let is_pinned = dto.is_pinned.unwrap_or(false);
@@ -168,6 +172,8 @@ impl NoteRepository {
         let now = chrono::Utc::now().to_rfc3339();
         let title = dto.title.unwrap_or_else(|| "Untitled Note".to_string());
         let content = dto.content.unwrap_or_default();
+        crate::storage::limits::validate_note_title(Some(&title))?;
+        crate::storage::limits::validate_note_content(Some(&content))?;
         let format = dto.format.unwrap_or_else(|| "txt".to_string());
         let is_favorite = dto.is_favorite.unwrap_or(false);
         let is_pinned = dto.is_pinned.unwrap_or(false);
@@ -410,6 +416,48 @@ impl NoteRepository {
         Ok(count.max(0) as usize)
     }
 
+    /// Returns aggregate note counts without loading or decrypting note records (Phase 13, Task 9)
+    pub fn get_note_counts(conn: &Connection) -> Result<NoteCountsDto, StorageError> {
+        let (total, favorites, unfiled): (i64, i64, i64) = conn.query_row(
+            "SELECT 
+                COUNT(1),
+                COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN notebook_id IS NULL THEN 1 ELSE 0 END), 0)
+             FROM notes 
+             WHERE is_deleted = 0",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+
+        let mut nb_stmt = conn.prepare(
+            "SELECT notebook_id, COUNT(1) 
+             FROM notes 
+             WHERE is_deleted = 0 AND notebook_id IS NOT NULL 
+             GROUP BY notebook_id",
+        )?;
+        let mut by_notebook = std::collections::HashMap::new();
+        let mut nb_rows = nb_stmt.query([])?;
+        while let Some(row) = nb_rows.next()? {
+            let nb_id: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            by_notebook.insert(nb_id, count.max(0) as usize);
+        }
+
+        let trash: i64 = conn.query_row(
+            "SELECT COUNT(1) FROM notes WHERE is_deleted = 1",
+            [],
+            |r| r.get(0),
+        )?;
+
+        Ok(NoteCountsDto {
+            total: total.max(0) as usize,
+            favorites: favorites.max(0) as usize,
+            unfiled: unfiled.max(0) as usize,
+            trash: trash.max(0) as usize,
+            by_notebook,
+        })
+    }
+
     pub fn list(conn: &Connection, include_deleted: bool) -> Result<Vec<Note>, StorageError> {
         Self::list_filtered(conn, include_deleted, None, false)
     }
@@ -431,11 +479,9 @@ impl NoteRepository {
         Self::list_filtered_with_key(conn, include_deleted, notebook_id, unfiled_only, None)
     }
 
-    pub fn list_filtered_with_key(
+    pub fn list_filtered_options(
         conn: &Connection,
-        include_deleted: bool,
-        notebook_id: Option<&str>,
-        unfiled_only: bool,
+        options: &ListNotesQueryOptions,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
         let mut sql = String::from(
@@ -447,27 +493,61 @@ impl NoteRepository {
 
         let mut params_vec: Vec<rusqlite::types::Value> = Vec::new();
 
-        if !include_deleted {
+        if !options.include_deleted {
             sql.push_str(" AND is_deleted = 0");
         }
 
-        if unfiled_only {
+        if options.unfiled_only {
             sql.push_str(" AND notebook_id IS NULL");
-        } else if let Some(nb_id) = notebook_id {
+        } else if let Some(nb_id) = options.notebook_id {
             sql.push_str(" AND notebook_id = ?");
             params_vec.push(rusqlite::types::Value::Text(nb_id.to_string()));
         }
 
         sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC");
 
+        if let Some(limit) = options.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+            if let Some(offset) = options.offset {
+                sql.push_str(&format!(" OFFSET {}", offset));
+            }
+        }
+
         let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt.query(rusqlite::params_from_iter(params_vec))?;
 
         let mut notes = Vec::new();
         while let Some(row) = rows.next()? {
-            notes.push(Self::map_row_with_key(row, dek)?);
+            let mut note = Self::map_row_with_key(row, dek)?;
+            if let Some(max_len) = options.content_limit {
+                if note.content.chars().count() > max_len {
+                    note.content = note.content.chars().take(max_len).collect();
+                }
+            }
+            notes.push(note);
         }
         Ok(notes)
+    }
+
+    pub fn list_filtered_with_key(
+        conn: &Connection,
+        include_deleted: bool,
+        notebook_id: Option<&str>,
+        unfiled_only: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
+        Self::list_filtered_options(
+            conn,
+            &ListNotesQueryOptions {
+                include_deleted,
+                notebook_id,
+                unfiled_only,
+                limit: None,
+                offset: None,
+                content_limit: None,
+            },
+            dek,
+        )
     }
 
     pub fn update(conn: &Connection, id: &str, dto: UpdateNoteDto) -> Result<Note, StorageError> {
@@ -492,6 +572,8 @@ impl NoteRepository {
         let now = chrono::Utc::now().to_rfc3339();
         let title = dto.title.unwrap_or(existing.title);
         let content = dto.content.unwrap_or(existing.content);
+        crate::storage::limits::validate_note_title(Some(&title))?;
+        crate::storage::limits::validate_note_content(Some(&content))?;
         let format = dto.format.unwrap_or(existing.format);
         let notebook_id = dto.notebook_id.or(existing.notebook_id);
         let is_favorite = dto.is_favorite.unwrap_or(existing.is_favorite);
@@ -734,6 +816,14 @@ impl NoteRepository {
         conn: &Connection,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
+        Self::list_favorites_with_options(conn, None, dek)
+    }
+
+    pub fn list_favorites_with_options(
+        conn: &Connection,
+        content_limit: Option<usize>,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
@@ -744,7 +834,13 @@ impl NoteRepository {
         let mut rows = stmt.query([])?;
         let mut notes = Vec::new();
         while let Some(row) = rows.next()? {
-            notes.push(Self::map_row_with_key(row, dek)?);
+            let mut note = Self::map_row_with_key(row, dek)?;
+            if let Some(max_len) = content_limit {
+                if note.content.chars().count() > max_len {
+                    note.content = note.content.chars().take(max_len).collect();
+                }
+            }
+            notes.push(note);
         }
         Ok(notes)
     }
@@ -756,6 +852,15 @@ impl NoteRepository {
     pub fn list_by_tag_with_key(
         conn: &Connection,
         tag_id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
+        Self::list_by_tag_with_options(conn, tag_id, None, dek)
+    }
+
+    pub fn list_by_tag_with_options(
+        conn: &Connection,
+        tag_id: &str,
+        content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
@@ -771,7 +876,13 @@ impl NoteRepository {
         let mut rows = stmt.query(params![tag_id])?;
         let mut notes = Vec::new();
         while let Some(row) = rows.next()? {
-            notes.push(Self::map_row_with_key(row, dek)?);
+            let mut note = Self::map_row_with_key(row, dek)?;
+            if let Some(max_len) = content_limit {
+                if note.content.chars().count() > max_len {
+                    note.content = note.content.chars().take(max_len).collect();
+                }
+            }
+            notes.push(note);
         }
         Ok(notes)
     }
