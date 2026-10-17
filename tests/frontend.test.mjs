@@ -12650,6 +12650,7 @@ describe("Phase 7: Attachments & Files", () => {
       // Verify capabilities are strictly bounded
       assert.deepStrictEqual(capabilities.permissions, [
         "core:default",
+        "core:webview:allow-set-webview-zoom",
         "opener:default",
         "dialog:default",
       ]);
@@ -28533,3 +28534,47 @@ describe("Phase 14 Task 22 — Regression Tests for Known Defects", () => {
 
 
 
+
+describe("Display settings: interface zoom and editor text size", () => {
+  it("steps through browser-style zoom levels and clamps at the ends", async () => {
+    const m = await import("../src/features/settings/utils/displaySettings.ts");
+    assert.equal(m.stepZoomPercent(100, 1), 110);
+    assert.equal(m.stepZoomPercent(100, -1), 90);
+    assert.equal(m.stepZoomPercent(m.MAX_ZOOM_PERCENT, 1), m.MAX_ZOOM_PERCENT);
+    assert.equal(m.stepZoomPercent(m.MIN_ZOOM_PERCENT, -1), m.MIN_ZOOM_PERCENT);
+    assert.equal(m.stepZoomPercent(105, 1), 110, "off-grid values snap first");
+  });
+
+  it("normalizes corrupt zoom and font values to safe defaults", async () => {
+    const m = await import("../src/features/settings/utils/displaySettings.ts");
+    for (const bad of ["abc", null, undefined, NaN, Infinity]) {
+      assert.equal(m.normalizeZoomPercent(bad), m.DEFAULT_ZOOM_PERCENT);
+      assert.equal(m.normalizeEditorFontSize(bad), m.DEFAULT_EDITOR_FONT_SIZE_PX);
+    }
+    assert.equal(m.normalizeZoomPercent("125"), 125);
+    assert.equal(m.normalizeZoomPercent(9999), m.MAX_ZOOM_PERCENT);
+  });
+
+  it("changes editor text size by exactly 1px and clamps to range", async () => {
+    const m = await import("../src/features/settings/utils/displaySettings.ts");
+    assert.equal(m.stepEditorFontSize(14, 1), 15);
+    assert.equal(m.stepEditorFontSize(14, -1), 13);
+    assert.equal(m.stepEditorFontSize(m.MAX_EDITOR_FONT_SIZE_PX, 1), m.MAX_EDITOR_FONT_SIZE_PX);
+    assert.equal(m.stepEditorFontSize(m.MIN_EDITOR_FONT_SIZE_PX, -1), m.MIN_EDITOR_FONT_SIZE_PX);
+    assert.equal(m.normalizeEditorFontSize(14.6), 15);
+  });
+
+  it("wires shortcuts, capability, editor CSS and settings UI", () => {
+    const kb = fs.readFileSync("src/hooks/useKeyboardShortcuts.ts", "utf8");
+    assert.match(kb, /onZoomIn\?\.\(\)/);
+    assert.match(kb, /onZoomOut\?\.\(\)/);
+    assert.match(kb, /onZoomReset\?\.\(\)/);
+    const cap = fs.readFileSync("src-tauri/capabilities/default.json", "utf8");
+    assert.match(cap, /core:webview:allow-set-webview-zoom/);
+    const css = fs.readFileSync("src/features/notes/components/Editor/EditorPlaceholder.css", "utf8");
+    assert.match(css, /font-size: var\(--editor-font-size/);
+    const modal = fs.readFileSync("src/features/settings/components/SettingsModal/SettingsModal.tsx", "utf8");
+    assert.match(modal, /Interface zoom/);
+    assert.match(modal, /Note text size/);
+  });
+});

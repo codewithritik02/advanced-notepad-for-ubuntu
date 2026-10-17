@@ -127,7 +127,7 @@
   width: 100%;
   min-height: 380px;
   font-family: var(--font-family-sans);
-  font-size: var(--font-size-base);
+  font-size: var(--editor-font-size, var(--font-size-base));
   line-height: var(--line-height-relaxed);
   color: var(--color-text-primary);
   background: transparent;

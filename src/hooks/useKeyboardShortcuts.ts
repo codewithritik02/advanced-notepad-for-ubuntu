@@ -11,6 +11,9 @@ export interface KeyboardShortcutHandlers {
   onNavigateBack?: () => void;
   onNavigateForward?: () => void;
   onLockApp?: () => void;
+  onZoomIn?: () => void;
+  onZoomOut?: () => void;
+  onZoomReset?: () => void;
 }
 
 /**
@@ -30,6 +33,9 @@ export function useKeyboardShortcuts({
   onNavigateBack,
   onNavigateForward,
   onLockApp,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
 }: KeyboardShortcutHandlers): void {
   useEffect(() => {
     if (!enabled) {
@@ -97,6 +103,26 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // Ctrl/Cmd + '+' / '=' / '-' / '0' — Zoom interface in / out / reset (browser convention).
+      // Intentionally active while typing, as in browsers and editors.
+      if (isModifier && !event.altKey) {
+        if (event.key === "+" || event.key === "=") {
+          event.preventDefault();
+          onZoomIn?.();
+          return;
+        }
+        if (event.key === "-" || event.key === "_") {
+          event.preventDefault();
+          onZoomOut?.();
+          return;
+        }
+        if (event.key === "0") {
+          event.preventDefault();
+          onZoomReset?.();
+          return;
+        }
+      }
+
       // Ctrl/Cmd + N — Create New Note
       if (isModifier && key === "n") {
         event.preventDefault();
@@ -144,6 +170,9 @@ export function useKeyboardShortcuts({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
+    onZoomIn,
+    onZoomOut,
+    onZoomReset,
     onNewNote,
     onFocusSearch,
     onOpenSettings,

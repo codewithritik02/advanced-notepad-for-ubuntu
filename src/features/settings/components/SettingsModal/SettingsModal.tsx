@@ -10,6 +10,14 @@ import {
   ForgottenPasswordModal,
   DisableEncryptionModal,
 } from "../../../security";
+import {
+  MIN_ZOOM_PERCENT,
+  MAX_ZOOM_PERCENT,
+  DEFAULT_ZOOM_PERCENT,
+  MIN_EDITOR_FONT_SIZE_PX,
+  MAX_EDITOR_FONT_SIZE_PX,
+  DEFAULT_EDITOR_FONT_SIZE_PX,
+} from "../../utils/displaySettings";
 import "./SettingsModal.css";
 
 export interface SettingsModalProps {
@@ -17,6 +25,13 @@ export interface SettingsModalProps {
   onClose: () => void;
   currentTheme: ThemeMode;
   onSelectTheme: (theme: ThemeMode) => void;
+  zoomPercent: number;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  onZoomReset: () => void;
+  editorFontSize: number;
+  onEditorFontSizeChange: (px: number) => void;
+  onEditorFontSizeReset: () => void;
   onCreateBackup?: () => void;
   onViewBackups?: () => void;
   onLock?: () => Promise<void> | void;
@@ -31,6 +46,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   currentTheme,
   onSelectTheme,
+  zoomPercent,
+  onZoomIn,
+  onZoomOut,
+  onZoomReset,
+  editorFontSize,
+  onEditorFontSizeChange,
+  onEditorFontSizeReset,
   onCreateBackup,
   onViewBackups,
   onLock,
@@ -131,6 +153,97 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               >
                 System Default
               </Button>
+            </div>
+          </div>
+
+          <Divider spacing="md" />
+
+          {/* Display Section */}
+          <div className="settings-section">
+            <h4 className="settings-section-title">Display</h4>
+            <p className="settings-section-desc">
+              Make the whole app larger or smaller. Shortcuts: Ctrl + / Ctrl −
+              to zoom, Ctrl 0 to reset (Ctrl + mouse wheel also works).
+            </p>
+            <div className="display-setting-row">
+              <span className="display-setting-label">Interface zoom</span>
+              <div className="display-stepper">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onZoomOut}
+                  disabled={zoomPercent <= MIN_ZOOM_PERCENT}
+                  aria-label="Zoom out"
+                >
+                  −
+                </Button>
+                <span className="display-stepper-value" aria-live="polite">
+                  {zoomPercent}%
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onZoomIn}
+                  disabled={zoomPercent >= MAX_ZOOM_PERCENT}
+                  aria-label="Zoom in"
+                >
+                  +
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onZoomReset}
+                  disabled={zoomPercent === DEFAULT_ZOOM_PERCENT}
+                >
+                  Reset
+                </Button>
+              </div>
+            </div>
+            <div className="display-setting-row">
+              <label className="display-setting-label" htmlFor="editor-font-size">
+                Note text size
+              </label>
+              <div className="display-stepper">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onEditorFontSizeChange(editorFontSize - 1)}
+                  disabled={editorFontSize <= MIN_EDITOR_FONT_SIZE_PX}
+                  aria-label="Decrease note text size by 1 pixel"
+                >
+                  −
+                </Button>
+                <input
+                  id="editor-font-size"
+                  className="display-slider"
+                  type="range"
+                  min={MIN_EDITOR_FONT_SIZE_PX}
+                  max={MAX_EDITOR_FONT_SIZE_PX}
+                  step={1}
+                  value={editorFontSize}
+                  onChange={(e) => onEditorFontSizeChange(Number(e.target.value))}
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onEditorFontSizeChange(editorFontSize + 1)}
+                  disabled={editorFontSize >= MAX_EDITOR_FONT_SIZE_PX}
+                  aria-label="Increase note text size by 1 pixel"
+                >
+                  +
+                </Button>
+                <span className="display-stepper-value" aria-live="polite">
+                  {editorFontSize} px
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onEditorFontSizeReset}
+                  disabled={editorFontSize === DEFAULT_EDITOR_FONT_SIZE_PX}
+                >
+                  Reset
+                </Button>
+              </div>
             </div>
           </div>
 

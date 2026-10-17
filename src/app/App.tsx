@@ -7,6 +7,7 @@ import { NoteListItem, NotesListStatus } from "../features/notes/types";
 import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
+import { useDisplaySettings } from "../hooks/useDisplaySettings";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import {
   storageService,
@@ -126,6 +127,7 @@ async function fetchNotePage(context: NotePageContext, offset: number): Promise<
 
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
+  const display = useDisplaySettings();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -1112,6 +1114,9 @@ export function App() {
     onNewNote: handleNewNoteAction,
     onFocusSearch: handleFocusSearch,
     onOpenSettings: handleOpenSettings,
+    onZoomIn: display.zoomIn,
+    onZoomOut: display.zoomOut,
+    onZoomReset: display.resetZoom,
     onEscape: handleEscape,
     onSaveNote: () => {
       editorSaveRef.current?.();
@@ -2197,6 +2202,13 @@ export function App() {
         onClose={() => setIsSettingsOpen(false)}
         currentTheme={theme}
         onSelectTheme={setTheme}
+        zoomPercent={display.zoomPercent}
+        onZoomIn={display.zoomIn}
+        onZoomOut={display.zoomOut}
+        onZoomReset={display.resetZoom}
+        editorFontSize={display.editorFontSize}
+        onEditorFontSizeChange={display.setEditorFontSize}
+        onEditorFontSizeReset={display.resetEditorFontSize}
         onCreateBackup={() => {
           setIsSettingsOpen(false);
           setIsCreateBackupOpen(true);
