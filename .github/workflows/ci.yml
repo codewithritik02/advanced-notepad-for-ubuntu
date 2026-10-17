@@ -82,22 +82,22 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
       - name: Rust Compilation Check
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
 
       - name: Rust Clippy Lint
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked
 
       - name: SQLite Schema Migrations & Integrity Tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test --locked
 
       - name: Safe Test Infrastructure & Isolation Checks
-        run: cargo test --manifest-path src-tauri/Cargo.toml --test test_infrastructure_test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test test_infrastructure_test --locked
 
       - name: Regression Defect Tracking Tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test --locked
 
       - name: Critical End-to-End User Journeys
-        run: cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test --locked
 
       - name: Full Rust Unit & Integration Test Suite
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked

@@ -86,15 +86,12 @@ impl BackupRetentionManager {
             // Determine creation timestamp from manifest (fallback to file modification time)
             let created_at = match DateTime::parse_from_rfc3339(&manifest.created_at) {
                 Ok(dt) => dt.with_timezone(&Utc),
-                Err(_) => {
-                    let fallback_mtime = entry
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .map(DateTime::<Utc>::from)
-                        .unwrap_or_else(Utc::now);
-                    fallback_mtime
-                }
+                Err(_) => entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(DateTime::<Utc>::from)
+                    .unwrap_or_else(Utc::now),
             };
 
             candidates.push(ManagedAutomaticBackupCandidate {
@@ -133,7 +130,7 @@ impl BackupRetentionManager {
         }
 
         // Sort descending: newest first, oldest last
-        candidates.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.created_at));
 
         // If total eligible backups is within retention bound, nothing to prune
         if candidates.len() <= retention_count {

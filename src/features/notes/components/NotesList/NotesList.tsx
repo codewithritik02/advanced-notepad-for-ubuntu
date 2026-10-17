@@ -29,6 +29,10 @@ export interface NotesListProps {
   onExport?: () => void;
   exportLabel?: string;
   onImport?: () => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  onLoadMore?: () => void;
+  listKey?: string;
 }
 
 const ExportIcon = () => (
@@ -87,6 +91,10 @@ export const NotesList = React.memo<NotesListProps>(({
   onExport,
   exportLabel,
   onImport,
+  hasMore = false,
+  isLoadingMore = false,
+  onLoadMore,
+  listKey = "notes",
 }) => {
   const isSearchMode = mode === "search";
   const isTrashMode = isTrash || mode === "trash";
@@ -97,7 +105,7 @@ export const NotesList = React.memo<NotesListProps>(({
   // Reset rendered limit when notes collection, search query, or mode changes (Task 9)
   React.useEffect(() => {
     setRenderedCount(PAGE_SIZE);
-  }, [notes, searchQuery, mode]);
+  }, [listKey, searchQuery, mode]);
 
   // Ensure active/selected note is always rendered and visible (Task 9 selection stability)
   const effectiveCount = React.useMemo(() => {
@@ -113,14 +121,15 @@ export const NotesList = React.memo<NotesListProps>(({
   const handleScroll = React.useCallback(
     (e: React.UIEvent<HTMLDivElement>) => {
       const target = e.currentTarget;
-      if (
-        effectiveCount < notes.length &&
-        target.scrollTop + target.clientHeight >= target.scrollHeight - 250
-      ) {
-        setRenderedCount((prev) => Math.min(prev + PAGE_SIZE, notes.length));
+      if (target.scrollTop + target.clientHeight >= target.scrollHeight - 250) {
+        if (effectiveCount < notes.length) {
+          setRenderedCount((prev) => Math.min(prev + PAGE_SIZE, notes.length));
+        } else if (hasMore && !isLoadingMore) {
+          onLoadMore?.();
+        }
       }
     },
-    [effectiveCount, notes.length]
+    [effectiveCount, notes.length, hasMore, isLoadingMore, onLoadMore]
   );
 
   const resolvedErrorTitle =
@@ -280,6 +289,16 @@ export const NotesList = React.memo<NotesListProps>(({
                   onPermanentlyDelete={onPermanentlyDeleteNote}
                 />
               ))}
+              {hasMore && effectiveCount >= notes.length && (
+                <button
+                  type="button"
+                  className="notes-list-load-more"
+                  onClick={onLoadMore}
+                  disabled={isLoadingMore}
+                >
+                  {isLoadingMore ? "Loading…" : "Load more"}
+                </button>
+              )}
             </div>
           </SearchErrorBoundary>
         )}

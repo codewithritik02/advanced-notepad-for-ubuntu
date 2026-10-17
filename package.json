@@ -21,7 +21,8 @@
     "test:e2e": "cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test",
     "test:regression": "cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test",
     "build:desktop": "tauri build --debug --no-bundle",
-    "package:linux": "tauri build --bundles deb"
+    "package:linux": "tauri build --bundles deb",
+    "release:metadata": "node scripts/generate-release-metadata.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

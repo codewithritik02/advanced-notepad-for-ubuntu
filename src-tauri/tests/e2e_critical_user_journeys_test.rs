@@ -137,7 +137,7 @@ fn test_workflow_a_basic_note_persistence_and_restart() {
             "1. Finalize roadmap\n2. Review budget\n3. Assign deliverables"
         );
         assert_eq!(persisted.format, "md");
-        assert_eq!(persisted.is_deleted, false);
+        assert!(!persisted.is_deleted);
     }
 
     shutdown(relaunched);

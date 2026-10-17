@@ -42,7 +42,7 @@ fn test_note_selection_loading_and_not_found_transitions() {
     assert_eq!(loaded.id, created.id);
     assert_eq!(loaded.title, "State Transition Note");
     assert_eq!(loaded.content, "Initial content before editing");
-    assert_eq!(loaded.is_deleted, false);
+    assert!(!loaded.is_deleted);
 }
 
 #[test]

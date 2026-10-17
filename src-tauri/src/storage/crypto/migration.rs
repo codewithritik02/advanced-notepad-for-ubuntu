@@ -219,7 +219,10 @@ impl MigrationService {
                 })?;
 
             if disk_path.is_file() && !AttachmentStorage::is_encrypted_file(&disk_path) {
-                let stored_name = relative_path.split('/').last().unwrap_or(&relative_path);
+                let stored_name = relative_path
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&relative_path);
                 let aad = format!("attachments:{}:{stored_name}", note_id.trim());
 
                 let staging_path = disk_path.with_extension(format!("mig_tmp.{}", Uuid::new_v4()));
@@ -474,10 +477,8 @@ impl MigrationService {
         // Determine effective stage from marker and metadata
         let effective_stage = if let Some(ref m) = marker_opt {
             Some(m.stage.clone())
-        } else if let Some(ref em) = meta {
-            Some(em.migration_status.clone())
         } else {
-            None
+            meta.as_ref().map(|em| em.migration_status.clone())
         };
 
         let checkpoint_path = marker_opt.as_ref().map(|m| m.checkpoint_path.clone());
@@ -577,7 +578,7 @@ impl MigrationService {
     ) -> Result<(EncryptionMetadata, SecretBytes), CryptoError> {
         let raw_meta = SettingsRepository::get(conn, ENCRYPTION_METADATA_KEY)
             .map_err(|e| CryptoError::InvalidMetadata(e.to_string()))?
-            .ok_or_else(|| CryptoError::NotEnabled)?;
+            .ok_or(CryptoError::NotEnabled)?;
 
         let mut metadata = EncryptionMetadata::from_json(&raw_meta)?;
 
@@ -710,7 +711,10 @@ impl MigrationService {
                 })?;
 
             if disk_path.is_file() && AttachmentStorage::is_encrypted_file(&disk_path) {
-                let stored_name = relative_path.split('/').last().unwrap_or(&relative_path);
+                let stored_name = relative_path
+                    .split('/')
+                    .next_back()
+                    .unwrap_or(&relative_path);
                 let aad = format!("attachments:{}:{stored_name}", note_id.trim());
 
                 let staging_path = disk_path.with_extension(format!("dec_tmp.{}", Uuid::new_v4()));

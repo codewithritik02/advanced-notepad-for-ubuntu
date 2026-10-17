@@ -1,10 +1,9 @@
-use crate::storage::errors::StorageError;
-
 /// Centralized Resource Limits and Reliability Invariants (Phase 13, Task 2)
 ///
 /// Defines practical limits for potentially expensive operations across the backend
 /// and provides centralized validation to prevent resource exhaustion, unbounded memory usage,
 /// and silent data truncation.
+use crate::storage::errors::StorageError;
 
 // --- Note Content & Title Bounds ---
 /// Maximum note content size in bytes: 10 MiB (10,485,760 bytes).
@@ -64,6 +63,12 @@ pub const DEFAULT_PAGE_SIZE: usize = 50;
 
 /// Maximum allowed page size for paginated queries: 200.
 pub const MAX_PAGE_SIZE: usize = 200;
+
+/// Default number of Unicode characters returned for note-list previews.
+pub const DEFAULT_NOTE_PREVIEW_CHARS: usize = 300;
+
+/// Maximum preview length accepted from IPC callers.
+pub const MAX_NOTE_PREVIEW_CHARS: usize = 10_000;
 
 /// Maximum items permitted in a single bulk operation: 500.
 pub const MAX_BULK_OPERATION_ITEMS: usize = 500;
@@ -160,6 +165,14 @@ pub fn sanitize_pagination_bounds(limit: Option<usize>) -> usize {
     }
 }
 
+/// Applies a safe default and upper bound to list-preview content lengths.
+pub fn sanitize_preview_limit(limit: Option<usize>) -> usize {
+    match limit {
+        Some(value) if value > 0 => value.min(MAX_NOTE_PREVIEW_CHARS),
+        _ => DEFAULT_NOTE_PREVIEW_CHARS,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,5 +253,16 @@ mod tests {
         assert_eq!(sanitize_pagination_bounds(Some(25)), 25);
         assert_eq!(sanitize_pagination_bounds(Some(200)), 200);
         assert_eq!(sanitize_pagination_bounds(Some(500)), MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_sanitize_preview_limit() {
+        assert_eq!(sanitize_preview_limit(None), DEFAULT_NOTE_PREVIEW_CHARS);
+        assert_eq!(sanitize_preview_limit(Some(0)), DEFAULT_NOTE_PREVIEW_CHARS);
+        assert_eq!(sanitize_preview_limit(Some(500)), 500);
+        assert_eq!(
+            sanitize_preview_limit(Some(MAX_NOTE_PREVIEW_CHARS + 1)),
+            MAX_NOTE_PREVIEW_CHARS
+        );
     }
 }

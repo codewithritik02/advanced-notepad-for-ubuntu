@@ -54,6 +54,7 @@ pub fn get_note_counts(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes these as a stable flat IPC contract.
 pub fn list_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
@@ -64,6 +65,8 @@ pub fn list_notes(
     offset: Option<usize>,
     content_limit: Option<usize>,
 ) -> Result<Vec<Note>, String> {
+    let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
+    let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     NoteRepository::list_filtered_options(
@@ -72,9 +75,9 @@ pub fn list_notes(
             include_deleted: include_deleted.unwrap_or(false),
             notebook_id: notebook_id.as_deref(),
             unfiled_only: unfiled_only.unwrap_or(false),
-            limit,
-            offset,
-            content_limit,
+            limit: Some(page_size),
+            offset: Some(offset.unwrap_or(0)),
+            content_limit: Some(preview_size),
         },
         dek.as_ref(),
     )
@@ -118,25 +121,25 @@ pub fn update_note(
 #[tauri::command]
 pub fn delete_note(
     db: State<'_, Database>,
-    paths: State<'_, StoragePaths>,
     session: State<'_, CryptoSession>,
     id: String,
     soft: Option<bool>,
 ) -> Result<bool, String> {
+    // This legacy endpoint is intentionally soft-delete-only. Permanent deletion must
+    // go through `permanently_delete_note`, which validates that the note is already in
+    // Trash and reports attachment-cleanup failures with a typed result.
+    if soft == Some(false) {
+        return Err(
+            "Permanent deletion is only available for notes in Trash. Move the note to Trash first."
+                .to_string(),
+        );
+    }
+
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    let is_soft = soft.unwrap_or(true);
-    if is_soft {
-        TrashService::soft_delete_with_key(&conn, &id, dek.as_ref())
-            .map(|_| true)
-            .map_err(|e| e.user_friendly_message())
-    } else {
-        let storage = AttachmentStorage::new((*paths).clone());
-        let _ = storage.remove_note_directory(&id);
-        TrashService::permanently_delete_note(&conn, &storage, &id)
-            .map(|res| res.success)
-            .map_err(|e| e.user_friendly_message())
-    }
+    TrashService::soft_delete_with_key(&conn, &id, dek.as_ref())
+        .map(|_| true)
+        .map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
@@ -192,11 +195,19 @@ pub fn empty_trash(
 pub fn list_trashed_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<TrashedNoteItem>, String> {
+    let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_trashed_items_with_key(&conn, dek.as_ref())
-        .map_err(|e| e.user_friendly_message())
+    NoteRepository::list_trashed_items_page_with_key(
+        &conn,
+        Some(page_size),
+        Some(offset.unwrap_or(0)),
+        dek.as_ref(),
+    )
+    .map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
@@ -267,11 +278,21 @@ pub fn list_favorite_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     content_limit: Option<usize>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<Note>, String> {
+    let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
+    let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_favorites_with_options(&conn, content_limit, dek.as_ref())
-        .map_err(|e| e.to_string())
+    NoteRepository::list_favorites_page_with_options(
+        &conn,
+        Some(page_size),
+        Some(offset.unwrap_or(0)),
+        Some(preview_size),
+        dek.as_ref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -383,11 +404,22 @@ pub fn get_notes_for_tag(
     session: State<'_, CryptoSession>,
     tag_id: String,
     content_limit: Option<usize>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<Vec<Note>, String> {
+    let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
+    let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_by_tag_with_options(&conn, &tag_id, content_limit, dek.as_ref())
-        .map_err(|e| e.to_string())
+    NoteRepository::list_by_tag_page_with_options(
+        &conn,
+        &tag_id,
+        Some(page_size),
+        Some(offset.unwrap_or(0)),
+        Some(preview_size),
+        dek.as_ref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -675,6 +707,34 @@ pub fn cleanup_abandoned_temp_files(
 
     AttachmentService::cleanup_abandoned_temp_files(&storage, age)
         .map_err(|e| e.user_friendly_message())
+}
+
+/// Retries attachment-directory cleanup after a note was permanently deleted.
+#[tauri::command]
+pub fn retry_note_attachment_cleanup(
+    paths: State<'_, StoragePaths>,
+    note_id: String,
+) -> Result<bool, String> {
+    let storage = AttachmentStorage::new((*paths).clone());
+    storage
+        .remove_note_directory(&note_id)
+        .map(|_| true)
+        .map_err(|error| error.user_friendly_message())
+}
+
+/// Removes only managed attachment files that have no matching database record.
+#[tauri::command]
+pub fn cleanup_unreferenced_attachment_files(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+) -> Result<usize, String> {
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+    AttachmentService::cleanup_unreferenced_files(&conn, &storage)
+        .map_err(|error| error.user_friendly_message())
 }
 
 /// Resolves an internal link target by its stable note ID (Phase 9, Task 9; Phase 12, Task 12).

@@ -569,7 +569,7 @@ impl RestoreService {
             checkpoints.push((path, created_at));
         }
 
-        checkpoints.sort_by(|a, b| b.1.cmp(&a.1));
+        checkpoints.sort_by_key(|checkpoint| std::cmp::Reverse(checkpoint.1));
 
         let mut deleted = Vec::new();
         if checkpoints.len() > max_keep {
@@ -677,12 +677,9 @@ impl RestoreService {
             ));
         }
 
-        paths.ensure_directories().map_err(|e| {
-            BackupError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        paths
+            .ensure_directories()
+            .map_err(|e| BackupError::Io(std::io::Error::other(e.to_string())))?;
 
         let staging_id = Uuid::new_v4().to_string();
         let staging_dir = paths
@@ -1041,10 +1038,8 @@ impl RestoreService {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if name.starts_with(".restore_staging_") {
-                    if fs::remove_dir_all(&path).is_ok() {
-                        cleaned_count += 1;
-                    }
+                if name.starts_with(".restore_staging_") && fs::remove_dir_all(&path).is_ok() {
+                    cleaned_count += 1;
                 }
             }
         }
@@ -1301,6 +1296,7 @@ impl RestoreService {
     }
 
     /// Roll back to the pre-restore state or recovery checkpoint if activation or post-verification fails (Task 19).
+    #[allow(clippy::too_many_arguments)] // Explicit paths document every rollback artifact.
     pub fn perform_rollback(
         conn: &mut Connection,
         paths: &StoragePaths,
@@ -1516,9 +1512,9 @@ impl RestoreService {
                 let clean_rel = relative_path.trim().replace('\\', "/");
                 let att_path = if clean_rel.starts_with("attachments/") {
                     paths.root.join(&clean_rel)
-                } else if clean_rel.starts_with(&format!("{note_id}/")) {
-                    paths.attachments_dir.join(&clean_rel)
-                } else if paths.attachments_dir.join(&clean_rel).exists() {
+                } else if clean_rel.starts_with(&format!("{note_id}/"))
+                    || paths.attachments_dir.join(&clean_rel).exists()
+                {
                     paths.attachments_dir.join(&clean_rel)
                 } else {
                     paths.attachments_dir.join(&note_id).join(&clean_rel)

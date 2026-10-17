@@ -61,7 +61,7 @@ pub fn current_schema_version(conn: &Connection) -> Result<i32, StorageError> {
 /// Rejects databases created by a newer application before any migration mutates them.
 pub fn validate_schema_version_compatibility(conn: &Connection) -> Result<i32, StorageError> {
     let version = current_schema_version(conn)?;
-    if version < 0 || version > LATEST_SCHEMA_VERSION {
+    if !(0..=LATEST_SCHEMA_VERSION).contains(&version) {
         return Err(StorageError::Migration(format!(
             "Unsupported database schema version {version}; this application supports versions 0 through {LATEST_SCHEMA_VERSION}. The database was left unchanged."
         )));

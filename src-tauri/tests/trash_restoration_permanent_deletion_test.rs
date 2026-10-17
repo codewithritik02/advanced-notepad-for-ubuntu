@@ -409,6 +409,16 @@ fn test_permanently_delete_single_note_lifecycle_and_cascades() {
         }
         other => panic!("expected InvalidState for active note deletion, got {other:?}"),
     }
+    assert!(
+        storage.file_exists(&att.relative_path),
+        "rejecting permanent deletion of an active note must preserve its attachment bytes"
+    );
+    assert!(
+        AttachmentRepository::get_by_id(conn, &att.id)
+            .unwrap()
+            .is_some(),
+        "rejecting permanent deletion of an active note must preserve attachment metadata"
+    );
 
     // 6b. Move note to Trash first
     TrashService::soft_delete(conn, &note.id).expect("trash note");

@@ -577,4 +577,25 @@
   background-color: var(--color-danger-subtle, rgba(239, 68, 68, 0.1));
 }
 
+.notes-list-load-more {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 8px 12px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.notes-list-load-more:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.notes-list-load-more:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
 

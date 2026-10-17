@@ -538,7 +538,7 @@ fn test_unit_8_backup_settings_validation_and_safety_bounds() {
 
     // Valid default settings
     let def = BackupSettings::default();
-    assert_eq!(def.auto_backup_enabled, true);
+    assert!(def.auto_backup_enabled);
     assert_eq!(def.interval_minutes, 1440);
     assert_eq!(def.retention_count, 5);
 

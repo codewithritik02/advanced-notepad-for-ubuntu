@@ -427,8 +427,10 @@ mod tests {
 
     #[test]
     fn test_is_backup_due_user_disabled_invariant() {
-        let mut settings = BackupSettings::default();
-        settings.auto_backup_enabled = false;
+        let settings = BackupSettings {
+            auto_backup_enabled: false,
+            ..BackupSettings::default()
+        };
         let state = BackupSchedulerState::default();
         let now = Utc::now();
 
@@ -442,9 +444,11 @@ mod tests {
 
     #[test]
     fn test_is_backup_due_first_run_startup_behavior() {
-        let mut settings = BackupSettings::default();
-        settings.auto_backup_enabled = true;
-        settings.backup_on_startup = true;
+        let mut settings = BackupSettings {
+            auto_backup_enabled: true,
+            backup_on_startup: true,
+            ..BackupSettings::default()
+        };
         let state = BackupSchedulerState::default();
         let now = Utc::now();
 

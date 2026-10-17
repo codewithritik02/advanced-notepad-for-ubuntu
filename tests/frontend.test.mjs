@@ -12224,7 +12224,7 @@ describe("Phase 7: Attachments & Files", () => {
       assert.ok(repoContent.includes("Cannot attach files to a deleted note"));
     });
 
-    it("verifies permanent delete cleans up physical directory to prevent orphaned files", async () => {
+    it("keeps the legacy delete endpoint soft-only and routes permanent deletion through Trash", async () => {
       const fs = await import("node:fs");
       const commandsContent = fs.readFileSync(
         new URL(
@@ -12241,9 +12241,15 @@ describe("Phase 7: Attachments & Files", () => {
         "utf8"
       );
 
-      // Verifies delete_note checks soft parameter and removes physical note directory on hard delete
+      const legacyDeleteBody = commandsContent.match(
+        /pub fn delete_note\([\s\S]*?\n\}/
+      )?.[0] || "";
+
+      // The legacy endpoint must reject hard-delete requests before touching files.
       assert.ok(commandsContent.includes("pub fn delete_note"));
-      assert.ok(commandsContent.includes("storage.remove_note_directory(&id)"));
+      assert.ok(legacyDeleteBody.includes("if soft == Some(false)"));
+      assert.strictEqual(legacyDeleteBody.includes("remove_note_directory"), false);
+      assert.ok(commandsContent.includes("pub fn permanently_delete_note"));
       assert.ok(storageContent.includes("pub fn remove_note_directory"));
     });
   });
@@ -12716,7 +12722,10 @@ describe("Phase 8: Trash & Recovery", () => {
       );
 
       assert.ok(notesStorageContent.includes("listTrashed"), "notesStorage should have listTrashed method");
-      assert.ok(notesStorageContent.includes('invoke<TrashedNoteItem[]>("list_trashed_notes")'), "listTrashed should invoke list_trashed_notes");
+      assert.ok(
+        notesStorageContent.includes('invoke<TrashedNoteItem[]>("list_trashed_notes", { limit, offset })'),
+        "listTrashed should invoke the paginated list_trashed_notes contract"
+      );
       assert.ok(notesStorageContent.includes("TrashedNoteItem"), "notesStorage should import TrashedNoteItem");
     });
 
@@ -12732,13 +12741,13 @@ describe("Phase 8: Trash & Recovery", () => {
       assert.ok(appContent.includes('selectTrash();'), "App should call selectTrash when navigating to trash");
       assert.ok(appContent.includes('await loadNotes("trash", null, null)'), "App should load trashed notes on selection");
 
-      // Verify trash count synchronization in refreshNoteCounts
-      assert.ok(appContent.includes('storageService.notes.listTrashed()'), "refreshNoteCounts should query listTrashed");
-      assert.ok(appContent.includes('counts["trash"]'), "refreshNoteCounts should set counts['trash']");
+      // Verify trash count comes from the aggregate query without loading every trashed note
+      assert.ok(appContent.includes('"trash": noteCounts.trash'), "refreshNoteCounts should use the aggregate trash count");
 
       // Verify trashed notes mapping in loadNotes
-      assert.ok(appContent.includes('effectiveNav === "trash"'), "loadNotes should handle effectiveNav === 'trash'");
-      assert.ok(appContent.includes('is_deleted: true'), "loadNotes should mark trashed notes as deleted");
+      assert.ok(appContent.includes('context.navId === "trash"'), "page loader should handle the Trash view");
+      assert.ok(appContent.includes('is_deleted: true'), "trash page mapping should mark trashed notes as deleted");
+      assert.ok(appContent.includes("storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset)"), "trash loading should be paginated");
     });
   });
 
@@ -13291,8 +13300,8 @@ describe("Phase 8: Trash & Recovery", () => {
 
       // Verify checking that note is still in Trash and refreshing UI if not
       assert.ok(
-        appContent.includes("const trashedNotes = await storageService.notes.listTrashed()"),
-        "Confirmation flow must check if note is still in Trash"
+        appContent.includes("const currentNote = await storageService.notes.get(noteId)"),
+        "Confirmation flow must directly re-read the target note"
       );
       assert.ok(
         appContent.includes('throw new Error("This note is no longer in the Trash.")'),
@@ -13686,10 +13695,11 @@ describe("Phase 8: Trash & Recovery", () => {
         "getTagNoteCounts must only count active notes"
       );
 
-      // Verify App.tsx loadNotes for favorites calls storageService.notes.listFavorites()
+      // Verify paginated note-page loading handles favorites
       assert.ok(
-        appContent.includes('} else if (effectiveNav === "favorites") {\n          fetchedNotes = await storageService.notes.listFavorites();'),
-        "App.tsx loadNotes must call storageService.notes.listFavorites() for favorites view"
+        appContent.includes('context.navId === "favorites"') &&
+          appContent.includes("storageService.notes.listFavorites(300, DEFAULT_PAGE_SIZE, offset)"),
+        "App.tsx must load favorite notes through the bounded page helper"
       );
 
       // Verify list_favorites excludes trashed notes
@@ -14227,8 +14237,8 @@ describe("Phase 8: Trash & Recovery", () => {
 
       // Verify frontend re-validates note is still in Trash before executing permanent deletion
       assert.ok(
-        appContent.includes("const isStillInTrash = trashedNotes.some((n) => n.id === noteId);"),
-        "handleConfirmPermanentDelete must verify note is still in Trash"
+        appContent.includes("if (!currentNote?.is_deleted)"),
+        "handleConfirmPermanentDelete must verify the target note is still in Trash"
       );
       assert.ok(
         appContent.includes('throw new Error("This note is no longer in the Trash.");'),
@@ -14430,8 +14440,8 @@ describe("Phase 8: Trash & Recovery", () => {
           "Selecting trash must invoke loadNotes with 'trash' and null filters"
         );
         assert.ok(
-          appContent.includes("storageService.notes.listTrashed()"),
-          "App.tsx must query listTrashed() for trash count synchronization"
+          appContent.includes("storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset)"),
+          "App.tsx must load Trash through the bounded page helper"
         );
       });
 
@@ -27425,11 +27435,11 @@ describe("Phase 13 Task 9: Note Lists, Pagination, and Rendering Optimizations",
       "notesStorage.list must default contentLimit to 300 to bound preview payload"
     );
     assert.ok(
-      notesStorageContent.includes("async listFavorites(contentLimit: number = 300)"),
+      /async listFavorites\(\s*contentLimit: number = 300,/.test(notesStorageContent),
       "notesStorage.listFavorites must default contentLimit to 300"
     );
     assert.ok(
-      tagsStorageContent.includes("async getNotesForTag(tagId: string, contentLimit: number = 300)"),
+      /async getNotesForTag\(\s*tagId: string,\s*contentLimit: number = 300,/.test(tagsStorageContent),
       "tags.getNotesForTag must default contentLimit to 300"
     );
     assert.ok(
@@ -28465,11 +28475,23 @@ describe("Phase 14 Task 22 — Regression Tests for Known Defects", () => {
     // Enforce match with latest request ID before applying state
     assert.ok(useSearchCode.includes("if (currentReqId === requestIdRef.current)"));
   });
+
+  it("verifies DEF-10 regression: production Tauri webviews enforce an offline CSP", () => {
+    const tauriConfig = JSON.parse(
+      fs.readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf-8")
+    );
+    const security = tauriConfig.app?.security;
+
+    assert.equal(typeof security?.csp, "string");
+    assert.ok(security.csp.includes("default-src 'self'"));
+    assert.ok(security.csp.includes("connect-src 'self' ipc: http://ipc.localhost"));
+    assert.ok(security.csp.includes("object-src 'none'"));
+    assert.ok(security.csp.includes("base-uri 'none'"));
+    assert.strictEqual(security.csp.includes("https:"), false);
+    assert.strictEqual(security.csp.includes("http:"), true, "Tauri IPC localhost is explicitly allowed");
+    assert.strictEqual(security.freezePrototype, true);
+  });
 });
-
-
-
-
 
 
 

@@ -363,8 +363,8 @@ fn test_restore_valid_backup_into_isolated_environment_and_compare_state() {
         "Original body content to be restored faithfully."
     );
     assert_eq!(restored_note.format, "md");
-    assert_eq!(restored_note.is_favorite, true);
-    assert_eq!(restored_note.is_pinned, true);
+    assert!(restored_note.is_favorite);
+    assert!(restored_note.is_pinned);
     assert_eq!(restored_note.notebook_id, Some(nb.id.clone()));
 
     let restored_nb = NotebookRepository::get_by_id(&target_conn, &nb.id)

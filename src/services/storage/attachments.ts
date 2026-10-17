@@ -75,6 +75,18 @@ export const attachmentsStorage = {
       olderThanSeconds: olderThanSeconds ?? 60,
     });
   },
+
+  /** Retries removal of a deleted note's managed attachment directory. */
+  async retryNoteCleanup(noteId: string): Promise<boolean> {
+    return await invoke<boolean>("retry_note_attachment_cleanup", {
+      noteId: noteId.trim(),
+    });
+  },
+
+  /** Removes verified managed files that no longer have attachment metadata. */
+  async cleanupUnreferencedFiles(): Promise<number> {
+    return await invoke<number>("cleanup_unreferenced_attachment_files");
+  },
 };
 
 export default attachmentsStorage;

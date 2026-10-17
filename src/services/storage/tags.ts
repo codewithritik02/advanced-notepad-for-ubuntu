@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Tag, UpdateTagInput, Note } from "./types";
+import { DEFAULT_PAGE_SIZE } from "./limits";
 
 export const tagsStorage = {
   /**
@@ -75,10 +76,17 @@ export const tagsStorage = {
   /**
    * Retrieves all non-deleted notes associated with a specific tag (Task 24).
    */
-  async getNotesForTag(tagId: string, contentLimit: number = 300): Promise<Note[]> {
+  async getNotesForTag(
+    tagId: string,
+    contentLimit: number = 300,
+    limit: number = DEFAULT_PAGE_SIZE,
+    offset: number = 0
+  ): Promise<Note[]> {
     return await invoke<Note[]>("get_notes_for_tag", {
       tagId,
       contentLimit: contentLimit ?? null,
+      limit,
+      offset,
     });
   },
 
@@ -105,5 +113,4 @@ export const tagsStorage = {
     return await invoke<Record<string, string[]>>("get_tags_for_notes", { noteIds });
   },
 };
-
 

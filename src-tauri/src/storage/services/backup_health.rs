@@ -17,10 +17,8 @@ pub struct BackupHealthService;
 impl BackupHealthService {
     /// Determines whether the specified backup destination directory is accessible and writable.
     pub fn check_destination_available(dest: &Path) -> bool {
-        if !dest.exists() {
-            if fs::create_dir_all(dest).is_err() {
-                return false;
-            }
+        if !dest.exists() && fs::create_dir_all(dest).is_err() {
+            return false;
         }
 
         if !dest.is_dir() {
@@ -321,8 +319,10 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         // Disable automatic backups
-        let mut settings = BackupSettings::default();
-        settings.auto_backup_enabled = false;
+        let settings = BackupSettings {
+            auto_backup_enabled: false,
+            ..BackupSettings::default()
+        };
         BackupSettingsService::save_settings(&conn, &paths, settings).unwrap();
 
         let health = BackupHealthService::get_health_status(&conn, &paths).unwrap();

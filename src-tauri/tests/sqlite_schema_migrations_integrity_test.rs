@@ -603,8 +603,7 @@ fn corrupted_database_is_detected_without_modifying_or_replacing_original_bytes(
     fs::write(&fixture.paths.database_file, corrupt_bytes).unwrap();
 
     let error = init_connection(&fixture.paths.database_file)
-        .err()
-        .expect("corrupt database must be rejected");
+        .expect_err("corrupt database must be rejected");
     assert_eq!(error.category(), ErrorCategory::Corruption);
     assert_eq!(
         fs::read(&fixture.paths.database_file).unwrap(),

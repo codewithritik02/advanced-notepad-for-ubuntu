@@ -83,6 +83,8 @@ pub fn run() {
             commands::get_attachment_count,
             commands::check_attachment_consistency,
             commands::cleanup_abandoned_temp_files,
+            commands::retry_note_attachment_cleanup,
+            commands::cleanup_unreferenced_attachment_files,
             commands::resolve_link_target,
             commands::get_backlinks,
             commands::scan_import_files,

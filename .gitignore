@@ -16,7 +16,7 @@ build/
 src-tauri/target/
 target/
 **/*.rs.bk
-Cargo.lock
+# Application lockfiles are committed for reproducible desktop builds.
 
 # Environment and local secrets
 .env

@@ -329,8 +329,7 @@ impl BackupService {
                     }
                     cleanup_temp_files();
                     if let Some(28) = copy_err.raw_os_error() {
-                        return Err(BackupError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(BackupError::Io(std::io::Error::other(
                             "Insufficient disk space to complete backup.",
                         )));
                     } else {

@@ -365,17 +365,17 @@ fn test_import_unsupported_extensions_and_invalid_encoding() {
     fs::create_dir_all(&temp_root).expect("create temp dir");
 
     let bin_path = temp_root.join("binary_blob.bin");
-    fs::write(&bin_path, &[0xDE, 0xAD, 0xBE, 0xEF]).expect("write bin");
+    fs::write(&bin_path, [0xDE, 0xAD, 0xBE, 0xEF]).expect("write bin");
 
     let exe_path = temp_root.join("executable.exe");
-    fs::write(&exe_path, &[0x4D, 0x5A, 0x90, 0x00]).expect("write exe");
+    fs::write(&exe_path, [0x4D, 0x5A, 0x90, 0x00]).expect("write exe");
 
     let pdf_path = temp_root.join("manual.pdf");
     fs::write(&pdf_path, b"%PDF-1.4").expect("write pdf");
 
     // File with .txt extension but invalid non-UTF8 bytes
     let bad_utf8_path = temp_root.join("invalid_utf8.txt");
-    fs::write(&bad_utf8_path, &[0xFF, 0xFE, 0xFD, 0xFC]).expect("write bad utf8");
+    fs::write(&bad_utf8_path, [0xFF, 0xFE, 0xFD, 0xFC]).expect("write bad utf8");
 
     let paths = vec![
         bin_path.to_string_lossy().to_string(),

@@ -683,8 +683,8 @@ fn test_integ_09_confirm_notes_and_metadata_are_restored() {
     );
     assert_eq!(note.format, "md");
     assert_eq!(note.notebook_id, Some(fix.notebook_id.clone()));
-    assert_eq!(note.is_favorite, true);
-    assert_eq!(note.is_pinned, true);
+    assert!(note.is_favorite);
+    assert!(note.is_pinned);
 
     let nb = NotebookRepository::get_by_id(&conn, &fix.notebook_id)
         .unwrap()

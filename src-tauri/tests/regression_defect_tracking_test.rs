@@ -339,8 +339,8 @@ fn regression_def_11_process_global_test_state_synchronization() {
             thread::spawn(move || {
                 let _guard = lock_process_global_test_state();
                 // Critical section access
-                let thread_val = idx * 10;
-                thread_val
+
+                idx * 10
             })
         })
         .collect();

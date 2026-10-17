@@ -310,11 +310,11 @@ fn test_pinned_notes_sort_order_and_toggle() {
     assert!(!active_notes[2].is_pinned);
     assert!(!active_notes[3].is_pinned);
 
-    let pinned_ids = vec![active_notes[0].id.clone(), active_notes[1].id.clone()];
+    let pinned_ids = [active_notes[0].id.clone(), active_notes[1].id.clone()];
     assert!(pinned_ids.contains(&n2.id));
     assert!(pinned_ids.contains(&n4.id));
 
-    let unpinned_ids = vec![active_notes[2].id.clone(), active_notes[3].id.clone()];
+    let unpinned_ids = [active_notes[2].id.clone(), active_notes[3].id.clone()];
     assert!(unpinned_ids.contains(&n1.id));
     assert!(unpinned_ids.contains(&n3.id));
 

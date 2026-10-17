@@ -692,8 +692,8 @@ mod tests {
 
             // Database
             zip.start_file("database.sqlite", opts).unwrap();
-            let mut db_bytes = fs::read(&bad_db_path).unwrap();
-            zip.write_all(&mut db_bytes).unwrap();
+            let db_bytes = fs::read(&bad_db_path).unwrap();
+            zip.write_all(&db_bytes).unwrap();
             zip.finish().unwrap();
         }
 

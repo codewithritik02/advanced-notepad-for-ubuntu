@@ -178,7 +178,7 @@ mod tests {
         // 1. Initial state returns defaults
         let initial = BackupSettingsService::get_settings(&conn).expect("Get default settings");
         assert_eq!(initial, BackupSettings::default());
-        assert_eq!(initial.auto_backup_enabled, true);
+        assert!(initial.auto_backup_enabled);
         assert_eq!(initial.interval_minutes, 1440);
         assert_eq!(initial.retention_count, 5);
         assert_eq!(initial.backup_destination_dir, None);
@@ -195,7 +195,7 @@ mod tests {
 
         let saved = BackupSettingsService::save_settings(&conn, &paths, updated.clone())
             .expect("Save custom settings");
-        assert_eq!(saved.auto_backup_enabled, false);
+        assert!(!saved.auto_backup_enabled);
         assert_eq!(saved.interval_minutes, 360);
         assert_eq!(saved.retention_count, 10);
         assert!(custom_dir.is_dir());

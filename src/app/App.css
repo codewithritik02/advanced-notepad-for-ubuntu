@@ -98,3 +98,18 @@
   color: var(--color-text-primary);
   background-color: var(--color-surface-hover);
 }
+
+.trash-feedback-retry {
+  border: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.trash-feedback-retry:hover {
+  background-color: var(--color-surface-hover);
+}

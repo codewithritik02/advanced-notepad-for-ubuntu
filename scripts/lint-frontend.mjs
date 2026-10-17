@@ -14,8 +14,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,13 +30,45 @@ let hasErrors = false;
 // 1. Run TypeScript type check
 process.stdout.write("Checking TypeScript compilation (tsc --noEmit)... ");
 try {
-  execSync("npx tsc --noEmit", { cwd: projectRoot, stdio: "pipe" });
-  console.log("PASS ✅");
+  const configPath = ts.findConfigFile(projectRoot, ts.sys.fileExists, "tsconfig.json");
+  if (!configPath) throw new Error("tsconfig.json was not found");
+
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (configFile.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(configFile.error.messageText, "\n"));
+  }
+
+  const parsedConfig = ts.parseJsonConfigFileContent(
+    configFile.config,
+    ts.sys,
+    projectRoot,
+    { noEmit: true },
+    configPath
+  );
+  const program = ts.createProgram({
+    rootNames: parsedConfig.fileNames,
+    options: parsedConfig.options,
+    projectReferences: parsedConfig.projectReferences,
+  });
+  const diagnostics = [...parsedConfig.errors, ...ts.getPreEmitDiagnostics(program)];
+
+  if (diagnostics.length > 0) {
+    console.log("FAIL ❌");
+    console.error(
+      ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: () => projectRoot,
+        getNewLine: () => "\n",
+      })
+    );
+    hasErrors = true;
+  } else {
+    console.log("PASS ✅");
+  }
 } catch (error) {
   console.log("FAIL ❌");
   console.error("\nTypeScript compiler reported errors:");
-  if (error.stdout) console.error(error.stdout.toString());
-  if (error.stderr) console.error(error.stderr.toString());
+  console.error(error instanceof Error ? error.message : String(error));
   hasErrors = true;
 }
 

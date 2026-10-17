@@ -10,6 +10,7 @@ import {
   TrashedNoteItem,
   UpdateNoteInput,
 } from "./types";
+import { DEFAULT_PAGE_SIZE } from "./limits";
 
 export const notesStorage = {
   /**
@@ -18,14 +19,19 @@ export const notesStorage = {
    */
   async list(options?: ListNotesOptions | boolean): Promise<Note[]> {
     if (typeof options === "boolean") {
-      return await invoke<Note[]>("list_notes", { includeDeleted: options });
+      return await invoke<Note[]>("list_notes", {
+        includeDeleted: options,
+        limit: DEFAULT_PAGE_SIZE,
+        offset: 0,
+        contentLimit: 300,
+      });
     }
     const {
       includeDeleted = false,
       notebookId,
       unfiledOnly = false,
-      limit,
-      offset,
+      limit = DEFAULT_PAGE_SIZE,
+      offset = 0,
       contentLimit = 300,
     } = options || {};
     return await invoke<Note[]>("list_notes", {
@@ -64,20 +70,6 @@ export const notesStorage = {
    */
   async update(id: string, input: UpdateNoteInput): Promise<Note> {
     return await invoke<Note>("update_note", { id, dto: input });
-  },
-
-  /**
-   * Deletes a note (defaults to soft delete).
-   */
-  async delete(id: string, soft = true): Promise<boolean> {
-    return await invoke<boolean>("delete_note", { id, soft });
-  },
-
-  /**
-   * Restores a soft-deleted note in SQLite.
-   */
-  async restore(id: string): Promise<Note> {
-    return await invoke<Note>("restore_note", { id });
   },
 
   /**
@@ -121,9 +113,15 @@ export const notesStorage = {
   /**
    * Lists all favorite, non-deleted notes ordered by modified date.
    */
-  async listFavorites(contentLimit: number = 300): Promise<Note[]> {
+  async listFavorites(
+    contentLimit: number = 300,
+    limit: number = DEFAULT_PAGE_SIZE,
+    offset: number = 0
+  ): Promise<Note[]> {
     return await invoke<Note[]>("list_favorite_notes", {
       contentLimit: contentLimit ?? null,
+      limit,
+      offset,
     });
   },
 
@@ -144,8 +142,11 @@ export const notesStorage = {
   /**
    * Retrieves lightweight trashed note items (Phase 8, Task 10).
    */
-  async listTrashed(): Promise<TrashedNoteItem[]> {
-    return await invoke<TrashedNoteItem[]>("list_trashed_notes");
+  async listTrashed(
+    limit: number = DEFAULT_PAGE_SIZE,
+    offset: number = 0
+  ): Promise<TrashedNoteItem[]> {
+    return await invoke<TrashedNoteItem[]>("list_trashed_notes", { limit, offset });
   },
 
   /**
@@ -176,4 +177,3 @@ export const notesStorage = {
     return await invoke<EmptyTrashResult>("empty_trash");
   },
 };
-

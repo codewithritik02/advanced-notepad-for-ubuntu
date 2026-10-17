@@ -1,7 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::storage::errors::CryptoError;
 
 pub const MAX_AUDIT_LOGS: usize = 200;
+pub const MAX_AUDIT_LOG_FILE_BYTES: u64 = 1024 * 1024;
 
 /// Standardized security event codes for audit trail and diagnostics (Phase 12, Task 22).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,7 +139,7 @@ pub fn sanitize_security_message(raw: &str) -> String {
         if let Some(pos) = lower.find(pattern) {
             // Check if followed by colon or equals
             let remainder = &sanitized[pos + pattern.len()..];
-            if let Some(assign_pos) = remainder.find(|c: char| c == ':' || c == '=') {
+            if let Some(assign_pos) = remainder.find([':', '=']) {
                 if assign_pos <= 2 {
                     let after_assign = remainder[assign_pos + 1..].trim_start();
                     let val_end = after_assign
@@ -183,6 +184,12 @@ pub fn classify_crypto_failure(err: &CryptoError) -> (&'static str, bool) {
 pub struct SecurityAuditor {
     entries: Mutex<VecDeque<SecurityLogEntry>>,
     file_path: Mutex<Option<PathBuf>>,
+}
+
+impl Default for SecurityAuditor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SecurityAuditor {
@@ -230,6 +237,7 @@ impl SecurityAuditor {
         {
             let path_guard = self.file_path.lock().unwrap();
             if let Some(ref path) = *path_guard {
+                let _ = rotate_security_log_if_needed(path);
                 if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
                     if let Ok(json_line) = serde_json::to_string(&entry) {
                         let _ = writeln!(file, "{json_line}");
@@ -249,6 +257,23 @@ impl SecurityAuditor {
         let mut guard = self.entries.lock().unwrap();
         guard.clear();
     }
+}
+
+fn rotate_security_log_if_needed(path: &PathBuf) -> std::io::Result<()> {
+    if fs::metadata(path)
+        .map(|metadata| metadata.len() < MAX_AUDIT_LOG_FILE_BYTES)
+        .unwrap_or(true)
+    {
+        return Ok(());
+    }
+
+    let mut rotated_name = path.as_os_str().to_os_string();
+    rotated_name.push(".1");
+    let rotated_path = PathBuf::from(rotated_name);
+    if rotated_path.exists() {
+        fs::remove_file(&rotated_path)?;
+    }
+    fs::rename(path, rotated_path)
 }
 
 static AUDITOR: OnceLock<SecurityAuditor> = OnceLock::new();
@@ -328,24 +353,24 @@ mod tests {
         let auth_err = CryptoError::AuthenticationFailed;
         let (auth_class, auth_is_corrupt) = classify_crypto_failure(&auth_err);
         assert_eq!(auth_class, "credential_mismatch");
-        assert_eq!(
-            auth_is_corrupt, false,
+        assert!(
+            !auth_is_corrupt,
             "Auth failure must not be classified as corruption"
         );
 
         let corrupt_err = CryptoError::TamperedOrCorrupted("Tag mismatch".to_string());
         let (corrupt_class, corrupt_is_corrupt) = classify_crypto_failure(&corrupt_err);
         assert_eq!(corrupt_class, "data_corruption_or_tampering");
-        assert_eq!(
-            corrupt_is_corrupt, true,
+        assert!(
+            corrupt_is_corrupt,
             "Data tampering must be classified as corruption"
         );
 
         let meta_err = CryptoError::InvalidMetadata("Invalid JSON".to_string());
         let (meta_class, meta_is_corrupt) = classify_crypto_failure(&meta_err);
         assert_eq!(meta_class, "metadata_corruption");
-        assert_eq!(
-            meta_is_corrupt, true,
+        assert!(
+            meta_is_corrupt,
             "Metadata error must be classified as corruption"
         );
     }
@@ -370,6 +395,34 @@ mod tests {
         let content = std::fs::read_to_string(&log_file).unwrap();
         assert!(content.contains("ENCRYPTION_SETUP_COMPLETED"));
         assert!(content.contains("Encryption successfully configured"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_local_file_logging_rotates_at_size_limit() {
+        let temp_dir = std::env::temp_dir().join(format!("sec_rotate_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let log_file = temp_dir.join("security_test.log");
+        std::fs::write(&log_file, vec![b'x'; MAX_AUDIT_LOG_FILE_BYTES as usize]).unwrap();
+
+        let auditor = SecurityAuditor::new();
+        auditor.set_file_sink(log_file.clone());
+        auditor.record(
+            SecurityEventCode::ManualLockTriggered,
+            SecurityLogLevel::Info,
+            "Application locked",
+            None,
+        );
+
+        let mut rotated_name = log_file.as_os_str().to_os_string();
+        rotated_name.push(".1");
+        let rotated_file = PathBuf::from(rotated_name);
+        assert_eq!(
+            std::fs::metadata(&rotated_file).unwrap().len(),
+            MAX_AUDIT_LOG_FILE_BYTES
+        );
+        assert!(std::fs::metadata(&log_file).unwrap().len() < MAX_AUDIT_LOG_FILE_BYTES);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

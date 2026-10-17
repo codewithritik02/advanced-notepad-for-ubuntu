@@ -53,6 +53,7 @@ impl SearchRepository {
     /// - If locked (no DEK): Rejects with `StorageError::Crypto` ("Application is locked...").
     /// - If unlocked (with DEK): Performs safe in-memory search over decrypted notes, preventing any
     ///   unencrypted derived index or search snippet from being written to disk.
+    ///
     /// When encryption is not enabled:
     /// - Uses SQLite FTS5 / LIKE queries as before.
     pub fn search_with_key(
@@ -2866,12 +2867,12 @@ mod tests {
         assert!(!res_full.modified_at.is_empty());
 
         // Verify optional metadata fields (favorite, notebook_id)
-        assert_eq!(res_full.favorite, true);
+        assert!(res_full.favorite);
         assert_eq!(res_full.notebook_id, Some(notebook.id));
 
         assert_eq!(res_min.title, "Metadata Test Minimal Note");
         assert!(res_min.snippet.is_some());
-        assert_eq!(res_min.favorite, false);
+        assert!(!res_min.favorite);
         assert_eq!(res_min.notebook_id, None);
 
         drop(conn);
@@ -5076,12 +5077,10 @@ mod tests {
         assert_eq!(SearchRepository::MAX_LIMIT, 100);
 
         // Limit clamping logic:
-        let clamped_huge = Some(1_000_000)
-            .unwrap()
-            .clamp(1, SearchRepository::MAX_LIMIT);
+        let clamped_huge = 1_000_000.clamp(1, SearchRepository::MAX_LIMIT);
         assert_eq!(clamped_huge, 100);
 
-        let clamped_zero = Some(0).unwrap().clamp(1, SearchRepository::MAX_LIMIT);
+        let clamped_zero = 0.clamp(1, SearchRepository::MAX_LIMIT);
         assert_eq!(clamped_zero, 1);
 
         drop(conn);
@@ -5273,7 +5272,7 @@ mod tests {
 
         // Assert NoteRepository returns pure domain Note models (with metadata, format, soft deletion)
         assert_eq!(note_list[0].format, "txt");
-        assert_eq!(note_list[0].is_deleted, false);
+        assert!(!note_list[0].is_deleted);
         assert_eq!(note_list[0].deleted_at, None);
 
         // Assert SearchRepository returns lightweight SearchResult models (with snippet, ranking)
@@ -5403,7 +5402,7 @@ mod tests {
         assert!(!obj.contains_key("rowid"), "Must not leak SQLite rowid");
 
         assert_eq!(obj["noteId"].as_str().unwrap(), note.id);
-        assert_eq!(obj["favorite"].as_bool().unwrap(), true);
+        assert!(obj["favorite"].as_bool().unwrap());
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);

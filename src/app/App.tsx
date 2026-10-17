@@ -8,7 +8,13 @@ import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { storageService, Note, NoteFormat, ResolvedLinkTarget } from "../services/storage";
+import {
+  storageService,
+  Note,
+  NoteFormat,
+  ResolvedLinkTarget,
+  DEFAULT_PAGE_SIZE,
+} from "../services/storage";
 import { logger } from "../utils/logger";
 import {
   useNotebooks,
@@ -68,6 +74,56 @@ import {
 import { UnlockScreen } from "../features/security";
 import { useAutoLock } from "../features/security";
 
+interface NotePageContext {
+  navId: NavItemId;
+  notebookId: string | null;
+  tagId: string | null;
+}
+
+function trashedItemToNote(item: Awaited<ReturnType<typeof storageService.notes.listTrashed>>[number]): Note {
+  return {
+    id: item.id,
+    title: item.title,
+    content: item.preview,
+    format: "txt",
+    notebook_id: item.notebookId,
+    created_at: item.createdAt,
+    modified_at: item.modifiedAt,
+    is_favorite: item.isFavorite,
+    is_pinned: false,
+    is_deleted: true,
+    deleted_at: item.deletedAt,
+    attachment_count: item.attachmentCount,
+  } as Note;
+}
+
+async function fetchNotePage(context: NotePageContext, offset: number): Promise<Note[]> {
+  if (context.navId === "tags" && context.tagId) {
+    return storageService.tags.getNotesForTag(
+      context.tagId,
+      300,
+      DEFAULT_PAGE_SIZE,
+      offset
+    );
+  }
+  if (context.navId === "trash") {
+    const items = await storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset);
+    return items.map(trashedItemToNote);
+  }
+  if (context.navId === "favorites") {
+    return storageService.notes.listFavorites(300, DEFAULT_PAGE_SIZE, offset);
+  }
+
+  return storageService.notes.list({
+    includeDeleted: false,
+    notebookId: context.navId === "notebook" ? context.notebookId : undefined,
+    unfiledOnly: context.navId === "unfiled",
+    limit: DEFAULT_PAGE_SIZE,
+    offset,
+    contentLimit: 300,
+  });
+}
+
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
@@ -100,6 +156,8 @@ export function App() {
   const [restorePreviewCandidate, setRestorePreviewCandidate] = useState<string | null>(null);
   const [isRestoringBackup, setIsRestoringBackup] = useState<boolean>(false);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [hasMoreNotes, setHasMoreNotes] = useState(false);
+  const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const navigationHistory = useNoteNavigationHistory(selectedNoteId);
   const [isStorageReady, setIsStorageReady] = useState(false);
@@ -356,10 +414,11 @@ export function App() {
   const [trashFeedback, setTrashFeedback] = useState<{
     type: "success" | "error" | "warning";
     message: string;
+    cleanupNoteIds?: string[];
   } | null>(null);
 
   useEffect(() => {
-    if (trashFeedback) {
+    if (trashFeedback && !trashFeedback.cleanupNoteIds?.length) {
       const timer = setTimeout(() => {
         setTrashFeedback(null);
       }, 5000);
@@ -374,6 +433,11 @@ export function App() {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const activeLoadRequestIdRef = useRef<number>(0);
+  const notePageContextRef = useRef<NotePageContext>({
+    navId: "all-notes",
+    notebookId: null,
+    tagId: null,
+  });
   const activeLinkNavRequestIdRef = useRef<number>(0);
   const inFlightMutationsRef = useRef<Set<string>>(new Set());
 
@@ -493,13 +557,6 @@ export function App() {
         ...noteCounts.byNotebook,
       };
 
-      try {
-        const trashed = await storageService.notes.listTrashed();
-        counts["trash"] = trashed.length;
-      } catch {
-        // Retain backend aggregate trash count if listTrashed fails
-      }
-
       setNoteCounts(counts);
 
       const countsByTag = await storageService.tags.getTagNoteCounts();
@@ -554,6 +611,8 @@ export function App() {
       if (!isStorageReady || isAppLocked) return;
       const requestId = ++activeLoadRequestIdRef.current;
       setStatus("loading");
+      setIsLoadingMoreNotes(false);
+      setHasMoreNotes(false);
       try {
         const effectiveNav = overrideNavId !== undefined ? overrideNavId : activeNavId;
         const effectiveNotebook =
@@ -561,48 +620,22 @@ export function App() {
         const effectiveTag =
           overrideTagId !== undefined ? overrideTagId : selectedTagId;
 
-        let fetchedNotes: Note[] = [];
-
-        if (effectiveNav === "tags" && effectiveTag) {
-          fetchedNotes = await storageService.tags.getNotesForTag(effectiveTag);
-        } else if (effectiveNav === "trash") {
-          const trashed = await storageService.notes.listTrashed();
-          fetchedNotes = trashed.map((t) => ({
-            id: t.id,
-            title: t.title,
-            content: t.preview,
-            format: "txt",
-            notebook_id: t.notebookId,
-            created_at: t.createdAt,
-            modified_at: t.modifiedAt,
-            is_favorite: t.isFavorite,
-            is_pinned: false,
-            is_deleted: true,
-            deleted_at: t.deletedAt,
-            attachment_count: t.attachmentCount,
-          }));
-        } else if (effectiveNav === "favorites") {
-          fetchedNotes = await storageService.notes.listFavorites();
-        } else {
-          let options: {
-            includeDeleted?: boolean;
-            notebookId?: string | null;
-            unfiledOnly?: boolean;
-          } = {};
-
-          if (effectiveNav === "unfiled") {
-            options = { unfiledOnly: true };
-          } else if (effectiveNav === "notebook" && effectiveNotebook) {
-            options = { notebookId: effectiveNotebook };
-          }
-
-          fetchedNotes = await storageService.notes.list(options);
-        }
+        const context: NotePageContext = {
+          navId: effectiveNav,
+          notebookId: effectiveNotebook,
+          tagId: effectiveTag,
+        };
+        const fetchedNotes =
+          effectiveNav === "tags" && !effectiveTag
+            ? []
+            : await fetchNotePage(context, 0);
 
         // Stale response protection (Task 21: Discard response if newer load started or user navigated away)
         if (activeLoadRequestIdRef.current !== requestId) return;
 
         setNotes(fetchedNotes);
+        notePageContextRef.current = context;
+        setHasMoreNotes(fetchedNotes.length === DEFAULT_PAGE_SIZE);
 
         if (fetchedNotes.length > 0) {
           setSelectedNoteId((prev) =>
@@ -623,6 +656,32 @@ export function App() {
     },
     [activeNavId, selectedNotebookId, selectedTagId, isStorageReady, isAppLocked]
   );
+
+  const loadMoreNotes = useCallback(async () => {
+    if (isLoadingMoreNotes || !hasMoreNotes || isSearchActive) return;
+    const requestId = activeLoadRequestIdRef.current;
+    const context = notePageContextRef.current;
+    const offset = notes.length;
+    setIsLoadingMoreNotes(true);
+    try {
+      const page = await fetchNotePage(context, offset);
+      if (activeLoadRequestIdRef.current !== requestId) return;
+      setNotes((current) => {
+        const existingIds = new Set(current.map((note) => note.id));
+        return [...current, ...page.filter((note) => !existingIds.has(note.id))];
+      });
+      setHasMoreNotes(page.length === DEFAULT_PAGE_SIZE);
+    } catch (err) {
+      if (activeLoadRequestIdRef.current === requestId) {
+        setErrorMessage(
+          "Unable to load more notes: " +
+            (err instanceof Error ? err.message : String(err))
+        );
+      }
+    } finally {
+      setIsLoadingMoreNotes(false);
+    }
+  }, [hasMoreNotes, isLoadingMoreNotes, isSearchActive, notes.length]);
 
   useEffect(() => {
     if (isStorageReady && !isAppLocked) {
@@ -816,9 +875,8 @@ export function App() {
       inFlightMutationsRef.current.add(noteId);
       try {
         // If the selected note is no longer in Trash, reject the operation and refresh the UI
-        const trashedNotes = await storageService.notes.listTrashed();
-        const isStillInTrash = trashedNotes.some((n) => n.id === noteId);
-        if (!isStillInTrash) {
+        const currentNote = await storageService.notes.get(noteId);
+        if (!currentNote?.is_deleted) {
           await loadNotes("trash", null, null);
           await refreshNoteCounts();
           throw new Error("This note is no longer in the Trash.");
@@ -832,6 +890,12 @@ export function App() {
         await loadNotes("trash", null, null);
         await refreshNoteCounts();
         if (result.attachmentCleanupFailed) {
+          setTrashFeedback({
+            type: "warning",
+            message:
+              "The note was deleted, but its attachment files could not be removed. You can retry cleanup safely.",
+            cleanupNoteIds: [noteId],
+          });
           logger.warn(
             "Note permanently deleted but some attachments could not be cleaned up",
             { error: result.errorMessage ?? "Unknown cleanup error" }
@@ -897,6 +961,7 @@ export function App() {
         setTrashFeedback({
           type: "warning",
           message: `${result.deletedCount} notes deleted, but some attachments could not be cleaned up.`,
+          cleanupNoteIds: result.attachmentCleanupFailures,
         });
         logger.warn("Empty trash completed with attachment cleanup issues", {
           failures: result.attachmentCleanupFailures,
@@ -917,6 +982,43 @@ export function App() {
       inFlightMutationsRef.current.delete("__empty_trash__");
     }
   }, [activeNavId, loadNotes, refreshNoteCounts]);
+
+  const handleRetryAttachmentCleanup = useCallback(async () => {
+    const noteIds = trashFeedback?.cleanupNoteIds;
+    if (!noteIds?.length) return;
+
+    let results = await Promise.allSettled(
+      noteIds.map((noteId) => storageService.attachments.retryNoteCleanup(noteId))
+    );
+    let failedIds = noteIds.filter((_, index) => results[index].status === "rejected");
+    if (failedIds.length > 0) {
+      try {
+        await storageService.attachments.cleanupUnreferencedFiles();
+      } catch (error) {
+        logger.warn("Unreferenced attachment cleanup retry failed", {
+          error: String(error),
+        });
+      }
+      results = await Promise.allSettled(
+        failedIds.map((noteId) => storageService.attachments.retryNoteCleanup(noteId))
+      );
+      failedIds = failedIds.filter((_, index) => results[index].status === "rejected");
+    }
+    if (failedIds.length === 0) {
+      setTrashFeedback({
+        type: "success",
+        message: "Attachment cleanup completed successfully.",
+      });
+    } else {
+      setTrashFeedback({
+        type: "warning",
+        message: `Cleanup still failed for ${failedIds.length} note${
+          failedIds.length === 1 ? "" : "s"
+        }. Check file permissions and retry.`,
+        cleanupNoteIds: failedIds,
+      });
+    }
+  }, [trashFeedback]);
 
   const handleDeleteNote = useCallback(
     async (noteId?: string) => {
@@ -2002,8 +2104,20 @@ export function App() {
               isTrash={activeNavId === "trash"}
               searchQuery={searchQuery}
               resultCountLabel={
-                isSearchActive ? formatResultCount(scopedSearchResults.length) : undefined
+                isSearchActive
+                  ? formatResultCount(scopedSearchResults.length)
+                  : String(
+                      activeNavId === "tags" && selectedTagId
+                        ? tagCounts[selectedTagId] ?? displayedNoteListItems.length
+                        : activeNavId === "notebook" && selectedNotebookId
+                        ? noteCounts[selectedNotebookId] ?? displayedNoteListItems.length
+                        : noteCounts[activeNavId] ?? displayedNoteListItems.length
+                    )
               }
+              listKey={`${activeNavId}:${selectedNotebookId ?? ""}:${selectedTagId ?? ""}`}
+              hasMore={!isSearchActive && hasMoreNotes}
+              isLoadingMore={isLoadingMoreNotes}
+              onLoadMore={loadMoreNotes}
               onRetry={isSearchActive ? () => searchNow() : handleRetry}
               onNewNote={isSearchActive || activeNavId === "trash" ? undefined : handleNewNoteAction}
               onToggleFavorite={handleToggleNoteFavorite}
@@ -2260,6 +2374,15 @@ export function App() {
               : "✕"}
           </span>
           <span className="trash-feedback-message">{trashFeedback.message}</span>
+          {trashFeedback.cleanupNoteIds?.length ? (
+            <button
+              type="button"
+              className="trash-feedback-retry"
+              onClick={handleRetryAttachmentCleanup}
+            >
+              Retry cleanup
+            </button>
+          ) : null}
           <button
             type="button"
             className="trash-feedback-close"

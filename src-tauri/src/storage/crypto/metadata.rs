@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn test_reject_invalid_wrapped_key_lengths() {
         let mut meta = dummy_valid_metadata();
-        meta.wrapped_dek.nonce_base64 = BASE64_STANDARD.encode(&[1u8; 8]); // 8 bytes instead of 12
+        meta.wrapped_dek.nonce_base64 = BASE64_STANDARD.encode([1u8; 8]); // 8 bytes instead of 12
         let json = serde_json::to_string(&meta).unwrap();
 
         let err = EncryptionMetadata::from_json(&json).unwrap_err();

@@ -102,8 +102,7 @@ impl LinkParser {
 
             // 1. Scan forward from id_start_idx to find closing ')'
             let mut close_paren_idx = None;
-            for i in id_start_idx..len {
-                let b = bytes[i];
+            for (i, &b) in bytes.iter().enumerate().skip(id_start_idx) {
                 if b == b')' {
                     close_paren_idx = Some(i);
                     break;

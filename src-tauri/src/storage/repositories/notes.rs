@@ -84,20 +84,6 @@ impl NoteRepository {
         })
     }
 
-    #[allow(dead_code)]
-    fn map_row(row: &Row) -> rusqlite::Result<Note> {
-        Self::map_row_with_key(row, None).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(
-                1,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                )),
-            )
-        })
-    }
-
     pub fn create(conn: &Connection, dto: CreateNoteDto) -> Result<Note, StorageError> {
         Self::create_with_key(conn, dto, None)
     }
@@ -346,7 +332,17 @@ impl NoteRepository {
         conn: &Connection,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<TrashedNoteItem>, StorageError> {
-        let sql = r#"
+        Self::list_trashed_items_page_with_key(conn, None, None, dek)
+    }
+
+    pub fn list_trashed_items_page_with_key(
+        conn: &Connection,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<TrashedNoteItem>, StorageError> {
+        let mut sql = String::from(
+            r#"
             SELECT
                 n.id,
                 n.title,
@@ -367,10 +363,19 @@ impl NoteRepository {
             ) att ON n.id = att.note_id
             WHERE n.is_deleted = 1
             ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC
-        "#;
+        "#,
+        );
 
-        let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt.query([])?;
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?1 OFFSET ?2");
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = if let Some(limit) = limit {
+            stmt.query(params![limit as i64, offset.unwrap_or(0) as i64])?
+        } else {
+            stmt.query([])?
+        };
         let mut items = Vec::new();
 
         while let Some(row) = rows.next()? {
@@ -509,13 +514,14 @@ impl NoteRepository {
             params_vec.push(rusqlite::types::Value::Text(nb_id.to_string()));
         }
 
-        sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC");
+        sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC, id ASC");
 
         if let Some(limit) = options.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
-            if let Some(offset) = options.offset {
-                sql.push_str(&format!(" OFFSET {}", offset));
-            }
+            sql.push_str(" LIMIT ? OFFSET ?");
+            params_vec.push(rusqlite::types::Value::Integer(limit as i64));
+            params_vec.push(rusqlite::types::Value::Integer(
+                options.offset.unwrap_or(0) as i64
+            ));
         }
 
         let mut stmt = conn.prepare(&sql)?;
@@ -863,14 +869,32 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        let mut stmt = conn.prepare(
+        Self::list_favorites_page_with_options(conn, None, None, content_limit, dek)
+    }
+
+    pub fn list_favorites_page_with_options(
+        conn: &Connection,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        content_limit: Option<usize>,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
+        let mut sql = String::from(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
                     is_favorite, is_pinned, is_deleted, deleted_at
              FROM notes
              WHERE is_deleted = 0 AND is_favorite = 1
-             ORDER BY is_pinned DESC, modified_at DESC",
-        )?;
-        let mut rows = stmt.query([])?;
+             ORDER BY is_pinned DESC, modified_at DESC, id ASC",
+        );
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?1 OFFSET ?2");
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = if let Some(limit) = limit {
+            stmt.query(params![limit as i64, offset.unwrap_or(0) as i64])?
+        } else {
+            stmt.query([])?
+        };
         let mut notes = Vec::new();
         while let Some(row) = rows.next()? {
             let mut note = Self::map_row_with_key(row, dek)?;
@@ -902,17 +926,36 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        let mut stmt = conn.prepare(
+        Self::list_by_tag_page_with_options(conn, tag_id, None, None, content_limit, dek)
+    }
+
+    pub fn list_by_tag_page_with_options(
+        conn: &Connection,
+        tag_id: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        content_limit: Option<usize>,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
+        let mut sql = String::from(
             "SELECT n.id, n.title, n.content, n.format, n.notebook_id, n.created_at, n.modified_at,
                     n.is_favorite, n.is_pinned, n.is_deleted, n.deleted_at
              FROM notes n
              JOIN note_tags nt ON nt.note_id = n.id
              WHERE nt.tag_id = ?1
                AND n.is_deleted = 0
-             ORDER BY n.is_pinned DESC, n.modified_at DESC",
-        )?;
+             ORDER BY n.is_pinned DESC, n.modified_at DESC, n.id ASC",
+        );
+        if limit.is_some() {
+            sql.push_str(" LIMIT ?2 OFFSET ?3");
+        }
 
-        let mut rows = stmt.query(params![tag_id])?;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = if let Some(limit) = limit {
+            stmt.query(params![tag_id, limit as i64, offset.unwrap_or(0) as i64])?
+        } else {
+            stmt.query(params![tag_id])?
+        };
         let mut notes = Vec::new();
         while let Some(row) = rows.next()? {
             let mut note = Self::map_row_with_key(row, dek)?;

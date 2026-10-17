@@ -6,16 +6,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::storage::crypto::SecretBytes;
-#[allow(unused_imports)]
 use crate::storage::errors::{ImportExportError, StorageError};
-#[allow(unused_imports)]
+#[cfg(test)]
+use crate::storage::models::{CreateAttachmentDto, ImportCandidateOverride, ImportOptions};
 use crate::storage::models::{
-    CreateAttachmentDto, CreateNoteDto, CreateNotebookDto, DuplicateMatch, DuplicatePolicy,
-    ExportBatchRequest, ExportFileResult, ExportFormat, ExportItemStatus, ExportNoteMetadataItem,
-    ExportProgress, ExportScope, ExportSelectionPreview, ExportSingleNoteRequest, ExportSummary,
-    ImportCandidate, ImportCandidateOverride, ImportFileResult, ImportFormat, ImportItemStatus,
-    ImportOptions, ImportPreview, ImportProgress, ImportRequest, ImportSummary,
-    InterchangeDocument, InterchangeInternalLink, InterchangeNote, Note, OperationOutcome,
+    CreateNoteDto, CreateNotebookDto, DuplicateMatch, DuplicatePolicy, ExportBatchRequest,
+    ExportFileResult, ExportFormat, ExportItemStatus, ExportNoteMetadataItem, ExportProgress,
+    ExportScope, ExportSelectionPreview, ExportSingleNoteRequest, ExportSummary, ImportCandidate,
+    ImportFileResult, ImportFormat, ImportItemStatus, ImportPreview, ImportProgress, ImportRequest,
+    ImportSummary, InterchangeDocument, InterchangeInternalLink, InterchangeNote, Note,
     ValidationStatus,
 };
 use crate::storage::repositories::{
@@ -1560,8 +1559,7 @@ impl ImportExportService {
         {
             let mut file = std::fs::File::create(&temp_path).map_err(|e| {
                 if let Some(28) = e.raw_os_error() {
-                    StorageError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    StorageError::Io(std::io::Error::other(
                         "Insufficient disk space to complete export.",
                     ))
                 } else {
@@ -1570,8 +1568,7 @@ impl ImportExportService {
             })?;
             file.write_all(content).map_err(|e| {
                 if let Some(28) = e.raw_os_error() {
-                    StorageError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    StorageError::Io(std::io::Error::other(
                         "Insufficient disk space to complete export.",
                     ))
                 } else {
@@ -1580,8 +1577,7 @@ impl ImportExportService {
             })?;
             file.flush().map_err(|e| {
                 if let Some(28) = e.raw_os_error() {
-                    StorageError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    StorageError::Io(std::io::Error::other(
                         "Insufficient disk space to complete export.",
                     ))
                 } else {
@@ -1611,8 +1607,7 @@ impl ImportExportService {
                             let _ = std::fs::remove_file(dest_path);
                         }
                         if let Some(28) = copy_err.raw_os_error() {
-                            Err(StorageError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
+                            Err(StorageError::Io(std::io::Error::other(
                                 "Insufficient disk space to complete export.",
                             )))
                         } else {
@@ -2106,7 +2101,7 @@ impl ImportExportService {
         let operation_id = request.operation_id.clone();
 
         // 1. Resolve scope
-        let scope = request.scope.unwrap_or_else(|| ExportScope::SelectedNotes {
+        let scope = request.scope.unwrap_or(ExportScope::SelectedNotes {
             note_ids: request.note_ids,
         });
 
@@ -2180,7 +2175,7 @@ impl ImportExportService {
                     PathBuf::from(dest_file)
                 } else {
                     let dir = Path::new(&request.destination_dir);
-                    if dir.extension().map_or(false, |ext| ext == "json") {
+                    if dir.extension().is_some_and(|ext| ext == "json") {
                         dir.to_path_buf()
                     } else {
                         dir.join("export.json")
@@ -2441,7 +2436,6 @@ mod tests {
     use std::fs::File;
     use std::io::Write;
 
-    #[allow(dead_code)]
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
@@ -2960,7 +2954,7 @@ mod tests {
 
         assert_eq!(preview.candidates.len(), 2);
         // Candidate 0: Exact duplicate
-        assert_eq!(preview.candidates[0].is_duplicate, true);
+        assert!(preview.candidates[0].is_duplicate);
         assert_eq!(
             preview.candidates[0].duplicate_note_id,
             Some("note-1".to_string())
@@ -2975,7 +2969,7 @@ mod tests {
             .any(|w| w.contains("Exact duplicate note detected")));
 
         // Candidate 1: Title collision with different content (NOT flagged as exact duplicate to skip)
-        assert_eq!(preview.candidates[1].is_duplicate, false);
+        assert!(!preview.candidates[1].is_duplicate);
         assert_eq!(
             preview.candidates[1].duplicate_note_id,
             Some("note-1".to_string())
@@ -3122,7 +3116,7 @@ mod tests {
         assert_eq!(md_note.content, md_content);
         assert_eq!(md_note.format, "md");
         assert_eq!(md_note.notebook_id, Some(nb.id.clone()));
-        assert_eq!(md_note.is_deleted, false);
+        assert!(!md_note.is_deleted);
 
         let json_note = NoteRepository::get_by_id(&conn, created_json_id)
             .unwrap()
@@ -3133,7 +3127,7 @@ mod tests {
             "Content inside structured interchange package."
         );
         assert_eq!(json_note.format, "md");
-        assert_eq!(json_note.is_favorite, true);
+        assert!(json_note.is_favorite);
         assert_eq!(json_note.notebook_id, Some(nb.id.clone()));
         // Invariant: external export_id was NOT used as note primary key
         assert_ne!(json_note.id, "external-export-uuid-999");
@@ -3363,7 +3357,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
 
         // 4. Invalid UTF-8 binary file masquerading as .txt
         let invalid_utf8_file = dir.join("Corrupt_Encoding.txt");
-        std::fs::write(&invalid_utf8_file, &[0xFF, 0xFE, 0xFD, 0x01]).unwrap();
+        std::fs::write(&invalid_utf8_file, [0xFF, 0xFE, 0xFD, 0x01]).unwrap();
 
         // 5. Binary file containing null bytes masquerading as .txt
         let binary_file = dir.join("Binary_Doc.txt");
@@ -3669,10 +3663,10 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(arch_note.modified_at, "2026-06-01T12:00:00Z");
 
         // Invariant: Flags preserved
-        assert_eq!(arch_note.is_favorite, true);
-        assert_eq!(arch_note.is_pinned, true);
-        assert_eq!(store_note.is_favorite, false);
-        assert_eq!(store_note.is_pinned, false);
+        assert!(arch_note.is_favorite);
+        assert!(arch_note.is_pinned);
+        assert!(!store_note.is_favorite);
+        assert!(!store_note.is_pinned);
 
         // Invariant: Tags deduplicated and case-insensitively resolved
         let arch_tags = TagRepository::get_tags_for_note(&conn, &arch_note.id).unwrap();
@@ -3815,7 +3809,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(parsed_doc.notes.len(), 1);
         assert_eq!(parsed_doc.notes[0].title, "Project Architecture");
         assert_eq!(parsed_doc.notes[0].tags, vec!["architecture".to_string()]);
-        assert_eq!(parsed_doc.notes[0].is_favorite, true);
+        assert!(parsed_doc.notes[0].is_favorite);
 
         // 7. Verify source note in SQLite remained untouched
         let note_in_db = NoteRepository::get_by_id(&conn, &md_note.id)
@@ -4121,7 +4115,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             .unwrap();
         assert_eq!(orig_root_note.title, note_root.title);
         assert_eq!(orig_root_note.content, note_root.content);
-        assert_eq!(orig_root_note.is_deleted, false);
+        assert!(!orig_root_note.is_deleted);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

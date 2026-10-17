@@ -128,8 +128,7 @@ impl SnapshotManager {
                         let _ = fs::remove_file(dest_path);
                     }
                     if let Some(28) = copy_err.raw_os_error() {
-                        return Err(BackupError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(BackupError::Io(std::io::Error::other(
                             "Insufficient disk space to complete database snapshot.",
                         )));
                     } else {

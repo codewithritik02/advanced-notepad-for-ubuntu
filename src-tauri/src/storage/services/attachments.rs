@@ -257,7 +257,7 @@ impl AttachmentService {
             let stored_name = attachment
                 .relative_path
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or(&attachment.relative_path);
             let aad = format!("attachments:{}:{stored_name}", attachment.note_id.trim());
 
@@ -387,10 +387,19 @@ impl AttachmentService {
     ) -> Result<usize, AttachmentError> {
         let report = Self::check_consistency(conn, storage)?;
         let mut count = 0;
+        let mut failures = Vec::new();
         for rel_path in report.unreferenced_managed_files {
-            if storage.remove_file(&rel_path).is_ok() {
-                count += 1;
+            match storage.remove_file(&rel_path) {
+                Ok(()) => count += 1,
+                Err(error) => failures.push(error.user_friendly_message()),
             }
+        }
+        if !failures.is_empty() {
+            return Err(AttachmentError::FileOperationFailed(format!(
+                "Failed to clean {} unreferenced attachment file(s): {}",
+                failures.len(),
+                failures[0]
+            )));
         }
         Ok(count)
     }

@@ -10153,8 +10153,8 @@ fn test_phase10_task_24_security_data_integrity_and_performance_verification() {
     assert_eq!(rechecked_note.format, original_note.format);
     assert_eq!(rechecked_note.created_at, original_note.created_at);
     assert_eq!(rechecked_note.modified_at, original_note.modified_at);
-    assert_eq!(rechecked_note.is_favorite, true);
-    assert_eq!(rechecked_note.is_pinned, true);
+    assert!(rechecked_note.is_favorite);
+    assert!(rechecked_note.is_pinned);
 
     // B. Rejection of Path Traversal & Managed Storage Escaping
     let traversal_dest = env.paths.database_file.to_string_lossy().to_string();
@@ -10173,21 +10173,20 @@ fn test_phase10_task_24_security_data_integrity_and_performance_verification() {
     );
 
     // C. External ID Isolation Invariant
-    let malicious_json = format!(
-        r#"{{
+    let malicious_json = r#"{
             "app": "personal-notepad",
             "format": "personal-notepad-interchange",
             "version": "1.0",
             "exported_at": "2026-10-12T10:00:00Z",
             "note_count": 1,
-            "notes": [{{
+            "notes": [{
                 "export_id": "malicious-foreign-primary-key-12345",
                 "title": "Untrusted Note",
                 "content": "<script>alert('pwn')</script>",
                 "format": "txt"
-            }}]
-        }}"#
-    );
+            }]
+        }"#
+    .to_string();
     let untrusted_json_path = export_dir.join("untrusted.json");
     std::fs::write(&untrusted_json_path, malicious_json).unwrap();
 
@@ -12717,7 +12716,7 @@ fn test_phase12_task_16_forgotten_password_and_failed_attempt_invariants() {
     let checkpoint_files: Vec<_> = std::fs::read_dir(&checkpoints_dir)
         .expect("Read checkpoints dir")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "pnbackup"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "pnbackup"))
         .collect();
     assert!(
         !checkpoint_files.is_empty(),
@@ -14332,7 +14331,7 @@ fn test_phase12_task_21_disable_encryption_and_decryption_workflow() {
     // STEP 4: WRONG PASSWORD REJECTION INVARIANT
     // Invariant: Providing incorrect password fails authentication and mutates NOTHING.
     // =========================================================================
-    let bad_pass_res = session.disable_encryption(&mut conn, &env.paths, "WrongPassword123!");
+    let bad_pass_res = session.disable_encryption(&conn, &env.paths, "WrongPassword123!");
     assert!(
         bad_pass_res.is_err(),
         "Disable encryption with wrong password must fail"
@@ -14362,7 +14361,7 @@ fn test_phase12_task_21_disable_encryption_and_decryption_workflow() {
     // transitions session to Disabled, and drops DEK from memory.
     // =========================================================================
     let report = session
-        .disable_encryption(&mut conn, &env.paths, master_password)
+        .disable_encryption(&conn, &env.paths, master_password)
         .expect("Disable encryption with valid password must succeed");
 
     assert_eq!(
@@ -14648,8 +14647,8 @@ fn test_phase12_task_22_security_logging_diagnostics_and_safe_failure_handling()
 
     let (class, is_corrupt) = classify_crypto_failure(&unlock_err);
     assert_eq!(class, "credential_mismatch");
-    assert_eq!(
-        is_corrupt, false,
+    assert!(
+        !is_corrupt,
         "Credential failure must NOT be classified as corruption"
     );
 
@@ -14857,7 +14856,7 @@ fn test_phase13_task_5_transaction_boundaries_and_multi_step_operations() {
                 content: Some("Successfully committed".to_string()),
                 ..Default::default()
             },
-            &[valid_tag.id.clone()],
+            std::slice::from_ref(&valid_tag.id),
         )
         .expect("Valid note with tags must succeed");
 

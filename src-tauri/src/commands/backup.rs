@@ -206,7 +206,7 @@ pub fn execute_restore(
 ) -> Result<BackupRestoreResult, String> {
     let mut conn = state.conn.lock().map_err(|e| e.to_string())?;
     let res = RestoreService::execute_restore(
-        &mut *conn,
+        &mut conn,
         &paths,
         request,
         Some(|evt| {
