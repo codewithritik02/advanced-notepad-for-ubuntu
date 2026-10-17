@@ -1546,6 +1546,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             ) : (
               <RenderedNoteContent
                 content={content}
+                format={format}
                 onActivateLink={handleActivateLink}
                 placeholder={isReadOnly ? "No content in this note." : "No content to preview."}
               />

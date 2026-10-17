@@ -203,6 +203,7 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
   return (
     <div
       className="export-batch-modal-overlay"
+      style={isExporting || summary ? { display: "none" } : undefined}
       role="dialog"
       aria-modal="true"
       aria-labelledby="export-batch-modal-title"

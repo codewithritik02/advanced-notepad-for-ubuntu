@@ -165,10 +165,14 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
 
   if (!isOpen) return null;
 
+  // While importing, and once the result is shown, only the operation summary dialog is visible.
+  // Keeping the preview dialog open underneath stacked two modals on top of each other.
+  const isPreviewVisible = !isSubmitting && !summary;
+
   return (
     <>
     <Modal
-      isOpen={isOpen}
+      isOpen={isPreviewVisible}
       onClose={isSubmitting ? () => {} : onClose}
       title="Import Notes Preview"
       maxWidth="680px"

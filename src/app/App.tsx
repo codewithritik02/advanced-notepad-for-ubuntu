@@ -8,6 +8,7 @@ import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
 import { useDisplaySettings } from "../hooks/useDisplaySettings";
+import { markdownToPlainText } from "../utils/markdown";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import {
   storageService,
@@ -1619,7 +1620,9 @@ export function App() {
     return filteredNotes.map((n) => {
       // For large notes (100KB-1MB), avoid regex replacement over the full body
       const snippet = n.content.length > 300 ? n.content.slice(0, 300) : n.content;
-      const cleanContent = snippet.replace(/\s+/g, " ").trim();
+      // Markdown notes show their text, not their markup, in the list ("# Title **bold**" -> "Title bold")
+      const readableSnippet = n.format === "md" ? markdownToPlainText(snippet) : snippet;
+      const cleanContent = readableSnippet.replace(/\s+/g, " ").trim();
       const preview =
         cleanContent.length > 0
           ? cleanContent.length > 120

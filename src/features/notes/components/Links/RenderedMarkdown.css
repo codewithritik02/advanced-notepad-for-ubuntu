@@ -1,0 +1,176 @@
+/* Formatted Markdown preview. Sizes are em-based so the user's note text size setting scales it. */
+.md-preview {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: var(--line-height-relaxed);
+}
+
+.md-preview > :first-child {
+  margin-top: 0;
+}
+
+.md-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.md-paragraph {
+  margin: 0 0 0.9em;
+}
+
+.md-heading {
+  margin: 1.3em 0 0.5em;
+  line-height: 1.3;
+  font-weight: var(--font-weight-semibold, 600);
+  color: var(--color-text-primary);
+}
+
+.md-h1 {
+  font-size: 1.75em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.md-h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.md-h3 {
+  font-size: 1.2em;
+}
+
+.md-h4 {
+  font-size: 1.05em;
+}
+
+.md-h5,
+.md-h6 {
+  font-size: 0.95em;
+  color: var(--color-text-secondary);
+}
+
+.md-inline-code {
+  font-family: var(--font-family-mono);
+  font-size: 0.9em;
+  padding: 0.15em 0.4em;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.md-code-block {
+  margin: 0 0 1em;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: var(--font-family-mono);
+  font-size: 0.9em;
+  line-height: 1.5;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md, 6px);
+  background: var(--color-bg-panel);
+}
+
+.md-code-block code {
+  font-family: inherit;
+  background: none;
+  padding: 0;
+}
+
+.md-quote {
+  margin: 0 0 1em;
+  padding: 0.1em 1em;
+  border-left: 3px solid var(--color-accent-default);
+  background: var(--color-accent-subtle);
+  color: var(--color-text-secondary);
+  border-radius: 0 var(--radius-sm, 4px) var(--radius-sm, 4px) 0;
+}
+
+.md-hr {
+  margin: 1.4em 0;
+  border: 0;
+  border-top: 1px solid var(--color-border-strong);
+}
+
+.md-list {
+  margin: 0 0 0.9em;
+  padding-left: 1.6em;
+}
+
+.md-list .md-list {
+  margin: 0.2em 0;
+}
+
+.md-list li {
+  margin: 0.2em 0;
+}
+
+.md-list-item-body > .md-paragraph {
+  margin-bottom: 0.2em;
+}
+
+.md-task-list {
+  list-style: none;
+  padding-left: 0.2em;
+}
+
+.md-task-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5em;
+}
+
+.md-task-checkbox {
+  margin-top: 0.35em;
+  accent-color: var(--color-accent-default);
+}
+
+.md-table-wrap {
+  margin: 0 0 1em;
+  overflow-x: auto;
+}
+
+.md-table {
+  border-collapse: collapse;
+  min-width: 50%;
+}
+
+.md-table th,
+.md-table td {
+  padding: 0.45em 0.8em;
+  border: 1px solid var(--color-border-default);
+  text-align: left;
+}
+
+.md-table th {
+  background: var(--color-surface-hover);
+  font-weight: var(--font-weight-semibold, 600);
+}
+
+.md-link {
+  color: var(--color-accent-default);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.md-link:hover {
+  color: var(--color-accent-hover);
+}
+
+.md-image-placeholder {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.md-too-large-notice {
+  margin: 0 0 0.75em;
+  color: var(--color-text-muted);
+  font-size: 0.9em;
+}
+
+.md-plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

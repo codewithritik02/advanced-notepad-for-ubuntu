@@ -1,6 +1,7 @@
 import React, { useMemo } from "react";
 import { tokenizeContentWithLinks } from "../../../../utils/linkParser";
 import { InternalLinkPill } from "./InternalLinkPill";
+import { RenderedMarkdown } from "./RenderedMarkdown";
 import "./InternalLinks.css";
 
 export interface RenderedNoteContentProps {
@@ -8,6 +9,8 @@ export interface RenderedNoteContentProps {
   onActivateLink?: (targetNoteId: string) => void;
   className?: string;
   placeholder?: string;
+  /** Note format; Markdown notes are rendered as formatted content, plain text stays as typed. */
+  format?: string;
 }
 
 export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
@@ -15,6 +18,7 @@ export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
   onActivateLink,
   className = "",
   placeholder = "No content to preview.",
+  format = "txt",
 }) => {
   const segments = useMemo(() => {
     return tokenizeContentWithLinks(content);
@@ -24,6 +28,18 @@ export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
     return (
       <div className={`editor-preview-area editor-preview-empty ${className}`}>
         {placeholder}
+      </div>
+    );
+  }
+
+  if (format === "md") {
+    return (
+      <div
+        className={`editor-preview-area editor-preview-markdown selectable-text ${className}`}
+        role="region"
+        aria-label="Rendered Markdown preview"
+      >
+        <RenderedMarkdown content={content} onActivateLink={onActivateLink} />
       </div>
     );
   }

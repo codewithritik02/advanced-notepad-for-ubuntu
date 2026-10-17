@@ -324,3 +324,8 @@
 .backlink-snippet-preview:hover {
   color: var(--color-text-primary, #111827);
 }
+
+/* Markdown notes manage their own whitespace; plain text previews keep pre-wrap above. */
+.editor-preview-area.editor-preview-markdown {
+  white-space: normal;
+}

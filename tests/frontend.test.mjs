@@ -28610,3 +28610,117 @@ describe("Window close permission (app could not be closed)", () => {
     assert.ok(!cap.permissions.includes("core:window:allow-close"), "allow-close is not needed and would be broader than required");
   });
 });
+
+describe("Markdown preview rendering", () => {
+  const loadMd = () => import("../src/utils/markdown.ts");
+  const flat = (nodes) =>
+    nodes
+      .map((n) =>
+        n.t === "text" || n.t === "code"
+          ? n.v
+          : n.t === "br"
+            ? "\n"
+            : n.c
+              ? flat(n.c)
+              : n.label || n.alt || "",
+      )
+      .join("");
+
+  it("renders headings, bold labels, inline code and line breaks from an imported report", async () => {
+    const { parseMarkdown } = await loadMd();
+    const blocks = parseMarkdown(
+      "# Work Report - October 07, 2026\n\n**Date:** Wednesday\n**Branches:** `ritik` ➔ `origin/ritik`\n\n---\n",
+    );
+    assert.equal(blocks[0].t, "heading");
+    assert.equal(blocks[0].level, 1);
+    assert.equal(flat(blocks[0].c), "Work Report - October 07, 2026");
+    assert.equal(blocks[1].t, "paragraph");
+    assert.deepEqual(blocks[1].c.filter((n) => n.t === "strong").map((n) => flat(n.c)), ["Date:", "Branches:"]);
+    assert.ok(blocks[1].c.some((n) => n.t === "br"), "single newlines become visible line breaks");
+    assert.deepEqual(blocks[1].c.filter((n) => n.t === "code").map((n) => n.v), ["ritik", "origin/ritik"]);
+    assert.equal(blocks[2].t, "hr");
+    assert.ok(!JSON.stringify(blocks).includes("**"), "no raw markdown markers remain");
+  });
+
+  it("parses lists, task lists, nested lists, quotes, code fences and tables", async () => {
+    const { parseMarkdown } = await loadMd();
+    const blocks = parseMarkdown(
+      "- [x] done\n- [ ] open\n  - nested\n\n1. a\n2. b\n\n> quoted\n\n```ts\nconst a = 1 < 2;\n```\n\n| h1 | h2 |\n|:--|--:|\n| 1 | 2 |\n",
+    );
+    const types = blocks.map((b) => b.t);
+    assert.deepEqual(types, ["list", "list", "quote", "code", "table"]);
+    assert.deepEqual(blocks[0].items.map((i) => i.checked), [true, false]);
+    assert.equal(blocks[0].items[1].c[1].t, "list", "nested list is parsed inside its item");
+    assert.equal(blocks[1].ordered, true);
+    assert.equal(blocks[3].v, "const a = 1 < 2;");
+    assert.deepEqual(blocks[4].align, ["left", "right"]);
+    assert.equal(flat(blocks[4].rows[0][1]), "2");
+  });
+
+  it("only produces safe external links and never fetches images", async () => {
+    const { parseInline, sanitizeMarkdownUrl } = await loadMd();
+    assert.equal(sanitizeMarkdownUrl("javascript:alert(1)"), null);
+    assert.equal(sanitizeMarkdownUrl("data:text/html,x"), null);
+    assert.equal(sanitizeMarkdownUrl("file:///etc/passwd"), null);
+    assert.equal(sanitizeMarkdownUrl("https://example.com/a"), "https://example.com/a");
+    const nodes = parseInline("[ok](https://example.com) [bad](javascript:alert(1)) ![pic](http://tracker.test/x.png) <b>html</b>");
+    assert.deepEqual(nodes.filter((n) => n.t === "link").map((n) => n.href), ["https://example.com"]);
+    assert.ok(nodes.some((n) => n.t === "image" && n.alt === "pic"));
+    assert.ok(!nodes.some((n) => n.t === "link" && /javascript|tracker/.test(n.href)));
+    assert.ok(nodes.some((n) => n.t === "text" && n.v.includes("<b>html</b>")), "raw HTML stays literal text");
+  });
+
+  it("keeps internal note links and treats unclosed markers as literal text", async () => {
+    const { parseInline } = await loadMd();
+    const nodes = parseInline("see [Roadmap](notepad://note/abc-123) now");
+    const internal = nodes.find((n) => n.t === "internal");
+    assert.deepEqual([internal.id, internal.label], ["abc-123", "Roadmap"]);
+    assert.equal(flat(parseInline("**unclosed and _also")), "**unclosed and _also");
+    assert.equal(flat(parseInline("snake_case_name")), "snake_case_name");
+    assert.equal(flat(parseInline("a * b * c")), "a * b * c");
+  });
+
+  it("stays fast on hostile input and refuses oversized notes", async () => {
+    const { parseMarkdown, MAX_MARKDOWN_CHARS } = await loadMd();
+    const start = Date.now();
+    for (const s of ["*a ".repeat(9000), "[".repeat(9000), "`a".repeat(9000), "_a".repeat(9000), "> ".repeat(60) + "x", "- ".repeat(5000)]) {
+      assert.ok(parseMarkdown(s) !== null);
+    }
+    assert.ok(Date.now() - start < 3000, "hostile inputs must parse quickly");
+    assert.equal(parseMarkdown("x".repeat(MAX_MARKDOWN_CHARS + 1)), null);
+  });
+
+  it("wires Markdown notes to the formatted renderer and keeps plain text unchanged", () => {
+    const rendered = fs.readFileSync("src/features/notes/components/Links/RenderedNoteContent.tsx", "utf8");
+    assert.match(rendered, /format === "md"/);
+    assert.match(rendered, /RenderedMarkdown/);
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.match(editor, /<RenderedNoteContent[\s\S]{0,120}format=\{format\}/);
+    const md = fs.readFileSync("src/features/notes/components/Links/RenderedMarkdown.tsx", "utf8");
+    assert.ok(!md.includes("dangerouslySetInnerHTML"), "markdown must never inject raw HTML");
+    assert.match(md, /event\.preventDefault\(\)/, "external links must not navigate the app webview");
+  });
+});
+
+describe("Import / export dialogs never stack", () => {
+  it("hides the preview dialog while the operation summary is showing", () => {
+    const imp = fs.readFileSync("src/features/importExport/components/ImportPreviewModal/ImportPreviewModal.tsx", "utf8");
+    assert.match(imp, /const isPreviewVisible = !isSubmitting && !summary;/);
+    assert.match(imp, /<Modal\s+isOpen=\{isPreviewVisible\}/);
+    const exp = fs.readFileSync("src/features/importExport/components/ExportBatchModal/ExportBatchModal.tsx", "utf8");
+    assert.match(exp, /isExporting \|\| summary \? \{ display: "none" \}/);
+  });
+});
+
+describe("Markdown note list snippets", () => {
+  it("shows readable text instead of markdown markup", async () => {
+    const { markdownToPlainText } = await import("../src/utils/markdown.ts");
+    assert.equal(
+      markdownToPlainText("# Work Report\n\n**Date:** Wed\n**Branch:** `ritik`\n\n- [x] done\n"),
+      "Work Report Date: Wed Branch: ritik done",
+    );
+    assert.equal(markdownToPlainText("plain words"), "plain words");
+    const app = fs.readFileSync("src/app/App.tsx", "utf8");
+    assert.match(app, /n\.format === "md" \? markdownToPlainText\(snippet\)/);
+  });
+});
