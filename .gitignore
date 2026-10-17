@@ -44,3 +44,6 @@ ehthumbs.db
 # Tauri generated files
 src-tauri/WixTools/
 src-tauri/gen/
+
+# local-only documentation, never published
+docs/
