@@ -29,7 +29,8 @@ export interface AttachmentListProps {
 export const AttachmentList: React.FC<AttachmentListProps> = ({
   noteId,
   isReadOnly = false,
-  defaultExpanded = true,
+  // Collapsed by default: the header still shows the count; click it to see the files
+  defaultExpanded = false,
   onAttachmentCountChange,
   controller,
   onInsertImage,
@@ -64,6 +65,8 @@ export const AttachmentList: React.FC<AttachmentListProps> = ({
   const handleAddFiles = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!noteId || isBusy || isReadOnly) return;
+    // Open the list so the progress, result and any error of the upload are visible
+    setIsExpanded(true);
     pickAndAddFiles();
   };
 

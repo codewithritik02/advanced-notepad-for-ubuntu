@@ -3,8 +3,8 @@ import { minimapScale, pointerToScrollTop, sliderRect } from "../../utils/minima
 import { layoutTextWords, type MinimapKind } from "../../utils/minimapText";
 import "./EditorScrollTools.css";
 
-export const MINIMAP_WIDTH_PX = 88;
-const MAX_PREVIEW_WORDS = 12000;
+export const MINIMAP_WIDTH_PX = 96;
+const MAX_MINIMAP_WORDS = 12000;
 const MIN_HOST_WIDTH_PX = 620;
 
 export interface NoteMinimapProps {
@@ -93,58 +93,110 @@ export const NoteMinimap: React.FC<NoteMinimapProps> = ({
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
-    const scale = minimapScale(scroller.scrollHeight, height);
-    scaleRef.current = scale;
-    const colors = readColors();
-    const padX = 8;
+    const doc = scroller.querySelector<HTMLElement>(".editor-document");
+    const docRect = (doc ?? scroller).getBoundingClientRect();
+    const padX = 6;
     const usable = width - padX * 2;
+    // Same scale on both axes (like a real shrunken page), unless the note is so long that it has
+    // to be squeezed vertically to fit the strip.
+    const sx = usable / Math.max(1, docRect.width);
+    const scale = minimapScale(scroller.scrollHeight, height, sx);
+    scaleRef.current = scale;
+
+    const colors = readColors();
     const scRect = scroller.getBoundingClientRect();
     const toY = (el: Element) => el.getBoundingClientRect().top - scRect.top + scroller.scrollTop;
 
-    const bar = (y: number, h: number, x: number, w: number, color: string, alpha: number) => {
+    // Everything is snapped to whole device pixels so the tiny text stays crisp, not smeared.
+    const snap = (value: number) => Math.round(value * dpr) / dpr;
+    const onePx = 1 / dpr;
+    const kindStyle: Record<MinimapKind, { color: string; alpha: number }> = {
+      text: { color: colors.strong, alpha: 0.62 },
+      strong: { color: colors.strong, alpha: 1 },
+      code: { color: colors.muted, alpha: 0.9 },
+      link: { color: colors.accent, alpha: 0.9 },
+      quote: { color: colors.muted, alpha: 0.75 },
+      marker: { color: colors.muted, alpha: 0.8 },
+      image: { color: colors.accent, alpha: 0.5 },
+    };
+    const box = (x: number, y: number, w: number, h: number, color: string, alpha: number) => {
       ctx.globalAlpha = alpha;
       ctx.fillStyle = color;
-      ctx.fillRect(padX + x, y * scale, Math.max(1, w), Math.max(1, h * scale));
+      ctx.fillRect(snap(x), snap(y), Math.max(onePx, snap(w)), Math.max(onePx, snap(h)));
     };
-
-    const doc = scroller.querySelector(".editor-document");
-    if (doc) {
-      for (const child of Array.from(doc.children)) {
-        const rect = child.getBoundingClientRect();
-        if (rect.height < 2) continue;
-        const y = toY(child);
-        if (child.classList.contains("editor-body-wrap")) continue;
-        bar(y, rect.height, 0, usable, colors.muted, 0.12);
-      }
-    }
-
-    // One small box per real word, so the strip looks like a tiny copy of the actual text.
-    const docEl = (doc as HTMLElement | null) ?? scroller;
-    const docRect = docEl.getBoundingClientRect();
-    const sx = usable / Math.max(1, docRect.width);
-    const kindStyle: Record<MinimapKind, { color: string; alpha: number }> = {
-      text: { color: colors.text, alpha: 0.55 },
-      strong: { color: colors.strong, alpha: 0.9 },
-      code: { color: colors.muted, alpha: 0.6 },
-      link: { color: colors.accent, alpha: 0.8 },
-      quote: { color: colors.muted, alpha: 0.45 },
-      marker: { color: colors.muted, alpha: 0.5 },
-      image: { color: colors.accent, alpha: 0.45 },
-    };
+    // `xPx`/`yPx` are positions in the real note (CSS px relative to the document / scroll area)
     const word = (xPx: number, yPx: number, wPx: number, hPx: number, kind: MinimapKind) => {
       const style = kindStyle[kind];
-      ctx.globalAlpha = style.alpha;
-      ctx.fillStyle = style.color;
-      ctx.fillRect(
+      box(
         padX + xPx * sx,
         yPx * scale,
-        Math.max(1, wPx * sx),
-        Math.max(1, hPx * scale * (kind === "strong" ? 1.2 : 1)),
+        wPx * sx,
+        hPx * scale * (kind === "strong" ? 1.3 : 1),
+        style.color,
+        style.alpha,
       );
+    };
+
+    let drawn = 0;
+    // Draws every word of the text nodes under `root` at its real position.
+    const drawDomWords = (
+      root: Element,
+      skipSelector: string,
+      kindFor: (el: Element) => MinimapKind,
+    ) => {
+      const range = document.createRange();
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode() as Text | null;
+      while (node && drawn < MAX_MINIMAP_WORDS) {
+        const parent = node.parentElement;
+        if (parent && !parent.closest(skipSelector)) {
+          const kind = kindFor(parent);
+          for (const match of node.data.matchAll(/\S+/g)) {
+            range.setStart(node, match.index ?? 0);
+            range.setEnd(node, (match.index ?? 0) + match[0].length);
+            const rect = range.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            word(
+              rect.left - docRect.left,
+              rect.top - scRect.top + scroller.scrollTop + rect.height * 0.12,
+              rect.width,
+              rect.height * 0.76,
+              kind,
+            );
+            drawn += 1;
+            if (drawn >= MAX_MINIMAP_WORDS) break;
+          }
+        }
+        node = walker.nextNode() as Text | null;
+      }
+      range.detach();
     };
 
     const textarea = scroller.querySelector<HTMLTextAreaElement>("textarea.editor-content-area");
     const preview = scroller.querySelector<HTMLElement>(".md-preview, .editor-preview-area");
+    const bodySkip = ".editor-body-wrap, textarea, input, .note-minimap, script, style";
+
+    // Title, details, tags and attachments header: real words too (no empty grey blocks)
+    if (doc) {
+      const titleInput = doc.querySelector<HTMLInputElement>("input.editor-title-input");
+      const measureCtx = document.createElement("canvas").getContext("2d");
+      if (titleInput && measureCtx && titleInput.value.trim()) {
+        const style = getComputedStyle(titleInput);
+        const fontSize = parseFloat(style.fontSize) || 24;
+        measureCtx.font = `${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
+        const rect = titleInput.getBoundingClientRect();
+        let x = rect.left - docRect.left + (parseFloat(style.paddingLeft) || 0);
+        const y = toY(titleInput) + rect.height * 0.25;
+        const space = measureCtx.measureText(" ").width;
+        for (const part of titleInput.value.trim().split(/\s+/)) {
+          const w = measureCtx.measureText(part).width;
+          if (x + w > rect.right - docRect.left) break;
+          word(x, y, w, rect.height * 0.5, "strong");
+          x += w + space;
+        }
+      }
+      drawDomWords(doc, bodySkip, () => "quote");
+    }
 
     if (textarea) {
       // Edit mode: wrap the text exactly like the editor does and draw every word.
@@ -161,13 +213,23 @@ export const NoteMinimap: React.FC<NoteMinimapProps> = ({
           measure: (text) => measureCtx.measureText(text).width,
           availableWidth: textarea.clientWidth,
           lineHeight,
+          maxWords: MAX_MINIMAP_WORDS,
         });
         if (layout.truncated) {
           // Too big to draw word by word: show the text as one soft block.
-          bar(top, taRect.height, left * sx, usable - left * sx, colors.text, 0.25);
+          box(padX + left * sx, top * scale, textarea.clientWidth * sx, taRect.height * scale, colors.text, 0.3);
         } else {
-          for (const box of layout.boxes) {
-            word(left + box.x, top + box.y + lineHeight * 0.15, box.w, box.h, box.kind);
+          // Word boxes are about one font-height tall and centred in their line, like in Preview
+          const glyphHeight = fontSize;
+          for (const b of layout.boxes) {
+            const isImage = b.kind === "image";
+            word(
+              left + b.x,
+              top + b.y + (isImage ? 0 : (lineHeight - glyphHeight) / 2),
+              b.w,
+              isImage ? b.h : glyphHeight,
+              b.kind,
+            );
           }
         }
       }
@@ -181,9 +243,10 @@ export const NoteMinimap: React.FC<NoteMinimapProps> = ({
         if (el.closest("blockquote,del")) return "quote";
         return "text";
       };
-
       root.querySelectorAll("pre").forEach((block) => {
-        bar(toY(block), block.getBoundingClientRect().height, 0, usable, colors.muted, 0.12);
+        const rect = block.getBoundingClientRect();
+        // soft background so code blocks read as a block behind their words
+        box(padX + (rect.left - docRect.left) * sx, toY(block) * scale, rect.width * sx, rect.height * scale, colors.muted, 0.16);
       });
       root
         .querySelectorAll<HTMLElement>(
@@ -191,37 +254,11 @@ export const NoteMinimap: React.FC<NoteMinimapProps> = ({
         )
         .forEach((image) => {
           const rect = image.getBoundingClientRect();
-          word((rect.left - docRect.left), toY(image), rect.width, rect.height, "image");
+          word(rect.left - docRect.left, toY(image), rect.width, rect.height, "image");
         });
-
-      const range = document.createRange();
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let drawn = 0;
-      let node = walker.nextNode() as Text | null;
-      while (node && drawn < MAX_PREVIEW_WORDS) {
-        const parent = node.parentElement;
-        if (parent && !parent.closest("script,style,.attachment-image-missing")) {
-          const kind = kindOf(parent);
-          for (const match of node.data.matchAll(/\S+/g)) {
-            range.setStart(node, match.index ?? 0);
-            range.setEnd(node, (match.index ?? 0) + match[0].length);
-            const rect = range.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) continue;
-            word(
-              rect.left - docRect.left,
-              rect.top - scRect.top + scroller.scrollTop + rect.height * 0.15,
-              rect.width,
-              rect.height * 0.7,
-              kind,
-            );
-            drawn += 1;
-            if (drawn >= MAX_PREVIEW_WORDS) break;
-          }
-        }
-        node = walker.nextNode() as Text | null;
-      }
-      range.detach();
+      drawDomWords(root, "script,style,.attachment-image-missing", kindOf);
     }
+
     ctx.globalAlpha = 1;
     updateSlider();
   }, [scrollRef, updateSlider, onVisibilityChange]);

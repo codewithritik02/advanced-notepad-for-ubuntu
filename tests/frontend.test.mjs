@@ -29182,11 +29182,49 @@ describe("Minimap shows a real miniature of the text", () => {
     const minimap = fs.readFileSync("src/features/notes/components/Editor/NoteMinimap.tsx", "utf8");
     assert.match(minimap, /layoutTextWords\(textarea\.value/);
     assert.match(minimap, /document\.createTreeWalker\(root, NodeFilter\.SHOW_TEXT\)/);
-    assert.match(minimap, /MAX_PREVIEW_WORDS/);
+    assert.match(minimap, /MAX_MINIMAP_WORDS/);
     const settings = fs.readFileSync("src/features/settings/components/SettingsModal/SettingsModal.tsx", "utf8");
     assert.match(settings, /checked=\{showMinimap\}/);
     assert.match(settings, /onShowMinimapChange\(e\.target\.checked\)/);
     const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
     assert.match(editor, /\{showMinimap && \(\s*<NoteMinimap/);
+  });
+});
+
+describe("Attachments section starts collapsed", () => {
+  it("is closed by default but opens itself when files are attached", () => {
+    const list = fs.readFileSync("src/features/attachments/components/AttachmentList.tsx", "utf8");
+    assert.match(list, /defaultExpanded = false/);
+    assert.match(list, /setIsExpanded\(true\);\s*pickAndAddFiles\(\);/);
+    // NoteEditor does not override the default
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.ok(!/defaultExpanded/.test(editor));
+  });
+});
+
+describe("Minimap clarity", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("keeps the strip width in sync between the canvas code and the stylesheet", () => {
+    const ts = read("src/features/notes/components/Editor/NoteMinimap.tsx");
+    const css = read("src/features/notes/components/Editor/EditorScrollTools.css");
+    const px = /MINIMAP_WIDTH_PX = (\d+)/.exec(ts)[1];
+    assert.match(css, new RegExp(`\\.note-minimap\\.is-visible \\{\\s*width: ${px}px`));
+  });
+
+  it("draws crisp, high-contrast real text instead of faint grey blocks", () => {
+    const ts = read("src/features/notes/components/Editor/NoteMinimap.tsx");
+    assert.match(ts, /Math\.round\(value \* dpr\) \/ dpr/, "boxes are snapped to whole device pixels");
+    assert.match(ts, /minimapScale\(scroller\.scrollHeight, height, sx\)/, "same scale on both axes");
+    assert.ok(!/colors\.muted, 0\.12\)/.test(ts), "the empty grey section blocks are gone");
+    assert.match(ts, /input\.editor-title-input/, "the note title is drawn as real words");
+    assert.match(ts, /drawDomWords\(doc, bodySkip/, "details, tags and attachments header are drawn as real words");
+  });
+
+  it("lets a note fit the strip at any length but never enlarges past the page scale", async () => {
+    const m = await import("../src/features/notes/utils/minimapMath.ts");
+    assert.equal(m.minimapScale(1000, 800, 0.11), 0.11);
+    assert.equal(m.minimapScale(20_000, 700, 0.11), 0.035);
+    assert.equal(m.minimapScale(0, 700, 0.11), 0.11);
   });
 });

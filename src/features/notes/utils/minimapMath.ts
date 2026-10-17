@@ -12,9 +12,13 @@ export function clamp(value: number, min: number, max: number): number {
 }
 
 /** Uniform vertical scale that fits the whole document into the strip (never above the cap). */
-export function minimapScale(scrollHeight: number, mapHeight: number): number {
-  if (scrollHeight <= 0 || mapHeight <= 0) return MINIMAP_MAX_SCALE;
-  return Math.min(MINIMAP_MAX_SCALE, mapHeight / scrollHeight);
+export function minimapScale(
+  scrollHeight: number,
+  mapHeight: number,
+  maxScale: number = MINIMAP_MAX_SCALE,
+): number {
+  if (scrollHeight <= 0 || mapHeight <= 0) return maxScale;
+  return Math.min(maxScale, mapHeight / scrollHeight);
 }
 
 /** Position and height of the draggable "you are here" window. */

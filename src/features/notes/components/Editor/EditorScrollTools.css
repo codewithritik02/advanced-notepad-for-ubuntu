@@ -78,14 +78,14 @@
   width: 0;
   overflow: hidden;
   border-left: 0 solid var(--color-border-subtle);
-  background: var(--color-bg-surface);
+  background: var(--color-bg-panel);
   cursor: pointer;
   user-select: none;
   touch-action: none;
 }
 
 .note-minimap.is-visible {
-  width: 88px;
+  width: 96px;
   border-left-width: 1px;
 }
 
@@ -102,9 +102,9 @@
   left: 0;
   right: 0;
   height: 40px;
-  background: rgba(var(--color-accent-rgb, 79, 70, 229), 0.1);
-  border-top: 1px solid rgba(var(--color-accent-rgb, 79, 70, 229), 0.35);
-  border-bottom: 1px solid rgba(var(--color-accent-rgb, 79, 70, 229), 0.35);
+  background: rgba(var(--color-accent-rgb, 79, 70, 229), 0.13);
+  border-top: 1px solid rgba(var(--color-accent-rgb, 79, 70, 229), 0.55);
+  border-bottom: 1px solid rgba(var(--color-accent-rgb, 79, 70, 229), 0.55);
   pointer-events: none;
   transition: background-color var(--transition-fast);
   will-change: transform;
