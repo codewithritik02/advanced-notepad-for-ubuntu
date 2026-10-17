@@ -197,3 +197,98 @@
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
   --shadow-focus: 0 0 0 2px rgba(99, 102, 241, 0.35);
 }
+
+/* ==========================================================================
+   Compatibility tokens
+   Many component stylesheets reference these names. They used to be undefined, so every use
+   silently fell back to a hard-coded (often dark) colour and ignored the selected theme
+   (for example the tag picker popup and the Note Details panel were dark in light mode).
+   Each one now maps onto the central palette above, so light stays light and dark stays dark.
+   ========================================================================== */
+
+/* Theme-dependent values — light */
+:root,
+:root[data-theme="light"] {
+  --color-accent-rgb: 79, 70, 229;
+  --color-text-danger: #dc2626;
+  --color-error-text: #b91c1c;
+  --color-danger-border: rgba(239, 68, 68, 0.35);
+  --color-success-subtle: rgba(16, 185, 129, 0.12);
+  --color-success-text: #047857;
+  --color-warning-subtle: rgba(245, 158, 11, 0.14);
+  --color-warning-text: #92400e;
+  --color-info-default: #2563eb;
+  --color-info-subtle: #eff6ff;
+}
+
+/* Theme-dependent values — dark */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-accent-rgb: 99, 102, 241;
+    --color-text-danger: #f87171;
+    --color-error-text: #f87171;
+    --color-danger-border: rgba(248, 113, 113, 0.4);
+    --color-success-subtle: rgba(52, 211, 153, 0.14);
+    --color-success-text: #34d399;
+    --color-warning-subtle: rgba(251, 191, 36, 0.14);
+    --color-warning-text: #fbbf24;
+    --color-info-default: #60a5fa;
+    --color-info-subtle: rgba(96, 165, 250, 0.14);
+  }
+}
+
+:root[data-theme="dark"] {
+  --color-accent-rgb: 99, 102, 241;
+  --color-text-danger: #f87171;
+  --color-error-text: #f87171;
+  --color-danger-border: rgba(248, 113, 113, 0.4);
+  --color-success-subtle: rgba(52, 211, 153, 0.14);
+  --color-success-text: #34d399;
+  --color-warning-subtle: rgba(251, 191, 36, 0.14);
+  --color-warning-text: #fbbf24;
+  --color-info-default: #60a5fa;
+  --color-info-subtle: rgba(96, 165, 250, 0.14);
+}
+
+/* Aliases — resolved on :root, so they follow whichever theme overrides the targets above */
+:root {
+  /* Surfaces */
+  --color-bg-primary: var(--color-bg-surface);
+  --color-bg-secondary: var(--color-bg-base);
+  --color-bg-tertiary: var(--color-surface-hover);
+  --color-bg-hover: var(--color-surface-hover);
+  --color-bg-elevated: var(--color-bg-surface-elevated);
+  --color-surface: var(--color-bg-base);
+  --color-surface-elevated: var(--color-bg-surface-elevated);
+  --color-surface-subtle: var(--color-bg-panel);
+  --color-surface-sunken: var(--color-bg-base);
+
+  /* Borders and text */
+  --color-border: var(--color-border-default);
+  --color-border-hover: var(--color-border-strong);
+  --color-text-tertiary: var(--color-text-muted);
+
+  /* Accent */
+  --color-accent: var(--color-accent-default);
+  --color-accent-primary: var(--color-accent-default);
+  --color-primary: var(--color-accent-default);
+
+  /* Status */
+  --color-danger: var(--color-danger-default);
+  --color-error-default: var(--color-danger-default);
+  --color-error-surface: var(--color-danger-subtle);
+  --color-success: var(--color-success-default);
+  --color-warning: var(--color-warning-default);
+
+  /* Short legacy names used by the security dialogs */
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted: var(--color-text-muted);
+  --bg-tertiary: var(--color-surface-hover);
+  --border-color: var(--color-border-default);
+  --accent-primary: var(--color-accent-default);
+  --danger: var(--color-danger-default);
+  --success: var(--color-success-default);
+
+  --font-mono: var(--font-family-mono);
+}

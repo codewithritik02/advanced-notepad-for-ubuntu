@@ -28753,3 +28753,64 @@ describe("Trash and restore ask for confirmation", () => {
     assert.match(dlg, />\s*Cancel\s*</);
   });
 });
+
+describe("Editor toolbar and note details panel layout", () => {
+  const css = () => fs.readFileSync("src/features/notes/components/Editor/EditorPlaceholder.css", "utf8");
+  const rule = (src, selector) => {
+    const start = src.indexOf(`${selector} {`);
+    assert.ok(start >= 0, `${selector} rule must exist`);
+    return src.slice(start, src.indexOf("}", start));
+  };
+
+  it("lets the toolbar wrap in narrow editors instead of clipping or overlapping buttons", () => {
+    const toolbar = rule(css(), ".editor-toolbar");
+    assert.match(toolbar, /flex-wrap:\s*wrap/);
+    assert.ok(!/\n\s*height:\s*38px/.test(toolbar), "fixed height would clip a wrapped second row");
+    assert.match(css(), /\.editor-toolbar > \*,\s*\.toolbar-group > \* \{\s*flex-shrink:\s*0/);
+  });
+
+  it("keeps the Save button a stable size and free of opacity transitions", () => {
+    const save = rule(css(), ".toolbar-btn-save");
+    assert.match(save, /min-width:\s*\d+px/);
+    assert.match(save, /transition:\s*none/);
+    assert.ok(!/transition:\s*opacity/.test(save), "opacity transition caused a ghost Save button in WebKitGTK");
+  });
+
+  it("does not let flexbox collapse the Note Details panel to its 2px border", () => {
+    const panelCss = fs.readFileSync("src/features/notes/components/Editor/NoteMetadataPanel.css", "utf8");
+    assert.match(rule(panelCss, ".note-metadata-panel"), /flex-shrink:\s*0/);
+  });
+});
+
+describe("Theme tokens: every CSS variable resolves to the central palette", () => {
+  const walk = (dir) =>
+    fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(`${dir}/${e.name}`) : e.name.endsWith(".css") ? [`${dir}/${e.name}`] : [],
+    );
+
+  it("has no undefined var(--token) references that fall back to a fixed colour", () => {
+    const files = walk("src");
+    const defined = new Set();
+    for (const f of files) {
+      for (const m of fs.readFileSync(f, "utf8").matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)) defined.add(m[1]);
+    }
+    // set at runtime from the user's Display settings, always used with a fallback
+    const runtime = new Set(["--editor-font-size"]);
+    const undefinedRefs = new Set();
+    for (const f of files) {
+      for (const m of fs.readFileSync(f, "utf8").matchAll(/var\((--[a-zA-Z0-9-]+)/g)) {
+        if (!defined.has(m[1]) && !runtime.has(m[1])) undefinedRefs.add(`${m[1]} (${f})`);
+      }
+    }
+    assert.deepEqual([...undefinedRefs], [], "undefined tokens ignore the light/dark theme and use dark fallbacks");
+  });
+
+  it("themes the elevated surfaces used by the tag popup and Note Details panel", () => {
+    const tokens = fs.readFileSync("src/styles/tokens.css", "utf8");
+    assert.match(tokens, /--color-surface-elevated:\s*var\(--color-bg-surface-elevated\)/);
+    assert.match(tokens, /--color-surface-sunken:\s*var\(--color-bg-base\)/);
+    // dark overrides exist for the status colours that differ between themes
+    const darkBlock = tokens.slice(tokens.lastIndexOf(':root[data-theme="dark"]'));
+    assert.match(darkBlock, /--color-text-danger:\s*#f87171/);
+  });
+});

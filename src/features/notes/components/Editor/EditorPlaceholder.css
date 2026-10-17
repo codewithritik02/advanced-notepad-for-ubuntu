@@ -15,12 +15,14 @@
    Editor Toolbar Placeholder
    ========================================================================== */
 .editor-toolbar {
-  height: 38px;
   min-height: 38px;
-  padding: 0 var(--spacing-base);
+  padding: 5px var(--spacing-base);
   display: flex;
+  /* In a narrow editor the toolbar wraps onto a second row instead of overflowing and clipping
+     (or overlapping) the Save, details, format and preview buttons. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--spacing-xs);
+  gap: 4px var(--spacing-xs);
   border-bottom: 1px solid var(--color-border-subtle);
   background-color: var(--color-bg-surface);
   flex-shrink: 0;
@@ -31,6 +33,12 @@
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* Toolbar controls keep their natural size; wrapping handles the lack of space. */
+.editor-toolbar > *,
+.toolbar-group > * {
+  flex-shrink: 0;
 }
 
 .toolbar-btn {
@@ -78,6 +86,10 @@
 
 .toolbar-btn-save {
   width: auto;
+  /* Same width for "Save", "Saved", "Saving..." and "Retry Save" so labels never shift neighbours */
+  min-width: 92px;
+  justify-content: center;
+  white-space: nowrap;
   height: 28px;
   padding: 0 var(--spacing-sm);
   display: flex;
@@ -91,7 +103,9 @@
   cursor: pointer;
   opacity: 1;
   border: none;
-  transition: opacity var(--transition-fast);
+  /* No opacity transition: fading a button whose label and width change left a ghost copy of the
+     old button painted underneath in the WebKitGTK webview. */
+  transition: none;
 }
 
 .toolbar-btn-save:hover:not(:disabled) {
@@ -105,6 +119,12 @@
 
 .toolbar-spacer {
   flex: 1;
+  min-width: 0;
+}
+
+/* When the toolbar wraps, the right-hand controls stay right-aligned on their own row. */
+.toolbar-spacer + * {
+  margin-left: auto;
 }
 
 .toolbar-notebook-badge {
@@ -120,6 +140,13 @@
   font-size: var(--font-size-xs);
   cursor: pointer;
   transition: all var(--transition-fast);
+}
+
+.toolbar-notebook-badge span {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar-notebook-badge:hover {
@@ -168,6 +195,9 @@
 }
 
 .toolbar-format-btn {
+  min-width: 42px;
+  justify-content: center;
+  white-space: nowrap;
   font-size: var(--font-size-2xs);
   font-weight: var(--font-weight-semibold);
   padding: 3px 8px;
