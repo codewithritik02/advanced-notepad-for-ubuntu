@@ -718,3 +718,45 @@ export function markdownToPlainText(source: string): string {
   blocksToPlain(blocks, parts);
   return parts.join(" ");
 }
+
+export type PlainTextPart =
+  | { type: "text"; text: string }
+  | { type: "attachment"; id: string; alt: string; width?: number };
+
+const ATTACHMENT_IMAGE_REGEX = /!\[([^\]\n]*)\]\(notepad:\/\/attachment\/([a-zA-Z0-9_-]+)\)/g;
+
+/**
+ * Splits plain text into text and attached-image parts, so a plain-text (TXT) note can show its
+ * `![name](notepad://attachment/<id>)` lines as pictures without being Markdown. One line break
+ * next to an image is dropped because the image already sits on its own line.
+ */
+export function splitAttachmentImages(text: string): PlainTextPart[] {
+  const parts: PlainTextPart[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ATTACHMENT_IMAGE_REGEX)) {
+    const index = match.index ?? 0;
+    if (index > last) parts.push({ type: "text", text: text.slice(last, index) });
+    const sizeMatch = /^(.*)\|(\d{2,4})$/s.exec(match[1]);
+    const width = sizeMatch
+      ? Math.min(MAX_IMAGE_WIDTH, Math.max(MIN_IMAGE_WIDTH, parseInt(sizeMatch[2], 10)))
+      : undefined;
+    const alt = (sizeMatch ? sizeMatch[1] : match[1]).trim();
+    parts.push(
+      width === undefined
+        ? { type: "attachment", id: match[2], alt }
+        : { type: "attachment", id: match[2], alt, width },
+    );
+    last = index + match[0].length;
+  }
+  if (last < text.length) parts.push({ type: "text", text: text.slice(last) });
+
+  return parts
+    .map((part, i) => {
+      if (part.type !== "text") return part;
+      let value = part.text;
+      if (parts[i + 1]?.type === "attachment") value = value.replace(/\n$/, "");
+      if (parts[i - 1]?.type === "attachment") value = value.replace(/^\n/, "");
+      return { type: "text" as const, text: value };
+    })
+    .filter((part) => part.type !== "text" || part.text.length > 0);
+}

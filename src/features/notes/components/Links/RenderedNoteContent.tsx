@@ -1,5 +1,7 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import { tokenizeContentWithLinks } from "../../../../utils/linkParser";
+import { splitAttachmentImages } from "../../../../utils/markdown";
+import { AttachmentImage, ImageLightbox } from "../../../attachments";
 import { InternalLinkPill } from "./InternalLinkPill";
 import { RenderedMarkdown } from "./RenderedMarkdown";
 import "./InternalLinks.css";
@@ -23,6 +25,7 @@ export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
   const segments = useMemo(() => {
     return tokenizeContentWithLinks(content);
   }, [content]);
+  const [zoomed, setZoomed] = useState<{ id: string; alt: string } | null>(null);
 
   if (!content || content.trim().length === 0) {
     return (
@@ -61,8 +64,30 @@ export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
             />
           );
         }
-        return <React.Fragment key={`text-${index}`}>{seg.text}</React.Fragment>;
+        // Plain-text notes show attached images too: their `![name](notepad://attachment/id)` lines
+        return (
+          <React.Fragment key={`text-${index}`}>
+            {splitAttachmentImages(seg.text).map((part, partIndex) =>
+              part.type === "attachment" ? (
+                <span key={`image-${index}-${partIndex}`} className="plain-note-image">
+                  <AttachmentImage
+                    attachmentId={part.id}
+                    alt={part.alt}
+                    width={part.width}
+                    variant="inline"
+                    onOpen={() => setZoomed({ id: part.id, alt: part.alt })}
+                  />
+                </span>
+              ) : (
+                <React.Fragment key={`part-${index}-${partIndex}`}>{part.text}</React.Fragment>
+              ),
+            )}
+          </React.Fragment>
+        );
       })}
+      {zoomed && (
+        <ImageLightbox attachmentId={zoomed.id} alt={zoomed.alt} onClose={() => setZoomed(null)} />
+      )}
     </div>
   );
 };

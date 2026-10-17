@@ -28906,8 +28906,8 @@ describe("Inline images in notes (Phase 1: preview + insert)", () => {
     assert.match(editor, /<InsertImagePanel/);
     assert.match(editor, /controller=\{attachmentsController\}/);
     assert.match(editor, /formatAttachmentImageMarkdown\(image\.id, image\.file_name\)/);
-    assert.match(editor, /<ConvertToMarkdownDialog/);
-    assert.match(editor, /if \(format !== "md"\)[\s\S]{0,160}setPendingImageInsert\(images\)/);
+    assert.ok(!/ConvertToMarkdownDialog|setPendingImageInsert/.test(editor), "no format-conversion prompt any more");
+    assert.match(editor, /insertImagesIntoNote\(images, format\)/, "images are inserted without changing the note's format");
     const md = read("src/features/notes/components/Links/RenderedMarkdown.tsx");
     assert.match(md, /case "attachment":/);
     assert.match(md, /<ImageLightbox/);
@@ -29226,5 +29226,33 @@ describe("Minimap clarity", () => {
     assert.equal(m.minimapScale(1000, 800, 0.11), 0.11);
     assert.equal(m.minimapScale(20_000, 700, 0.11), 0.035);
     assert.equal(m.minimapScale(0, 700, 0.11), 0.11);
+  });
+});
+
+describe("Images in plain-text (TXT) notes", () => {
+  it("finds attached-image lines in plain text and keeps the text around them", async () => {
+    const { splitAttachmentImages } = await import("../src/utils/markdown.ts");
+    const parts = splitAttachmentImages("Intro line\n\n![Chart|300](notepad://attachment/img-1)\n\nOutro line");
+    assert.deepEqual(
+      parts.map((p) => (p.type === "attachment" ? ["img", p.id, p.alt, p.width] : ["text", p.text])),
+      [["text", "Intro line\n"], ["img", "img-1", "Chart", 300], ["text", "\nOutro line"]],
+      "one line break next to the image is dropped, the blank line stays",
+    );
+    assert.deepEqual(splitAttachmentImages("no images here"), [{ type: "text", text: "no images here" }]);
+    assert.deepEqual(splitAttachmentImages(""), []);
+    // two images in a row, unsafe ids and ordinary links are left alone
+    const two = splitAttachmentImages("![a](notepad://attachment/x1)\n![b](notepad://attachment/x2)");
+    assert.equal(two.filter((p) => p.type === "attachment").length, 2);
+    assert.equal(splitAttachmentImages("![a](notepad://attachment/a b) [l](notepad://note/n1)").some((p) => p.type === "attachment"), false);
+  });
+
+  it("shows the pictures in the plain-text preview and no longer asks to convert the note", () => {
+    const preview = fs.readFileSync("src/features/notes/components/Links/RenderedNoteContent.tsx", "utf8");
+    assert.match(preview, /splitAttachmentImages\(seg\.text\)/);
+    assert.match(preview, /<AttachmentImage[\s\S]{0,200}variant="inline"/);
+    assert.match(preview, /<ImageLightbox/);
+    assert.ok(!fs.existsSync("src/features/notes/components/ConvertToMarkdownDialog.tsx"));
+    const css = fs.readFileSync("src/features/notes/components/Links/InternalLinks.css", "utf8");
+    assert.match(css, /\.editor-preview-area \.plain-note-image \{[^}]*display:\s*block/);
   });
 });

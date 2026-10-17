@@ -8,7 +8,6 @@ import { NoteMetadataPanel } from "./NoteMetadataPanel";
 import { NotePickerModal } from "../NotePicker";
 import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
 import { formatAttachmentImageMarkdown } from "../../../../utils/markdown";
-import { ConvertToMarkdownDialog } from "../ConvertToMarkdownDialog";
 import { ScrollToTopButton } from "./ScrollToTopButton";
 import { NoteMinimap } from "./NoteMinimap";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
@@ -260,7 +259,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   // One attachment state shared by the Attachments list and the "Insert image" panel
   const attachmentsController = useAttachments(noteId);
   const [isImagePanelOpen, setIsImagePanelOpen] = useState(false);
-  const [pendingImageInsert, setPendingImageInsert] = useState<Attachment[] | null>(null);
   const imageInsertSelectionRef = useRef<{ start: number; end: number } | null>(null);
   // True once the user has placed the cursor in the text (click, key, selection)
   const cursorTouchedRef = useRef(false);
@@ -1021,23 +1019,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const requestInsertImages = (images: Attachment[]) => {
     if (!noteId || isReadOnly || images.length === 0) return;
     setIsImagePanelOpen(false);
-    if (format !== "md") {
-      // Images only render in Markdown notes, so ask before converting a plain-text note.
-      setPendingImageInsert(images);
-      return;
-    }
-    insertImagesIntoNote(images, "md");
-  };
-
-  const handleConfirmConvertAndInsert = () => {
-    const images = pendingImageInsert;
-    setPendingImageInsert(null);
-    if (images) insertImagesIntoNote(images, "md");
-  };
-
-  const handleCancelConvert = () => {
-    setPendingImageInsert(null);
-    imageInsertSelectionRef.current = null;
+    // Both Markdown and plain-text notes show attached images in Preview, so the format stays as is.
+    insertImagesIntoNote(images, format);
   };
 
   const handleToggleImagePanel = () => {
@@ -1823,12 +1806,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         onSelectNote={handleSelectLinkTarget}
         currentNoteId={noteId}
         initialLabel={linkPickerInitialLabel}
-      />
-
-      <ConvertToMarkdownDialog
-        isOpen={pendingImageInsert !== null}
-        onCancel={handleCancelConvert}
-        onConfirm={handleConfirmConvertAndInsert}
       />
 
       {/* Export Note Modal (Phase 10, Task 14) */}
