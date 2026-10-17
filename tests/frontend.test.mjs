@@ -12651,6 +12651,7 @@ describe("Phase 7: Attachments & Files", () => {
       assert.deepStrictEqual(capabilities.permissions, [
         "core:default",
         "core:webview:allow-set-webview-zoom",
+        "core:window:allow-destroy",
         "opener:default",
         "dialog:default",
       ]);
@@ -28593,5 +28594,19 @@ describe("NoteEditor hook ordering (white screen on Trash)", () => {
       !hookCall.test(afterReturns),
       "hooks after a conditional return change the hook count between renders and crash React (#300/#310)",
     );
+  });
+});
+
+describe("Window close permission (app could not be closed)", () => {
+  it("grants core:window:allow-destroy because NoteEditor closes the window via destroy()", () => {
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.match(editor, /onCloseRequested/);
+    assert.match(editor, /appWindow\.destroy\(\)/);
+    const cap = JSON.parse(fs.readFileSync("src-tauri/capabilities/default.json", "utf8"));
+    assert.ok(
+      cap.permissions.includes("core:window:allow-destroy"),
+      "without this permission Tauri denies destroy() and the window can never close once a close listener exists",
+    );
+    assert.ok(!cap.permissions.includes("core:window:allow-close"), "allow-close is not needed and would be broader than required");
   });
 });
