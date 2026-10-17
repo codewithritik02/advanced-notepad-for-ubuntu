@@ -1110,6 +1110,38 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     await onDeleteNote(loadedNote.id);
   }, [isReadOnly, loadedNote, onDeleteNote, handleSave]);
 
+  // Hooks must run on every render, so these stay above the early returns below
+  // (a hook after a conditional return crashes React with error #300/#310 when the
+  // editor switches between its empty, loading, error and loaded states).
+  const updatedDisplay = useMemo(() => {
+    if (!loadedNote?.modified_at) return "Just now";
+    try {
+      const date = new Date(loadedNote.modified_at);
+      if (isNaN(date.getTime())) return "Just now";
+      return date.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "Just now";
+    }
+  }, [loadedNote?.modified_at]);
+
+  const createdDisplay = useMemo(() => {
+    if (!loadedNote?.created_at) return null;
+    try {
+      const date = new Date(loadedNote.created_at);
+      if (isNaN(date.getTime())) return null;
+      return date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    } catch {
+      return null;
+    }
+  }, [loadedNote?.created_at]);
+
   // 1. Empty State
   if (!noteId) {
     return (
@@ -1161,35 +1193,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       </div>
     );
   }
-
-  const updatedDisplay = useMemo(() => {
-    if (!loadedNote?.modified_at) return "Just now";
-    try {
-      const date = new Date(loadedNote.modified_at);
-      if (isNaN(date.getTime())) return "Just now";
-      return date.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    } catch {
-      return "Just now";
-    }
-  }, [loadedNote?.modified_at]);
-
-  const createdDisplay = useMemo(() => {
-    if (!loadedNote?.created_at) return null;
-    try {
-      const date = new Date(loadedNote.created_at);
-      if (isNaN(date.getTime())) return null;
-      return date.toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      });
-    } catch {
-      return null;
-    }
-  }, [loadedNote?.created_at]);
 
   return (
     <div className={`editor-container ${isReadOnly ? "is-read-only" : ""}`}>

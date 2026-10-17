@@ -28578,3 +28578,20 @@ describe("Display settings: interface zoom and editor text size", () => {
     assert.match(modal, /Note text size/);
   });
 });
+
+describe("NoteEditor hook ordering (white screen on Trash)", () => {
+  it("calls no React hooks after the editor's first early return", () => {
+    const src = fs.readFileSync(
+      "src/features/notes/components/Editor/NoteEditor.tsx",
+      "utf8",
+    );
+    const firstEarlyReturn = src.indexOf("  // 1. Empty State\n  if (!noteId) {");
+    assert.ok(firstEarlyReturn > 0, "empty-state early return marker must exist");
+    const afterReturns = src.slice(firstEarlyReturn);
+    const hookCall = /\buse(State|Effect|Memo|Callback|Ref|DeferredValue|LayoutEffect|Reducer|Context|Id)\s*\(/;
+    assert.ok(
+      !hookCall.test(afterReturns),
+      "hooks after a conditional return change the hook count between renders and crash React (#300/#310)",
+    );
+  });
+});
