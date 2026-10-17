@@ -4,6 +4,7 @@ use crate::storage::errors::{BackupError, CryptoError, StorageError};
 use crate::storage::migrations::run_migrations_with_safety;
 use crate::storage::paths::{AppInstanceLock, StoragePaths};
 use crate::storage::services::RestoreService;
+use std::sync::TryLockError;
 
 /// Fully initialized storage state produced by the same lifecycle entry point used by Tauri.
 pub struct InitializedApplicationStorage {
@@ -79,4 +80,30 @@ pub fn checkpoint_database_for_shutdown(
         ))
     })?;
     checkpoint_wal(&connection).map_err(ApplicationLifecycleError::CheckpointDatabase)
+}
+
+/// Attempts the native-window shutdown checkpoint without blocking the event loop.
+///
+/// The frontend explicitly waits for its current note write before destroying the window. Other
+/// background storage work may still own the database mutex, though, and waiting for it inside a
+/// native window event would make the application appear impossible to close. SQLite WAL remains
+/// recoverable when a checkpoint is skipped, so a busy database is safe to leave to normal SQLite
+/// recovery on the next launch.
+pub fn try_checkpoint_database_for_shutdown(
+    database: &Database,
+) -> Result<bool, ApplicationLifecycleError> {
+    let connection = match database.conn.try_lock() {
+        Ok(connection) => connection,
+        Err(TryLockError::WouldBlock) => return Ok(false),
+        Err(TryLockError::Poisoned(_)) => {
+            return Err(ApplicationLifecycleError::CheckpointDatabase(
+                StorageError::InitializationFailed(
+                    "database connection lock was poisoned".to_string(),
+                ),
+            ));
+        }
+    };
+
+    checkpoint_wal(&connection).map_err(ApplicationLifecycleError::CheckpointDatabase)?;
+    Ok(true)
 }

@@ -29,30 +29,10 @@
   gap: var(--spacing-sm);
 }
 
-.settings-info-grid {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-sm);
-  background-color: var(--color-bg-base);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-  padding: var(--spacing-md);
-}
-
-.info-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.settings-about-version {
+  margin: 0;
   font-size: var(--font-size-xs);
-}
-
-.info-label {
   color: var(--color-text-muted);
-}
-
-.info-value {
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-medium);
 }
 
 .settings-section-header {
@@ -223,4 +203,3 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
-

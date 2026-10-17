@@ -5,8 +5,8 @@ use personal_notepad_lib::storage::crypto::{
     SetupEncryptionDto, UnlockDto, ENCRYPTION_METADATA_KEY,
 };
 use personal_notepad_lib::storage::lifecycle::{
-    checkpoint_database_for_shutdown, initialize_application_storage, ApplicationLifecycleError,
-    InitializedApplicationStorage,
+    checkpoint_database_for_shutdown, initialize_application_storage,
+    try_checkpoint_database_for_shutdown, ApplicationLifecycleError, InitializedApplicationStorage,
 };
 use personal_notepad_lib::storage::models::{
     CreateNoteDto, RestoreActivationMarker, RestoreActivationPhase, UpdateNoteDto,
@@ -21,6 +21,22 @@ use std::fs;
 fn shutdown(runtime: InitializedApplicationStorage) {
     checkpoint_database_for_shutdown(&runtime.database).expect("checkpoint database on shutdown");
     drop(runtime);
+}
+
+#[test]
+fn native_shutdown_checkpoint_never_waits_for_a_busy_database() {
+    let _global_state = lock_process_global_test_state();
+    let environment = TestAppDir::with_label("nonblocking-shutdown");
+    let runtime = initialize_application_storage(environment.paths.clone()).unwrap();
+    let connection = runtime.database.conn.lock().unwrap();
+
+    assert!(
+        !try_checkpoint_database_for_shutdown(&runtime.database).unwrap(),
+        "native shutdown must skip a busy database instead of blocking the window event loop"
+    );
+
+    drop(connection);
+    shutdown(runtime);
 }
 
 #[test]

@@ -438,10 +438,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const prevNoteIdRef = useRef<string | null>(null);
   const isDirtyRef = useRef(false);
   const closeInProgressRef = useRef(false);
+  const forceCloseArmedRef = useRef(false);
 
   useEffect(() => {
     isDirtyRef.current = isDirty;
   }, [isDirty]);
+
+  useEffect(() => {
+    // A force-close confirmation only applies to the note whose close-time save failed.
+    forceCloseArmedRef.current = false;
+  }, [noteId]);
 
   // Keep latestDataRef current with latest user edits
   useEffect(() => {
@@ -504,10 +510,26 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
     // Tauri-specific close listener
     let unlistenTauriClose: (() => void) | undefined;
+    let closeListenerDisposed = false;
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) => {
-        getCurrentWindow()
+        const appWindow = getCurrentWindow();
+        appWindow
           .onCloseRequested(async (event) => {
+            if (forceCloseArmedRef.current) {
+              event.preventDefault();
+              closeInProgressRef.current = true;
+              try {
+                await appWindow.destroy();
+              } catch (err) {
+                closeInProgressRef.current = false;
+                setEditorStatus("error");
+                setSaveError("Unable to close the application. Please try again.");
+                logger.error("Forced window close failed", err, { noteId });
+              }
+              return;
+            }
+
             if (!noteId || (!isDirtyRef.current && !inFlightSavePromiseRef.current)) {
               return;
             }
@@ -540,23 +562,34 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 setSaveError(null);
                 onNoteUpdated?.(updated);
               },
-              destroyWindow: () => getCurrentWindow().destroy(),
+              destroyWindow: () => appWindow.destroy(),
               reportFailure: (err) => {
+                forceCloseArmedRef.current = true;
                 setEditorStatus("error");
-                setSaveError("Unable to save changes. The window was kept open so you can retry.");
+                setSaveError(
+                  "Unable to finish saving. Close the window again to force quit; recent unsaved changes may be lost."
+                );
                 logger.error("Close-time note persistence failed; window kept open", err, { noteId });
               },
             });
             if (!closed) closeInProgressRef.current = false;
           })
           .then((unlisten) => {
-            unlistenTauriClose = unlisten;
+            // The effect can be cleaned up while the dynamic import/listener registration is
+            // still pending (especially under React Strict Mode). Immediately remove a late
+            // listener so stale handlers cannot keep preventing future close requests.
+            if (closeListenerDisposed) {
+              unlisten();
+            } else {
+              unlistenTauriClose = unlisten;
+            }
           })
           .catch(() => {});
       })
       .catch(() => {});
 
     return () => {
+      closeListenerDisposed = true;
       window.removeEventListener("beforeunload", handleBeforeUnload);
       unlistenTauriClose?.();
       if (debounceTimerRef.current) {
@@ -565,7 +598,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       }
 
       // Flush uncommitted dirty edits on component unmount
-      if (isDirtyRef.current && noteId) {
+      if (!closeInProgressRef.current && isDirtyRef.current && noteId) {
         const dataToFlush = { ...latestDataRef.current };
         const titleToFlush = dataToFlush.title.trim() ? dataToFlush.title : "Untitled Note";
         storageService.notes
@@ -654,6 +687,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             if (revisionRef.current === rev) {
               setIsDirty(false);
               isDirtyRef.current = false;
+              forceCloseArmedRef.current = false;
               setEditorStatus("saved");
             }
           }

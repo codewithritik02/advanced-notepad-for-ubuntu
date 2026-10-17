@@ -12,8 +12,8 @@ pub mod schema;
 pub mod services;
 
 pub use lifecycle::{
-    checkpoint_database_for_shutdown, initialize_application_storage, ApplicationLifecycleError,
-    InitializedApplicationStorage,
+    checkpoint_database_for_shutdown, initialize_application_storage,
+    try_checkpoint_database_for_shutdown, ApplicationLifecycleError, InitializedApplicationStorage,
 };
 pub use limits::*;
 

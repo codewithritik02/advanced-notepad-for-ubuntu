@@ -24,10 +24,19 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
+            // CloseRequested may be cancelled by the frontend while it saves the latest edit.
+            // Checkpoint only after destruction, and never block the native event loop on a busy
+            // database mutex; SQLite's WAL is recoverable if background work still owns it.
+            if let tauri::WindowEvent::Destroyed = event {
                 if let Some(db) = window.try_state::<Database>() {
-                    if let Err(error) = storage::checkpoint_database_for_shutdown(&db) {
-                        eprintln!("[Shutdown Error] {error}");
+                    match storage::try_checkpoint_database_for_shutdown(&db) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            eprintln!(
+                                "[Shutdown] Database busy; deferred WAL recovery to next launch"
+                            )
+                        }
+                        Err(error) => eprintln!("[Shutdown Error] {error}"),
                     }
                 }
             }

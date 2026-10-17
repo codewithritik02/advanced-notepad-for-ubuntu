@@ -43,7 +43,10 @@ import {
   MIN_PASSWORD_LENGTH,
   MAX_PASSWORD_LENGTH,
 } from "../src/features/security/utils/passwordValidation.ts";
-import { closeAfterPendingWrites } from "../src/features/notes/services/closeGuard.ts";
+import {
+  ClosePersistenceTimeoutError,
+  closeAfterPendingWrites,
+} from "../src/features/notes/services/closeGuard.ts";
 import {
   formatFileSize,
   getFileCategory,
@@ -96,6 +99,26 @@ describe("Phase 14 Task 4 — guarded application close", () => {
 
     assert.strictEqual(closed, false);
     assert.deepStrictEqual(calls, ["prevent", "save", "reported"]);
+  });
+
+  it("times out a stuck save instead of leaving the close handler pending forever", async () => {
+    const calls = [];
+    let reportedError;
+    const closed = await closeAfterPendingWrites({
+      event: { preventDefault: () => calls.push("prevent") },
+      waitForPendingSave: () => new Promise(() => {}),
+      savePendingChanges: async () => calls.push("save"),
+      destroyWindow: async () => calls.push("destroy"),
+      reportFailure: (error) => {
+        reportedError = error;
+        calls.push("reported");
+      },
+      persistenceTimeoutMs: 10,
+    });
+
+    assert.strictEqual(closed, false);
+    assert.ok(reportedError instanceof ClosePersistenceTimeoutError);
+    assert.deepStrictEqual(calls, ["prevent", "reported"]);
   });
 });
 
@@ -27883,6 +27906,8 @@ describe("Phase 13 Task 19 — Harden Startup, Shutdown, and Application Lifecyc
     assert.ok(lifecycleCode.includes("checkpoint_wal"), "Checkpoints WAL on window close");
     assert.ok(libCode.includes("initialize_application_storage"), "Uses the tested lifecycle entry point");
     assert.ok(libCode.includes("flush_and_checkpoint_db"), "Exposes flush_and_checkpoint_db command");
+    assert.ok(libCode.includes("WindowEvent::Destroyed"), "Runs native shutdown work after the window is destroyed");
+    assert.ok(libCode.includes("try_checkpoint_database_for_shutdown"), "Does not block close on a busy database mutex");
 
     const pathsCode = fs.readFileSync(new URL("../src-tauri/src/storage/paths.rs", import.meta.url), "utf-8");
     assert.ok(pathsCode.includes("app_instance_lock_file"), "Defines instance lock file path");
@@ -27922,6 +27947,7 @@ describe("Phase 13 Task 21 — Audit Memory, Resource Cleanup, and Long Sessions
     const editorCode = fs.readFileSync(new URL("../src/features/notes/components/Editor/NoteEditor.tsx", import.meta.url), "utf-8");
     assert.ok(editorCode.includes("window.removeEventListener(\"beforeunload\", handleBeforeUnload)"), "Removes beforeunload listener");
     assert.ok(editorCode.includes("unlistenTauriClose?.()"), "Unlistens Tauri window close event");
+    assert.ok(editorCode.includes("if (closeListenerDisposed)"), "Removes a close listener that registers after effect cleanup");
     assert.ok(editorCode.includes("window.removeEventListener(\"keydown\", handleWindowKeyDown)"), "Removes window keydown listener");
 
     const searchCode = fs.readFileSync(new URL("../src/features/search/useSearch.ts", import.meta.url), "utf-8");
@@ -28492,8 +28518,6 @@ describe("Phase 14 Task 22 — Regression Tests for Known Defects", () => {
     assert.strictEqual(security.freezePrototype, true);
   });
 });
-
-
 
 
 

@@ -94,7 +94,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       <Modal
         isOpen={isOpen}
         onClose={onClose}
-        title="Settings & Application Info"
+        title="Settings"
         maxWidth="540px"
         footer={
           <Button variant="secondary" size="sm" onClick={onClose}>
@@ -336,36 +336,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <Divider spacing="md" />
 
-        {/* Application Info Section */}
-        <div className="settings-section">
-          <h4 className="settings-section-title">About Personal Notepad</h4>
-          <div className="settings-info-grid">
-            <div className="info-row">
-              <span className="info-label">Application:</span>
-              <span className="info-value">Personal Notepad</span>
-            </div>
-            <div className="info-row">
-              <span className="info-label">Version:</span>
-              <span className="info-value">0.1.0</span>
-            </div>
-            <div className="info-row">
-              <span className="info-label">Phase:</span>
-              <Badge variant="accent" size="sm">
-                Phase 15 Distribution
-              </Badge>
-            </div>
-            <div className="info-row">
-              <span className="info-label">Target Platform:</span>
-              <span className="info-value">Ubuntu / Linux</span>
-            </div>
-            <div className="info-row">
-              <span className="info-label">Privacy & AI:</span>
-              <Badge variant="success" size="sm">
-                100% Offline & Non-AI
-              </Badge>
-            </div>
+          {/* About Section */}
+          <div className="settings-section">
+            <h4 className="settings-section-title">About</h4>
+            <p className="settings-about-version">Personal Notepad · Version 0.1.0</p>
           </div>
-        </div>
       </div>
     </Modal>
 
