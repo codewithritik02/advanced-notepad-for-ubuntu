@@ -90,6 +90,7 @@ pub fn run() {
             commands::remove_attachment,
             commands::open_attachment,
             commands::get_attachment_count,
+            commands::read_attachment_image,
             commands::check_attachment_consistency,
             commands::cleanup_abandoned_temp_files,
             commands::retry_note_attachment_cleanup,

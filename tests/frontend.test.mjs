@@ -12889,7 +12889,7 @@ describe("Phase 8: Trash & Recovery", () => {
 
       // Verify read-only attachments
       assert.ok(
-        editorContent.includes("<AttachmentList noteId={noteId} isReadOnly={isReadOnly} />"),
+        /<AttachmentList\s+noteId=\{noteId\}\s+isReadOnly=\{isReadOnly\}/.test(editorContent),
         "AttachmentList must be passed isReadOnly"
       );
     });
@@ -28812,5 +28812,155 @@ describe("Theme tokens: every CSS variable resolves to the central palette", () 
     // dark overrides exist for the status colours that differ between themes
     const darkBlock = tokens.slice(tokens.lastIndexOf(':root[data-theme="dark"]'));
     assert.match(darkBlock, /--color-text-danger:\s*#f87171/);
+  });
+});
+
+describe("Inline images in notes (Phase 1: preview + insert)", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("parses attached-image markdown, with optional width, and leaves other images as placeholders", async () => {
+    const { parseInline, formatAttachmentImageMarkdown } = await import("../src/utils/markdown.ts");
+    const nodes = parseInline("a ![Screen shot|400](notepad://attachment/abc-123) b ![web](https://x.test/i.png)");
+    const att = nodes.find((n) => n.t === "attachment");
+    assert.deepEqual([att.id, att.alt, att.width], ["abc-123", "Screen shot", 400]);
+    assert.ok(nodes.some((n) => n.t === "image" && n.alt === "web"), "remote images are never fetched");
+    assert.equal(nodes.find((n) => n.t === "attachment" && n.width === undefined), undefined);
+
+    // ids with unsafe characters are not treated as attachments
+    assert.ok(!parseInline("![x](notepad://attachment/a b)").some((n) => n.t === "attachment"));
+
+    assert.equal(formatAttachmentImageMarkdown("id-1", "My [shot] (1).png"), "![My shot 1](notepad://attachment/id-1)");
+    assert.equal(formatAttachmentImageMarkdown("id-2", ".png"), "![image](notepad://attachment/id-2)");
+    assert.equal(formatAttachmentImageMarkdown("id-3", "a|b.png", 9999), "![a b|2000](notepad://attachment/id-3)");
+  });
+
+  it("round-trips an inserted image reference through the parser and list snippets", async () => {
+    const { parseMarkdown, formatAttachmentImageMarkdown, markdownToPlainText } = await import("../src/utils/markdown.ts");
+    const line = formatAttachmentImageMarkdown("img-9", "chart.png");
+    const blocks = parseMarkdown(`Intro text\n\n${line}\n\nOutro text`);
+    assert.deepEqual(blocks.map((b) => b.t), ["paragraph", "paragraph", "paragraph"]);
+    assert.equal(blocks[1].c[0].t, "attachment");
+    assert.equal(markdownToPlainText(`Intro\n\n${line}\n\nOutro`), "Intro chart Outro");
+  });
+
+  it("detects image types from content, never from the name", async () => {
+    const { sniffImageMime } = await import("../src/features/attachments/utils/imageMime.ts");
+    const bytes = (...b) => new Uint8Array(b);
+    assert.equal(sniffImageMime(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0)), "image/png");
+    assert.equal(sniffImageMime(bytes(0xff, 0xd8, 0xff, 0xe0)), "image/jpeg");
+    assert.equal(sniffImageMime(new TextEncoder().encode("GIF89a....")), "image/gif");
+    assert.equal(sniffImageMime(new TextEncoder().encode("RIFF\0\0\0\0WEBPVP8 ")), "image/webp");
+    assert.equal(sniffImageMime(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>')), "image/svg+xml");
+    assert.equal(sniffImageMime(new TextEncoder().encode("%PDF-1.4")), null);
+    assert.equal(sniffImageMime(new TextEncoder().encode("<html><svg></svg></html>")), null);
+    assert.equal(sniffImageMime(new Uint8Array(0)), null);
+  });
+
+  it("shares one blob URL per image, revokes it after the last release, and never caches failures", async () => {
+    const { createImageCache } = await import("../src/features/attachments/services/imageCache.ts");
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    let loads = 0;
+    let n = 0;
+    const revoked = [];
+    const cache = createImageCache({
+      loadBytes: async (id) => {
+        loads += 1;
+        if (id === "bad") throw new Error("gone");
+        if (id === "text") return new TextEncoder().encode("not an image");
+        return png;
+      },
+      createUrl: () => `blob:test/${++n}`,
+      revokeUrl: (url) => revoked.push(url),
+      releaseDelayMs: 0,
+    });
+
+    const a = cache.acquire("img");
+    const b = cache.acquire("img");
+    assert.equal(await a.promise, await b.promise);
+    assert.equal(loads, 1, "one load shared by both users");
+    a.release();
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(revoked, [], "still in use by the second holder");
+    b.release();
+    b.release(); // double release is harmless
+    await new Promise((r) => setTimeout(r, 5));
+    assert.deepEqual(revoked, ["blob:test/1"]);
+    assert.equal(cache.size(), 0);
+
+    await assert.rejects(cache.acquire("bad").promise, /gone/);
+    await assert.rejects(cache.acquire("text").promise, /not a supported image/);
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(cache.size(), 0, "failed loads are not cached, so a retry can work");
+
+    const c = cache.acquire("img");
+    const url = await c.promise;
+    cache.invalidate("img");
+    assert.deepEqual(revoked.at(-1), url, "invalidate revokes immediately");
+  });
+
+  it("wires the toolbar button, attachments list button, lightbox and markdown-only prompt", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /aria-label="Insert image"/);
+    assert.match(editor, /<InsertImagePanel/);
+    assert.match(editor, /controller=\{attachmentsController\}/);
+    assert.match(editor, /formatAttachmentImageMarkdown\(image\.id, image\.file_name\)/);
+    assert.match(editor, /<ConvertToMarkdownDialog/);
+    assert.match(editor, /if \(format !== "md"\)[\s\S]{0,160}setPendingImageInsert\(images\)/);
+    const md = read("src/features/notes/components/Links/RenderedMarkdown.tsx");
+    assert.match(md, /case "attachment":/);
+    assert.match(md, /<ImageLightbox/);
+    const item = read("src/features/attachments/components/AttachmentItem.tsx");
+    assert.match(item, /btn-insert-image/);
+    const panel = read("src/features/attachments/components/InsertImagePanel.tsx");
+    assert.match(panel, /Choose from computer/);
+    assert.match(panel, /onPickFiles/);
+    const hook = read("src/features/attachments/hooks/useAttachments.ts");
+    assert.match(hook, /attachmentImageCache\.invalidate\(id\)/);
+  });
+
+  it("registers the image-bytes command and keeps it read-only and size-capped", () => {
+    const lib = read("src-tauri/src/lib.rs");
+    assert.match(lib, /commands::read_attachment_image/);
+    const cmd = read("src-tauri/src/commands/storage.rs");
+    assert.match(cmd, /pub fn read_attachment_image/);
+    assert.match(cmd, /MAX_IMAGE_PREVIEW_BYTES/);
+    const svc = read("src-tauri/src/storage/services/attachments.rs");
+    assert.match(svc, /decrypt_file_to_vec/);
+    assert.match(svc, /detect_image_mime\(&bytes\)\.is_none\(\)/);
+  });
+});
+
+describe("Inline images: cursor placement and editor layout", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("inserts at the end of the note when the user never placed a cursor", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /const cursorTouchedRef = useRef\(false\)/);
+    assert.match(editor, /cursorTouchedRef\.current = true;/);
+    assert.match(editor, /Boolean\(textarea\) && \(cursorTouchedRef\.current \|\| \(cached\?\.cursorStart \?\? 0\) > 0\)/);
+    // each image is its own paragraph, separated from surrounding text by blank lines
+    assert.match(editor, /before\.endsWith\("\\n\\n"\)/);
+    assert.match(editor, /after\.startsWith\("\\n\\n"\)/);
+  });
+
+  it("keeps editor sections at their natural height instead of squashing them to ~2px", () => {
+    const css = read("src/features/notes/components/Editor/EditorPlaceholder.css");
+    const scrollArea = css.slice(css.indexOf(".editor-scroll-area {"), css.indexOf("}", css.indexOf(".editor-scroll-area {")));
+    assert.match(scrollArea, /align-items:\s*flex-start/);
+    assert.match(css, /\.editor-document > \* \{\s*flex-shrink:\s*0/);
+    // the document must still be allowed to grow so the note body fills short notes
+    assert.match(css, /\.editor-document \{[^}]*min-height:\s*100%/);
+  });
+
+  it("anchors the Insert image panel to the toolbar so it never clips in a narrow window", () => {
+    const toolbar = read("src/features/notes/components/Editor/EditorPlaceholder.css");
+    assert.match(toolbar.slice(toolbar.indexOf(".editor-toolbar {")), /position:\s*relative/);
+    const panelCss = read("src/features/attachments/components/InsertImagePanel.css");
+    assert.match(panelCss, /\.toolbar-popover-anchor \{[^}]*position:\s*static/);
+    assert.match(panelCss, /max-width:\s*calc\(100% - 2 \* var\(--spacing-base, 16px\)\)/);
+  });
+
+  it("never leaves debug logging in the attachments hook", () => {
+    assert.ok(!/\[att\]/.test(read("src/features/attachments/hooks/useAttachments.ts")));
   });
 });

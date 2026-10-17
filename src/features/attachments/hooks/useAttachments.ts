@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { Attachment } from "../../../services/storage/types.ts";
 import { attachmentsStorage } from "../../../services/storage/attachments.ts";
 import { pickAttachmentFiles } from "../services/fileDialog.ts";
+import { attachmentImageCache } from "../services/imageCache.ts";
 import {
   executeAddAttachmentWorkflow,
   mapToAttachmentErrorState,
@@ -212,6 +213,8 @@ export function useAttachments(noteId: string | null): UseAttachmentsResult {
 
       try {
         await attachmentsStorage.removeAttachment(id);
+        // Previews of this image must now show "removed" instead of a stale cached picture.
+        attachmentImageCache.invalidate(id);
         if (currentNoteIdRef.current === targetNoteId) {
           setAttachments((prev) => prev.filter((a) => a.id !== id));
           setStatus("idle");

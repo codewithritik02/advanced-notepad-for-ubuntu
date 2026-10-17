@@ -243,6 +243,38 @@ pub fn encrypt_file_to_file(
     Ok(())
 }
 
+/// Decrypts an encrypted attachment file entirely in memory, so plaintext never touches disk
+/// (used for in-app image previews).
+pub fn decrypt_file_to_vec(
+    src_path: &Path,
+    dek: &SecretBytes,
+    associated_data: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let mut file = BufReader::new(File::open(src_path).map_err(|e| {
+        CryptoError::DecryptionFailed(format!("Failed to open encrypted file for decryption: {e}"))
+    })?);
+
+    let file_len = file
+        .get_ref()
+        .metadata()
+        .map_err(|e| {
+            CryptoError::DecryptionFailed(format!("Failed to read encrypted file metadata: {e}"))
+        })?
+        .len();
+    if file_len > crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES + MIN_ENVELOPE_LEN as u64 {
+        return Err(CryptoError::DecryptionFailed(format!(
+            "Encrypted file size ({file_len} bytes) exceeds maximum permitted attachment size"
+        )));
+    }
+
+    let mut envelope = Vec::with_capacity(file_len as usize);
+    file.read_to_end(&mut envelope).map_err(|e| {
+        CryptoError::DecryptionFailed(format!("Failed to read encrypted file: {e}"))
+    })?;
+
+    decrypt_payload(&envelope, dek, associated_data)
+}
+
 /// Decrypts an attachment file on disk directly into a staging destination (Task 10).
 pub fn decrypt_file_to_file(
     src_path: &Path,

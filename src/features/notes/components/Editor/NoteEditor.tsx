@@ -2,10 +2,13 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredVa
 import { Note, NoteFormat, EditorStatus, getFormatDisplayName } from "../../types";
 import { storageService, Tag } from "../../../../services/storage";
 import { TagPicker } from "../../../tags";
-import { AttachmentList } from "../../../attachments";
+import { AttachmentList, InsertImagePanel, useAttachments } from "../../../attachments";
+import type { Attachment } from "../../../../services/storage/types";
 import { NoteMetadataPanel } from "./NoteMetadataPanel";
 import { NotePickerModal } from "../NotePicker";
 import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
+import { formatAttachmentImageMarkdown } from "../../../../utils/markdown";
+import { ConvertToMarkdownDialog } from "../ConvertToMarkdownDialog";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import { ExportNoteModal } from "../../../importExport";
 import { logger } from "../../../../utils/logger";
@@ -38,6 +41,14 @@ const LinkIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </svg>
+);
+
+const ImageInsertIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+    <path d="m21 15-5-5L5 21" />
   </svg>
 );
 
@@ -240,6 +251,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [attachmentCount, setAttachmentCount] = useState<number>(0);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+
+  // One attachment state shared by the Attachments list and the "Insert image" panel
+  const attachmentsController = useAttachments(noteId);
+  const [isImagePanelOpen, setIsImagePanelOpen] = useState(false);
+  const [pendingImageInsert, setPendingImageInsert] = useState<Attachment[] | null>(null);
+  const imageInsertSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  // True once the user has placed the cursor in the text (click, key, selection)
+  const cursorTouchedRef = useRef(false);
 
   // Fetch targeted attachment count for metadata panel (Phase 7, Task 19)
   useEffect(() => {
@@ -798,6 +817,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleRecordSelection = useCallback(() => {
+    cursorTouchedRef.current = true;
     if (noteId && contentRef.current) {
       const existing = sessionViewCache.get(noteId) || { cursorStart: 0, cursorEnd: 0, scrollTop: 0 };
       sessionViewCache.set(noteId, {
@@ -901,6 +921,107 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       contentRef.current?.focus();
     });
   }, []);
+
+  // ---- Insert attached images into the note text -----------------------------------------
+  const closeImagePanel = useCallback(() => setIsImagePanelOpen(false), []);
+
+  /**
+   * Remembers where the cursor is before a button steals focus. If the user never placed a cursor
+   * in the text (or the note is shown in Preview), the image goes to the end of the note instead of
+   * the very top.
+   */
+  const captureImageInsertionPoint = () => {
+    const length = latestDataRef.current.content.length;
+    const textarea = contentRef.current;
+    const cached = noteId ? sessionViewCache.get(noteId) : undefined;
+    const hasCursor =
+      Boolean(textarea) && (cursorTouchedRef.current || (cached?.cursorStart ?? 0) > 0);
+    imageInsertSelectionRef.current =
+      textarea && hasCursor
+        ? {
+            start: Math.min(textarea.selectionStart, length),
+            end: Math.min(textarea.selectionEnd, length),
+          }
+        : { start: length, end: length };
+  };
+
+  /** Places `![name](notepad://attachment/<id>)` blocks at the remembered cursor position. */
+  const insertImagesIntoNote = (images: Attachment[], nextFormat: NoteFormat) => {
+    if (!noteId || isReadOnly || images.length === 0) return;
+
+    const current = latestDataRef.current.content;
+    const point = imageInsertSelectionRef.current ?? { start: current.length, end: current.length };
+    const start = Math.min(point.start, current.length);
+    const end = Math.min(Math.max(point.end, start), current.length);
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+
+    // Each image sits in its own paragraph so Markdown renders it between the surrounding text.
+    const block = images
+      .map((image) => formatAttachmentImageMarkdown(image.id, image.file_name))
+      .join("\n\n");
+    const leading =
+      before.length === 0 ? "" : before.endsWith("\n\n") ? "" : before.endsWith("\n") ? "\n" : "\n\n";
+    const trailing =
+      after.length === 0 ? "\n" : after.startsWith("\n\n") ? "" : after.startsWith("\n") ? "\n" : "\n\n";
+    const inserted = `${leading}${block}${trailing}`;
+    const newContent = before + inserted + after;
+    const cursor = before.length + inserted.length;
+
+    if (nextFormat !== format) {
+      setFormat(nextFormat);
+      latestDataRef.current.format = nextFormat;
+    }
+    latestDataRef.current.content = newContent;
+    setContent(newContent);
+    updateDirtyState(title, newContent, nextFormat);
+    scheduleAutosave(noteId);
+    imageInsertSelectionRef.current = null;
+
+    requestAnimationFrame(() => {
+      if (contentRef.current) {
+        contentRef.current.focus();
+        contentRef.current.selectionStart = cursor;
+        contentRef.current.selectionEnd = cursor;
+        handleRecordSelection();
+      }
+    });
+  };
+
+  const requestInsertImages = (images: Attachment[]) => {
+    if (!noteId || isReadOnly || images.length === 0) return;
+    setIsImagePanelOpen(false);
+    if (format !== "md") {
+      // Images only render in Markdown notes, so ask before converting a plain-text note.
+      setPendingImageInsert(images);
+      return;
+    }
+    insertImagesIntoNote(images, "md");
+  };
+
+  const handleConfirmConvertAndInsert = () => {
+    const images = pendingImageInsert;
+    setPendingImageInsert(null);
+    if (images) insertImagesIntoNote(images, "md");
+  };
+
+  const handleCancelConvert = () => {
+    setPendingImageInsert(null);
+    imageInsertSelectionRef.current = null;
+  };
+
+  const handleToggleImagePanel = () => {
+    if (isReadOnly || !noteId) return;
+    if (!isImagePanelOpen) captureImageInsertionPoint();
+    setIsImagePanelOpen((open) => !open);
+  };
+
+  // Keep the Note Details attachment count in step with the shared attachment list
+  useEffect(() => {
+    if (attachmentsController.status !== "loading") {
+      setAttachmentCount(attachmentsController.attachments.length);
+    }
+  }, [attachmentsController.attachments.length, attachmentsController.status]);
 
   // Internal link activation handler (Phase 9, Task 8 & 10)
   const handleActivateLink = useCallback(
@@ -1314,6 +1435,36 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           >
             <LinkIcon />
           </button>
+
+          <div className="toolbar-popover-anchor">
+            <button
+              type="button"
+              className={`toolbar-btn ${isImagePanelOpen ? "is-active" : ""}`}
+              title="Insert image"
+              aria-label="Insert image"
+              aria-haspopup="dialog"
+              aria-expanded={isImagePanelOpen}
+              data-insert-image-toggle
+              disabled={isReadOnly || !noteId}
+              onMouseDown={(e) => {
+                // Keep textarea selection intact when clicking button
+                e.preventDefault();
+              }}
+              onClick={handleToggleImagePanel}
+            >
+              <ImageInsertIcon />
+            </button>
+            {isImagePanelOpen && (
+              <InsertImagePanel
+                attachments={attachmentsController.attachments}
+                isLoading={attachmentsController.status === "loading"}
+                isBusy={attachmentsController.isBusy}
+                onInsert={requestInsertImages}
+                onPickFiles={attachmentsController.pickAndAddFiles}
+                onClose={closeImagePanel}
+              />
+            )}
+          </div>
         </div>
 
         <div className="toolbar-spacer" />
@@ -1517,7 +1668,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
           {/* Note File Attachments (Phase 7, Tasks 11-19) */}
           {/* <AttachmentList noteId={noteId} /> */}
-          <AttachmentList noteId={noteId} isReadOnly={isReadOnly} />
+          <AttachmentList
+            noteId={noteId}
+            isReadOnly={isReadOnly}
+            controller={attachmentsController}
+            onInsertImage={(attachment) => {
+              captureImageInsertionPoint();
+              requestInsertImages([attachment]);
+            }}
+          />
 
           {/* Outgoing Internal Links Strip (Phase 9, Task 8) */}
           <NoteLinksBar links={parsedLinks} onActivateLink={handleActivateLink} />
@@ -1626,6 +1785,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         onSelectNote={handleSelectLinkTarget}
         currentNoteId={noteId}
         initialLabel={linkPickerInitialLabel}
+      />
+
+      <ConvertToMarkdownDialog
+        isOpen={pendingImageInsert !== null}
+        onCancel={handleCancelConvert}
+        onConfirm={handleConfirmConvertAndInsert}
       />
 
       {/* Export Note Modal (Phase 10, Task 14) */}

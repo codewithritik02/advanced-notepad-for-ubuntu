@@ -367,3 +367,20 @@
 .attachment-action-btn.btn-cancel-remove:hover:not(:disabled) {
   background-color: var(--color-surface-hover);
 }
+
+/* Image attachments show a real thumbnail instead of the generic file icon */
+.attachment-type-badge.has-thumb {
+  overflow: hidden;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+}
+
+.attachment-action-btn.btn-insert-image {
+  color: var(--color-accent-default);
+  border-color: var(--color-accent-default);
+}
+
+.attachment-action-btn.btn-insert-image:hover:not(:disabled) {
+  background: var(--color-accent-subtle);
+}

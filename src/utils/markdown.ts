@@ -20,6 +20,7 @@ export type MdInline =
   | { t: "link"; href: string; c: MdInline[] }
   | { t: "internal"; id: string; label: string }
   | { t: "image"; alt: string }
+  | { t: "attachment"; id: string; alt: string; width?: number }
   | { t: "br" };
 
 export type MdAlign = "left" | "center" | "right" | null;
@@ -45,6 +46,27 @@ const MAX_INLINE_CHARS = 20_000;
 const MAX_NESTING = 8;
 const MAX_LABEL_SCAN = 2_000;
 const INTERNAL_PREFIX = "notepad://note/";
+export const ATTACHMENT_URI_PREFIX = "notepad://attachment/";
+const MIN_IMAGE_WIDTH = 40;
+const MAX_IMAGE_WIDTH = 2000;
+
+/**
+ * Markdown line that places an attached image in a note: `![name](notepad://attachment/<id>)`.
+ * The optional width (px) is stored after a pipe in the alt text: `![name|400](...)`.
+ */
+export function formatAttachmentImageMarkdown(
+  attachmentId: string,
+  fileName: string,
+  width?: number,
+): string {
+  const base = fileName.replace(/\.[^./\\]+$/, "");
+  const cleaned = base.replace(/[\[\]()|\\\r\n]/g, " ").replace(/\s+/g, " ").trim() || "image";
+  const sized =
+    width !== undefined && Number.isFinite(width)
+      ? `|${Math.min(MAX_IMAGE_WIDTH, Math.max(MIN_IMAGE_WIDTH, Math.round(width)))}`
+      : "";
+  return `![${cleaned}${sized}](${ATTACHMENT_URI_PREFIX}${attachmentId.trim()})`;
+}
 
 const SAFE_URL = /^(https?:\/\/|mailto:)/i;
 
@@ -152,6 +174,7 @@ function plainText(nodes: MdInline[]): string {
         case "br":
           return " ";
         case "image":
+        case "attachment":
           return n.alt;
         case "internal":
           return n.label;
@@ -276,8 +299,28 @@ function parseInlineRange(src: string, depth: number): MdInline[] {
         const dest = parseLinkDestination(src, close + 1);
         if (dest) {
           flush(i);
-          const alt = plainText(parseInlineRange(src.slice(i + 2, close), depth + 1));
-          out.push({ t: "image", alt });
+          const labelSrc = src.slice(i + 2, close);
+          const attachmentId = dest.url.toLowerCase().startsWith(ATTACHMENT_URI_PREFIX)
+            ? dest.url.slice(ATTACHMENT_URI_PREFIX.length).trim()
+            : "";
+          if (/^[a-zA-Z0-9_-]+$/.test(attachmentId)) {
+            // Attached image from this note: `![name](notepad://attachment/<id>)`, optional `|width`
+            const sizeMatch = /^(.*)\|(\d{2,4})$/s.exec(labelSrc);
+            const altText = plainText(
+              parseInlineRange(sizeMatch ? sizeMatch[1] : labelSrc, depth + 1),
+            ).trim();
+            const width = sizeMatch
+              ? Math.min(MAX_IMAGE_WIDTH, Math.max(MIN_IMAGE_WIDTH, parseInt(sizeMatch[2], 10)))
+              : undefined;
+            out.push(
+              width === undefined
+                ? { t: "attachment", id: attachmentId, alt: altText }
+                : { t: "attachment", id: attachmentId, alt: altText, width },
+            );
+          } else {
+            const alt = plainText(parseInlineRange(labelSrc, depth + 1));
+            out.push({ t: "image", alt });
+          }
           i = dest.end;
           textStart = i;
           continue;
@@ -627,6 +670,7 @@ function inlineToPlain(nodes: MdInline[]): string {
         case "br":
           return " ";
         case "image":
+        case "attachment":
           return n.alt;
         case "internal":
           return n.label;

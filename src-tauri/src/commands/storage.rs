@@ -664,6 +664,38 @@ pub fn open_attachment(
     Ok(())
 }
 
+/// Largest image the in-app preview will load into memory.
+const MAX_IMAGE_PREVIEW_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Returns the raw bytes of an image attachment so the note preview can display it inline.
+/// Encrypted attachments are decrypted in memory only. Non-image files are refused.
+#[tauri::command]
+pub fn read_attachment_image(
+    db: State<'_, Database>,
+    paths: State<'_, StoragePaths>,
+    session: State<'_, CryptoSession>,
+    id: String,
+) -> Result<tauri::ipc::Response, String> {
+    let dek = get_active_dek(&session)?;
+
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Database connection is unavailable.".to_string())?;
+    let storage = AttachmentStorage::new((*paths).clone());
+
+    let bytes = AttachmentService::read_image_attachment_bytes_with_key(
+        &conn,
+        &storage,
+        &id,
+        dek.as_ref(),
+        MAX_IMAGE_PREVIEW_BYTES,
+    )
+    .map_err(|e| e.user_friendly_message())?;
+
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// Returns the number of attachments associated with a note (Phase 7, Task 19).
 #[tauri::command]
 pub fn get_attachment_count(db: State<'_, Database>, note_id: String) -> Result<usize, String> {

@@ -293,6 +293,96 @@ impl AttachmentService {
         }
     }
 
+    /// Reads an image attachment into memory for in-app previews.
+    ///
+    /// Safety rules:
+    /// - only real images are returned (PNG, JPEG, GIF, WebP, SVG); the type is detected from the
+    ///   file *content*, never from the file name alone;
+    /// - encrypted attachments are decrypted in memory only (no plaintext temp file);
+    /// - files larger than `max_bytes` are refused so a preview can never exhaust memory.
+    pub fn read_image_attachment_bytes_with_key(
+        conn: &Connection,
+        storage: &AttachmentStorage,
+        id: &str,
+        dek: Option<&SecretBytes>,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AttachmentError> {
+        let trimmed_id = id.trim();
+        if trimmed_id.is_empty() {
+            return Err(AttachmentError::InvalidRequest(
+                "Attachment ID cannot be empty".to_string(),
+            ));
+        }
+
+        let attachment = AttachmentRepository::get_by_id_with_key(conn, trimmed_id, dek)?
+            .ok_or_else(|| {
+                AttachmentError::AttachmentNotFound(format!(
+                    "Attachment with id '{trimmed_id}' not found"
+                ))
+            })?;
+
+        if attachment.file_size < 0 || attachment.file_size as u64 > max_bytes {
+            return Err(AttachmentError::FileTooLarge {
+                size_bytes: attachment.file_size.max(0) as u64,
+                max_bytes,
+            });
+        }
+
+        let safe_path = storage.resolve_safe_path(&attachment.relative_path)?;
+        if !safe_path.exists() {
+            return Err(AttachmentError::ManagedFileMissing(
+                attachment.relative_path,
+            ));
+        }
+
+        let bytes = if AttachmentStorage::is_encrypted_file(&safe_path) {
+            let key = dek.ok_or_else(|| {
+                AttachmentError::InvalidRequest(
+                    "Application is locked. Cannot read encrypted attachment without active key."
+                        .to_string(),
+                )
+            })?;
+            let stored_name = attachment
+                .relative_path
+                .split('/')
+                .next_back()
+                .unwrap_or(&attachment.relative_path);
+            let aad = format!("attachments:{}:{stored_name}", attachment.note_id.trim());
+            crate::storage::crypto::decrypt_file_to_vec(&safe_path, key, aad.as_bytes()).map_err(
+                |e| {
+                    AttachmentError::FileOperationFailed(format!(
+                        "Attachment decryption failed: {e}"
+                    ))
+                },
+            )?
+        } else {
+            std::fs::read(&safe_path).map_err(|e| match e.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    AttachmentError::PermissionDenied(attachment.relative_path.clone())
+                }
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to read attachment file: {e}"
+                )),
+            })?
+        };
+
+        if bytes.len() as u64 > max_bytes {
+            return Err(AttachmentError::FileTooLarge {
+                size_bytes: bytes.len() as u64,
+                max_bytes,
+            });
+        }
+
+        if detect_image_mime(&bytes).is_none() {
+            return Err(AttachmentError::InvalidRequest(format!(
+                "'{}' is not a supported image (PNG, JPEG, GIF, WebP or SVG).",
+                attachment.file_name
+            )));
+        }
+
+        Ok(bytes)
+    }
+
     /// Checks storage consistency across database attachment records and managed disk files (Phase 7, Task 21).
     pub fn check_consistency(
         conn: &Connection,
@@ -405,6 +495,38 @@ impl AttachmentService {
     }
 }
 
+/// Detects a previewable image type from file *content* (magic bytes). Returns the MIME type.
+pub fn detect_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("image/png");
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some("image/webp");
+    }
+    // SVG is text: only accept it when the document really starts like an SVG. It is always shown
+    // through an <img> element, where scripts never run.
+    let head = &bytes[..bytes.len().min(2048)];
+    if let Ok(text) = std::str::from_utf8(head) {
+        let lower = text
+            .trim_start_matches('\u{feff}')
+            .trim_start()
+            .to_ascii_lowercase();
+        if lower.starts_with("<svg")
+            || ((lower.starts_with("<?xml") || lower.starts_with("<!doctype svg"))
+                && lower.contains("<svg"))
+        {
+            return Some("image/svg+xml");
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +630,192 @@ mod tests {
 
         // Verify file is gone from storage
         assert!(!storage.file_exists(&attachment.relative_path));
+    }
+
+    // Smallest valid 1x1 PNG
+    const TINY_PNG: [u8; 67] = [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    #[test]
+    fn test_detect_image_mime_uses_content_not_extension() {
+        assert_eq!(detect_image_mime(&TINY_PNG), Some("image/png"));
+        assert_eq!(
+            detect_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]),
+            Some("image/jpeg")
+        );
+        assert_eq!(detect_image_mime(b"GIF89a\x01\x00"), Some("image/gif"));
+        assert_eq!(
+            detect_image_mime(b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+            Some("image/webp")
+        );
+        assert_eq!(
+            detect_image_mime(
+                b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+            ),
+            Some("image/svg+xml")
+        );
+        assert_eq!(
+            detect_image_mime(b"<svg width=\"1\"></svg>"),
+            Some("image/svg+xml")
+        );
+        // Not images, even if a caller names them like images.
+        assert_eq!(detect_image_mime(b"%PDF-1.4"), None);
+        assert_eq!(detect_image_mime(b"MZ\x90\x00 executable"), None);
+        assert_eq!(detect_image_mime(b"<html><svg></svg></html>"), None);
+        assert_eq!(detect_image_mime(b""), None);
+    }
+
+    #[test]
+    fn test_read_image_attachment_bytes_plaintext_roundtrip() {
+        let (conn, storage, sources_dir, _guard) = setup_test_env();
+        let note = NoteRepository::create(&conn, CreateNoteDto::default()).expect("Create note");
+
+        let src_file = sources_dir.join("pic.png");
+        fs::write(&src_file, TINY_PNG).unwrap();
+        let attachment =
+            AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap();
+
+        let bytes = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            None,
+            1024 * 1024,
+        )
+        .expect("image bytes");
+        assert_eq!(bytes, TINY_PNG);
+    }
+
+    #[test]
+    fn test_read_image_attachment_bytes_rejects_non_images_even_with_image_name() {
+        let (conn, storage, sources_dir, _guard) = setup_test_env();
+        let note = NoteRepository::create(&conn, CreateNoteDto::default()).expect("Create note");
+
+        // Text pretending to be a PNG
+        let src_file = sources_dir.join("fake.png");
+        fs::write(&src_file, b"just some text, not an image").unwrap();
+        let attachment =
+            AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap();
+
+        let err = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            None,
+            1024 * 1024,
+        )
+        .expect_err("non-image must be refused");
+        assert!(matches!(err, AttachmentError::InvalidRequest(_)), "{err:?}");
+    }
+
+    #[test]
+    fn test_read_image_attachment_bytes_enforces_size_limit_and_unknown_id() {
+        let (conn, storage, sources_dir, _guard) = setup_test_env();
+        let note = NoteRepository::create(&conn, CreateNoteDto::default()).expect("Create note");
+
+        let src_file = sources_dir.join("pic.png");
+        fs::write(&src_file, TINY_PNG).unwrap();
+        let attachment =
+            AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap();
+
+        let too_big = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            None,
+            10,
+        )
+        .expect_err("size limit");
+        assert!(
+            matches!(too_big, AttachmentError::FileTooLarge { .. }),
+            "{too_big:?}"
+        );
+
+        let missing = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            "does-not-exist",
+            None,
+            1024,
+        )
+        .expect_err("unknown id");
+        assert!(
+            matches!(missing, AttachmentError::AttachmentNotFound(_)),
+            "{missing:?}"
+        );
+
+        let empty = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn, &storage, "  ", None, 1024,
+        )
+        .expect_err("blank id");
+        assert!(
+            matches!(empty, AttachmentError::InvalidRequest(_)),
+            "{empty:?}"
+        );
+    }
+
+    #[test]
+    fn test_read_image_attachment_bytes_encrypted_is_decrypted_in_memory_only() {
+        use crate::storage::crypto::generate_dek;
+
+        let (conn, storage, sources_dir, _guard) = setup_test_env();
+        let note = NoteRepository::create(&conn, CreateNoteDto::default()).expect("Create note");
+        let dek = generate_dek();
+
+        let src_file = sources_dir.join("secret.png");
+        fs::write(&src_file, TINY_PNG).unwrap();
+        let attachment = AttachmentService::add_attachment_with_key(
+            &conn,
+            &storage,
+            &note.id,
+            &src_file,
+            Some(&dek),
+        )
+        .unwrap();
+
+        // On disk the file is encrypted (does not start with the PNG signature).
+        let on_disk = fs::read(
+            storage
+                .resolve_safe_path(&attachment.relative_path)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!on_disk.starts_with(&[0x89, b'P', b'N', b'G']));
+
+        let decrypted_dir = storage.decrypted_attachments_dir();
+        let before = fs::read_dir(&decrypted_dir).map(|d| d.count()).unwrap_or(0);
+
+        let bytes = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            Some(&dek),
+            1024 * 1024,
+        )
+        .expect("decrypted image bytes");
+        assert_eq!(bytes, TINY_PNG);
+
+        // No plaintext temp file was written for the preview.
+        let after = fs::read_dir(&decrypted_dir).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(
+            before, after,
+            "preview must not create plaintext temp files"
+        );
+
+        // Without the key the encrypted image can't be read.
+        let locked = AttachmentService::read_image_attachment_bytes_with_key(
+            &conn,
+            &storage,
+            &attachment.id,
+            None,
+            1024 * 1024,
+        );
+        assert!(locked.is_err());
     }
 
     #[test]

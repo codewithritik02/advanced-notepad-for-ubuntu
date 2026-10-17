@@ -50,6 +50,17 @@ export const attachmentsStorage = {
   },
 
   /**
+   * Reads an image attachment's bytes for inline previews. The backend only returns real images
+   * (type detected from content), decrypts encrypted attachments in memory, and caps the size.
+   */
+  async readImage(id: string): Promise<Uint8Array> {
+    const result = await invoke<ArrayBuffer | number[]>("read_attachment_image", {
+      id: id.trim(),
+    });
+    return result instanceof ArrayBuffer ? new Uint8Array(result) : Uint8Array.from(result);
+  },
+
+  /**
    * Returns the count of attachments associated with a note (Phase 7, Task 19).
    */
   async getAttachmentCount(noteId: string): Promise<number> {

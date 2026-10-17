@@ -2,6 +2,7 @@ import React from "react";
 import type { Attachment } from "../../../services/storage/types.ts";
 import { formatFileSize, getFileCategory, formatAttachmentDate } from "../utils/formatters.ts";
 import { AttachmentCategoryIcon, ExternalLinkIcon, TrashIcon } from "./AttachmentIcons.tsx";
+import { AttachmentImage } from "./AttachmentImage.tsx";
 
 export interface AttachmentItemProps {
   attachment: Attachment;
@@ -9,6 +10,8 @@ export interface AttachmentItemProps {
   onRemove: (id: string) => Promise<unknown> | unknown;
   isBusy?: boolean;
   isReadOnly?: boolean;
+  /** When set, image attachments get an "Insert" button that places them in the note text. */
+  onInsertImage?: (attachment: Attachment) => void;
 }
 
 export const AttachmentItem: React.FC<AttachmentItemProps> = ({
@@ -17,6 +20,7 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
   onRemove,
   isBusy = false,
   isReadOnly = false,
+  onInsertImage,
 }) => {
   const category = getFileCategory(attachment.file_name, attachment.mime_type);
   const sizeFormatted = formatFileSize(attachment.file_size);
@@ -31,8 +35,19 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
   return (
     <div className="attachment-item" role="listitem">
       <div className="attachment-item-leading" title={`File type: ${category}`}>
-        <span className={`attachment-type-badge type-${category}`}>
-          <AttachmentCategoryIcon category={category} size={15} />
+        <span
+          className={`attachment-type-badge type-${category} ${category === "image" ? "has-thumb" : ""}`}
+        >
+          {category === "image" ? (
+            <AttachmentImage
+              attachmentId={attachment.id}
+              alt={attachment.file_name}
+              variant="thumb"
+              fallback={<AttachmentCategoryIcon category={category} size={15} />}
+            />
+          ) : (
+            <AttachmentCategoryIcon category={category} size={15} />
+          )}
         </span>
       </div>
 
@@ -82,6 +97,18 @@ export const AttachmentItem: React.FC<AttachmentItemProps> = ({
           </div>
         ) : (
           <>
+            {category === "image" && onInsertImage && !isReadOnly && (
+              <button
+                type="button"
+                className="attachment-action-btn btn-insert-image"
+                title="Insert this image into the note at the cursor"
+                aria-label={`Insert ${attachment.file_name} into note`}
+                disabled={isBusy}
+                onClick={() => onInsertImage(attachment)}
+              >
+                <span className="action-text">Insert</span>
+              </button>
+            )}
             <button
               type="button"
               className="attachment-action-btn btn-open"

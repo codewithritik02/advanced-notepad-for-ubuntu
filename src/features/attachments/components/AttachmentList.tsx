@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { useAttachments } from "../hooks/useAttachments.ts";
+import { useAttachments, type UseAttachmentsResult } from "../hooks/useAttachments.ts";
+import type { Attachment } from "../../../services/storage/types.ts";
 import { AttachmentItem } from "./AttachmentItem.tsx";
 import { PaperclipIcon, PlusIcon, ChevronDownIcon } from "./AttachmentIcons.tsx";
 import "./AttachmentList.css";
@@ -9,6 +10,10 @@ export interface AttachmentListProps {
   isReadOnly?: boolean;
   defaultExpanded?: boolean;
   onAttachmentCountChange?: (count: number) => void;
+  /** Share one attachment state with other parts of the editor (for example the Insert image panel). */
+  controller?: UseAttachmentsResult;
+  /** Shows an "Insert" button on image attachments. */
+  onInsertImage?: (attachment: Attachment) => void;
 }
 
 /**
@@ -26,9 +31,13 @@ export const AttachmentList: React.FC<AttachmentListProps> = ({
   isReadOnly = false,
   defaultExpanded = true,
   onAttachmentCountChange,
+  controller,
+  onInsertImage,
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(defaultExpanded);
 
+  // Without a shared controller the list manages its own state, exactly as before.
+  const ownController = useAttachments(controller ? null : noteId);
   const {
     attachments,
     status,
@@ -41,7 +50,7 @@ export const AttachmentList: React.FC<AttachmentListProps> = ({
     openAttachment,
     clearError,
     clearSuccess,
-  } = useAttachments(noteId);
+  } = controller ?? ownController;
 
   // Notify parent of attachment count changes
   useEffect(() => {
@@ -209,6 +218,7 @@ export const AttachmentList: React.FC<AttachmentListProps> = ({
                   onRemove={removeAttachment}
                   isBusy={isBusy}
                   isReadOnly={isReadOnly}
+                  onInsertImage={onInsertImage}
                 />
               ))}
             </div>

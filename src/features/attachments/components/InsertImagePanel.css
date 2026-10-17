@@ -1,0 +1,125 @@
+.insert-image-panel {
+  /* Positioned against the editor toolbar (see .toolbar-popover-anchor), so it stays inside the
+     editor even when the toolbar wraps in a narrow window. */
+  position: absolute;
+  top: calc(100% + 6px);
+  left: var(--spacing-base, 16px);
+  z-index: 60;
+  width: 320px;
+  max-width: calc(100% - 2 * var(--spacing-base, 16px));
+  padding: var(--spacing-md, 12px);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-bg-surface-elevated);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--font-size-sm);
+}
+
+.insert-image-panel-title {
+  margin-bottom: var(--spacing-sm, 8px);
+  font-weight: var(--font-weight-semibold, 600);
+}
+
+.insert-image-panel-empty {
+  padding: var(--spacing-md, 12px) 0;
+  color: var(--color-text-muted);
+}
+
+.insert-image-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacing-sm, 8px);
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+.insert-image-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-bg-panel);
+  color: inherit;
+  cursor: pointer;
+}
+
+.insert-image-tile:hover,
+.insert-image-tile:focus-visible {
+  border-color: var(--color-accent-default);
+  background: var(--color-accent-subtle);
+  outline: none;
+}
+
+.insert-image-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-surface-hover);
+}
+
+.insert-image-name {
+  overflow: hidden;
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.insert-image-panel-message {
+  margin-top: var(--spacing-sm, 8px);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning-text);
+  font-size: var(--font-size-xs);
+}
+
+.insert-image-panel-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: var(--spacing-sm, 8px);
+  padding-top: var(--spacing-sm, 8px);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.insert-image-pick-btn {
+  padding: 5px 10px;
+  border: 1px solid var(--color-accent-default);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--color-accent-default);
+  font-size: var(--font-size-xs);
+  cursor: pointer;
+}
+
+.insert-image-pick-btn:hover:not(:disabled) {
+  background: var(--color-accent-subtle);
+}
+
+.insert-image-pick-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.insert-image-hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-2xs);
+}
+
+/* The toolbar button and its popover share one positioned wrapper */
+.toolbar-popover-anchor {
+  /* static on purpose: the popover positions itself against .editor-toolbar */
+  position: static;
+  display: inline-flex;
+}

@@ -18,9 +18,9 @@ pub use migration::{
 };
 
 pub use cipher::{
-    decrypt_file_to_file, decrypt_payload, decrypt_string, encrypt_file_to_file, encrypt_payload,
-    encrypt_string, is_encrypted_string, ENCRYPTED_PREFIX_V1, ENVELOPE_VERSION_V1,
-    MIN_ENVELOPE_LEN,
+    decrypt_file_to_file, decrypt_file_to_vec, decrypt_payload, decrypt_string,
+    encrypt_file_to_file, encrypt_payload, encrypt_string, is_encrypted_string,
+    ENCRYPTED_PREFIX_V1, ENVELOPE_VERSION_V1, MIN_ENVELOPE_LEN,
 };
 pub use kdf::{
     derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, DEK_WRAP_ASSOCIATED_DATA,

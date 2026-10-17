@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   parseMarkdown,
   type MdBlock,
@@ -6,6 +6,7 @@ import {
   type MdAlign,
 } from "../../../../utils/markdown";
 import { InternalLinkPill } from "./InternalLinkPill";
+import { AttachmentImage, ImageLightbox } from "../../../attachments";
 import { logger } from "../../../../utils/logger";
 import "./RenderedMarkdown.css";
 
@@ -24,10 +25,14 @@ async function openExternal(href: string): Promise<void> {
   }
 }
 
+type ZoomImage = { id: string; alt: string };
+type OpenImage = (image: ZoomImage) => void;
+
 function renderInline(
   nodes: MdInline[],
   onActivateLink: ((id: string) => void) | undefined,
   keyPrefix: string,
+  onOpenImage?: OpenImage,
 ): React.ReactNode[] {
   return nodes.map((node, index) => {
     const key = `${keyPrefix}-${index}`;
@@ -43,14 +48,25 @@ function renderInline(
           </code>
         );
       case "strong":
-        return <strong key={key}>{renderInline(node.c, onActivateLink, key)}</strong>;
+        return <strong key={key}>{renderInline(node.c, onActivateLink, key, onOpenImage)}</strong>;
       case "em":
-        return <em key={key}>{renderInline(node.c, onActivateLink, key)}</em>;
+        return <em key={key}>{renderInline(node.c, onActivateLink, key, onOpenImage)}</em>;
       case "del":
-        return <del key={key}>{renderInline(node.c, onActivateLink, key)}</del>;
+        return <del key={key}>{renderInline(node.c, onActivateLink, key, onOpenImage)}</del>;
+      case "attachment":
+        return (
+          <AttachmentImage
+            key={key}
+            attachmentId={node.id}
+            alt={node.alt}
+            width={node.width}
+            variant="inline"
+            onOpen={onOpenImage ? () => onOpenImage({ id: node.id, alt: node.alt }) : undefined}
+          />
+        );
       case "image":
         return (
-          <span key={key} className="md-image-placeholder" title="Images are not loaded in previews">
+          <span key={key} className="md-image-placeholder" title="Only images attached to this note are shown in previews">
             {node.alt ? `🖼 ${node.alt}` : "🖼 image"}
           </span>
         );
@@ -76,7 +92,7 @@ function renderInline(
               void openExternal(node.href);
             }}
           >
-            {renderInline(node.c, onActivateLink, key)}
+            {renderInline(node.c, onActivateLink, key, onOpenImage)}
           </a>
         );
       default:
@@ -93,6 +109,7 @@ function renderBlocks(
   blocks: MdBlock[],
   onActivateLink: ((id: string) => void) | undefined,
   keyPrefix: string,
+  onOpenImage?: OpenImage,
 ): React.ReactNode[] {
   return blocks.map((block, index) => {
     const key = `${keyPrefix}-${index}`;
@@ -101,14 +118,14 @@ function renderBlocks(
         const Tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
         return (
           <Tag key={key} className={`md-heading md-h${block.level}`}>
-            {renderInline(block.c, onActivateLink, key)}
+            {renderInline(block.c, onActivateLink, key, onOpenImage)}
           </Tag>
         );
       }
       case "paragraph":
         return (
           <p key={key} className="md-paragraph">
-            {renderInline(block.c, onActivateLink, key)}
+            {renderInline(block.c, onActivateLink, key, onOpenImage)}
           </p>
         );
       case "code":
@@ -120,7 +137,7 @@ function renderBlocks(
       case "quote":
         return (
           <blockquote key={key} className="md-quote">
-            {renderBlocks(block.c, onActivateLink, key)}
+            {renderBlocks(block.c, onActivateLink, key, onOpenImage)}
           </blockquote>
         );
       case "hr":
@@ -150,7 +167,7 @@ function renderBlocks(
                   />
                 )}
                 <div className="md-list-item-body">
-                  {renderBlocks(item.c, onActivateLink, `${key}-${itemIndex}`)}
+                  {renderBlocks(item.c, onActivateLink, `${key}-${itemIndex}`, onOpenImage)}
                 </div>
               </li>
             ))}
@@ -165,7 +182,7 @@ function renderBlocks(
                 <tr>
                   {block.head.map((cell, c) => (
                     <th key={`${key}-h${c}`} style={cellAlign(block.align[c] ?? null)}>
-                      {renderInline(cell, onActivateLink, `${key}-h${c}`)}
+                      {renderInline(cell, onActivateLink, `${key}-h${c}`, onOpenImage)}
                     </th>
                   ))}
                 </tr>
@@ -175,7 +192,7 @@ function renderBlocks(
                   <tr key={`${key}-r${r}`}>
                     {row.map((cell, c) => (
                       <td key={`${key}-r${r}c${c}`} style={cellAlign(block.align[c] ?? null)}>
-                        {renderInline(cell, onActivateLink, `${key}-r${r}c${c}`)}
+                        {renderInline(cell, onActivateLink, `${key}-r${r}c${c}`, onOpenImage)}
                       </td>
                     ))}
                   </tr>
@@ -199,6 +216,7 @@ export const RenderedMarkdown: React.FC<RenderedMarkdownProps> = ({
   onActivateLink,
 }) => {
   const blocks = useMemo(() => parseMarkdown(content), [content]);
+  const [zoomed, setZoomed] = useState<ZoomImage | null>(null);
 
   if (blocks === null) {
     return (
@@ -211,5 +229,16 @@ export const RenderedMarkdown: React.FC<RenderedMarkdownProps> = ({
     );
   }
 
-  return <div className="md-preview">{renderBlocks(blocks, onActivateLink, "md")}</div>;
+  return (
+    <div className="md-preview">
+      {renderBlocks(blocks, onActivateLink, "md", setZoomed)}
+      {zoomed && (
+        <ImageLightbox
+          attachmentId={zoomed.id}
+          alt={zoomed.alt}
+          onClose={() => setZoomed(null)}
+        />
+      )}
+    </div>
+  );
 };
