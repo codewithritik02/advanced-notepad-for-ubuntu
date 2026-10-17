@@ -52,6 +52,10 @@ import {
   PermanentDeleteTarget,
 } from "../features/notes/components/PermanentDeleteDialog";
 import { EmptyTrashDialog } from "../features/notes/components/EmptyTrashDialog";
+import {
+  ConfirmNoteActionDialog,
+  type NoteConfirmTarget,
+} from "../features/notes/components/ConfirmNoteActionDialog";
 import { BrokenLinkDialog } from "../features/notes/components/Links";
 import { NotePickerModal } from "../features/notes/components/NotePicker";
 import { replaceInternalLinkTarget, removeInternalLink } from "../utils/linkParser";
@@ -409,6 +413,7 @@ export function App() {
   const [movingNote, setMovingNote] = useState<Note | null>(null);
 
   // Permanent Delete Modal State (Phase 8, Task 16)
+  const [noteActionConfirm, setNoteActionConfirm] = useState<NoteConfirmTarget | null>(null);
   const [permanentDeleteTarget, setPermanentDeleteTarget] =
     useState<PermanentDeleteTarget | null>(null);
 
@@ -1110,6 +1115,42 @@ export function App() {
     []
   );
 
+  // Moving a note to the Trash and restoring it both ask for confirmation first; the actual
+  // work stays in handleDeleteNote / handleRestoreNote and only runs after the user confirms.
+  const requestDeleteNote = useCallback(
+    (noteId?: string) => {
+      const targetId = noteId || selectedNoteId;
+      if (!targetId || activeNavId === "trash") return;
+      if (inFlightMutationsRef.current.has(targetId)) return;
+      const title =
+        notes.find((n) => n.id === targetId)?.title ??
+        searchResults.find((r) => r.noteId === targetId)?.title ??
+        "";
+      setNoteActionConfirm({ action: "trash", id: targetId, title });
+    },
+    [selectedNoteId, activeNavId, notes, searchResults]
+  );
+
+  const requestRestoreNote = useCallback(
+    (noteId: string) => {
+      if (inFlightMutationsRef.current.has(noteId)) return;
+      const note = notes.find((n) => n.id === noteId);
+      setNoteActionConfirm({ action: "restore", id: noteId, title: note?.title ?? "" });
+    },
+    [notes]
+  );
+
+  const handleConfirmNoteAction = useCallback(
+    async (target: NoteConfirmTarget) => {
+      if (target.action === "trash") {
+        await handleDeleteNote(target.id);
+      } else {
+        await handleRestoreNote(target.id);
+      }
+    },
+    [handleDeleteNote, handleRestoreNote]
+  );
+
   useKeyboardShortcuts({
     enabled: !isAppLocked,
     onNewNote: handleNewNoteAction,
@@ -1124,7 +1165,7 @@ export function App() {
     },
     onDeleteNote: () => {
       if (selectedNoteId && activeNavId !== "trash") {
-        handleDeleteNote(selectedNoteId);
+        requestDeleteNote(selectedNoteId);
       }
     },
     onNavigateBack: () => {
@@ -2129,8 +2170,8 @@ export function App() {
               onRetry={isSearchActive ? () => searchNow() : handleRetry}
               onNewNote={isSearchActive || activeNavId === "trash" ? undefined : handleNewNoteAction}
               onToggleFavorite={handleToggleNoteFavorite}
-              onDeleteNote={activeNavId === "trash" ? undefined : handleDeleteNote}
-              onRestoreNote={handleRestoreNote}
+              onDeleteNote={activeNavId === "trash" ? undefined : requestDeleteNote}
+              onRestoreNote={requestRestoreNote}
               onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
               onEmptyTrash={handleOpenEmptyTrash}
               onExport={
@@ -2167,8 +2208,8 @@ export function App() {
             onRegisterSave={handleRegisterSave}
             onActivateLink={handleActivateInternalLink}
             isTrash={activeNavId === "trash"}
-            onDeleteNote={activeNavId === "trash" ? undefined : handleDeleteNote}
-            onRestoreNote={handleRestoreNote}
+            onDeleteNote={activeNavId === "trash" ? undefined : requestDeleteNote}
+            onRestoreNote={requestRestoreNote}
             onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
             notebookName={selectedNoteNotebookName}
             notebookPath={selectedNoteNotebookPath}
@@ -2291,6 +2332,12 @@ export function App() {
         onDeleteTag={(tag) => {
           setDeletingTag(tag);
         }}
+      />
+
+      <ConfirmNoteActionDialog
+        target={noteActionConfirm}
+        onClose={() => setNoteActionConfirm(null)}
+        onConfirm={handleConfirmNoteAction}
       />
 
       <PermanentDeleteDialog

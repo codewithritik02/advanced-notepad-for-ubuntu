@@ -12843,7 +12843,7 @@ describe("Phase 8: Trash & Recovery", () => {
       // Verify restore and permanently delete handlers
       assert.ok(appContent.includes("handleRestoreNote"), "App should define handleRestoreNote");
       assert.ok(appContent.includes("handlePermanentlyDeleteNote"), "App should define handlePermanentlyDeleteNote");
-      assert.ok(appContent.includes("onRestoreNote={handleRestoreNote}"), "App should pass onRestoreNote to NotesList");
+      assert.ok(appContent.includes("onRestoreNote={requestRestoreNote}"), "App should pass the confirm-gated restore handler to NotesList");
       assert.ok(appContent.includes("onPermanentlyDeleteNote={handlePermanentlyDeleteNote}"), "App should pass onPermanentlyDeleteNote to NotesList");
 
       // Verify isTrash and empty state strings
@@ -12950,7 +12950,7 @@ describe("Phase 8: Trash & Recovery", () => {
         "App must pass isTrash to NoteEditor"
       );
       assert.ok(
-        appContent.includes("onRestoreNote={handleRestoreNote}"),
+        appContent.includes("onRestoreNote={requestRestoreNote}"),
         "App must pass onRestoreNote to NoteEditor"
       );
       assert.ok(
@@ -28722,5 +28722,34 @@ describe("Markdown note list snippets", () => {
     assert.equal(markdownToPlainText("plain words"), "plain words");
     const app = fs.readFileSync("src/app/App.tsx", "utf8");
     assert.match(app, /n\.format === "md" \? markdownToPlainText\(snippet\)/);
+  });
+});
+
+describe("Trash and restore ask for confirmation", () => {
+  const app = () => fs.readFileSync("src/app/App.tsx", "utf8");
+
+  it("routes every delete and restore entry point through the confirmation dialog", () => {
+    const src = app();
+    // list cards + editor get the confirm-gated handlers, never the raw ones
+    assert.equal((src.match(/onDeleteNote=\{activeNavId === "trash" \? undefined : requestDeleteNote\}/g) || []).length, 2);
+    assert.equal((src.match(/onRestoreNote=\{requestRestoreNote\}/g) || []).length, 2);
+    assert.ok(!/onDeleteNote=\{[^}]*handleDeleteNote\}/.test(src), "raw handleDeleteNote must not be wired to the UI");
+    assert.ok(!/onRestoreNote=\{handleRestoreNote\}/.test(src), "raw handleRestoreNote must not be wired to the UI");
+    // Ctrl+Backspace shortcut also asks first
+    assert.match(src, /requestDeleteNote\(selectedNoteId\);/);
+    assert.ok(!/handleDeleteNote\(selectedNoteId\)/.test(src));
+    // the real actions only run from the dialog's confirm handler
+    assert.match(src, /<ConfirmNoteActionDialog[\s\S]{0,160}onConfirm=\{handleConfirmNoteAction\}/);
+    assert.match(src, /await handleDeleteNote\(target\.id\)/);
+    assert.match(src, /await handleRestoreNote\(target\.id\)/);
+  });
+
+  it("dialog confirms on Enter, cancels on Cancel/Escape, and ignores held-down Enter", () => {
+    const dlg = fs.readFileSync("src/features/notes/components/ConfirmNoteActionDialog.tsx", "utf8");
+    assert.match(dlg, /event\.key === "Enter" && !event\.repeat/);
+    assert.match(dlg, /Move to Trash/);
+    assert.match(dlg, /confirmLabel: "Restore"/);
+    assert.match(dlg, /onClose=\{isWorking \? \(\) => \{\} : onClose\}/);
+    assert.match(dlg, />\s*Cancel\s*</);
   });
 });
