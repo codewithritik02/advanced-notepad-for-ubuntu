@@ -313,3 +313,35 @@ fn encrypted_session_restarts_locked_and_supports_lock_unlock_transitions() {
     assert!(!relaunched.crypto_session.is_locked());
     shutdown(relaunched);
 }
+
+#[test]
+fn startup_fails_safely_when_app_data_parent_is_unwritable() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _global_state = lock_process_global_test_state();
+        let environment = TestAppDir::with_label("unwritable-parent");
+        let ro_parent = environment.dir.join("ro-parent");
+        fs::create_dir_all(&ro_parent).unwrap();
+
+        // Make parent read-only (555 = r-xr-xr-x)
+        fs::set_permissions(&ro_parent, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let forbidden_paths = StoragePaths::from_root(ro_parent.join("forbidden-child"));
+        let error = initialize_application_storage(forbidden_paths)
+            .err()
+            .expect("startup must fail when target directory cannot be created");
+
+        assert!(matches!(
+            error,
+            ApplicationLifecycleError::PrepareDirectories(_)
+        ));
+
+        // Verify parent permissions were NOT modified or bypassed
+        let meta = fs::metadata(&ro_parent).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o555);
+
+        // Restore permissions for clean test teardown
+        fs::set_permissions(&ro_parent, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}

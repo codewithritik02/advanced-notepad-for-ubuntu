@@ -20,7 +20,8 @@
     "test:db": "cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test",
     "test:e2e": "cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test",
     "test:regression": "cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test",
-    "build:desktop": "tauri build --debug --no-bundle"
+    "build:desktop": "tauri build --debug --no-bundle",
+    "package:linux": "tauri build --bundles deb"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

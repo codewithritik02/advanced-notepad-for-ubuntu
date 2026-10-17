@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name={{name}}
+GenericName=Text Editor
+Comment={{comment}}
+Exec={{exec}} %U
+Icon={{icon}}
+Terminal=false
+Categories={{categories}}TextEditor;
+MimeType=text/plain;text/markdown;
+StartupWMClass=personal-notepad
+Keywords=notes;notepad;editor;markdown;offline;

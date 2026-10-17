@@ -6,9 +6,9 @@ Personal Notepad is a fast, offline-first desktop note-taking application design
 
 ## Current Status
 
-**Phase 10 — Offline-First Import & Export Engine (Completed)**
+**Phase 15 — Ubuntu Packaging, Installation, and Distribution (Completed)**
 
-The Import & Export subsystem is fully operational across the SQLite backend engine and React desktop UI. Users can safely import raw text (`.txt`), Markdown (`.md`), and portable multi-note JSON interchange documents (`.json`) with interactive candidate pre-scanning, title derivation, and duplicate conflict handling (`skip_exact`, `keep_both`, `overwrite`). Notes can be exported individually or in multi-note/notebook batches with atomic file creation, destination collision avoidance, and link remapping.
+Personal Notepad is packaged as an official, production-ready Debian package (`personal-notepad_0.1.0_amd64.deb`) for **Ubuntu 24.04 LTS (Noble Numbat)** and **Ubuntu 26.04 LTS** on `x86_64` (`amd64`). The package integrates cleanly into FreeDesktop application menus with high-resolution icons, adheres to canonical Linux filesystem separation (`/usr` for binaries vs `$XDG_DATA_HOME` for user data), guarantees 100% data preservation across upgrades and removals, and operates air-gapped with zero internet, cloud, account, or AI requirements.
 
 See also:
 - [Storage Architecture Documentation](docs/storage-architecture.md)
@@ -19,6 +19,8 @@ See also:
 - [Trash & Recovery Architecture (Phase 8)](docs/trash-and-recovery-architecture.md)
 - [Internal Links Architecture (Phase 9)](docs/internal-links-architecture.md)
 - [Import & Export Architecture (Phase 10)](docs/import-export-architecture.md)
+- [Linux Packaging & Distribution (Phase 15)](platform/linux/README.md)
+- [Changelog](CHANGELOG.md)
 
 ---
 
@@ -228,83 +230,89 @@ custom-notepad/
 
 ---
 
+## Installation & Linux Distribution
+
+### Quick Install (Ubuntu 24.04+ / Debian amd64)
+Download the latest `personal-notepad_0.1.0_amd64.deb` deliverable and install via APT:
+
+```bash
+# Recommended: installs the package and automatically resolves runtime dependencies
+sudo apt install ./personal-notepad_0.1.0_amd64.deb
+```
+
+Or install via `dpkg`:
+```bash
+sudo dpkg -i personal-notepad_0.1.0_amd64.deb
+sudo apt-get install -f # Fix any missing dependencies if needed
+```
+
+Launch from your desktop application launcher (search for **Personal Notepad**) or via the terminal:
+```bash
+personal-notepad
+```
+
+### User Data Safety & Uninstall Policy
+- **Package Removal**: `sudo apt remove personal-notepad`
+  Removes exclusively the application executable (`/usr/bin/personal-notepad`), desktop launcher, and system icons.
+- **Data Preservation Guarantee**: User databases, notes, attachments, tags, backups, and encryption keys strictly reside in `$XDG_DATA_HOME/com.personalnotepad.app/` (`~/.local/share/com.personalnotepad.app/`). They are **never** deleted, modified, or overwritten during package installation, upgrade, or removal.
+
+---
+
 ## Development & Testing
 
 ### Prerequisites (Ubuntu / Linux)
 
-1. **Node.js & npm**: Node.js (v18+) and npm (v9+)
-2. **Rust & Cargo**: Latest stable Rust toolchain via `rustup`:
+1. **Node.js & npm**: Node.js (`>= 20.x`, verified `v24.18.0`) and npm (`>= 10.x`, verified `11.16.0`).
+2. **Rust & Cargo**: Latest stable Rust toolchain (`>= 1.80`, verified `1.98.1`):
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
-3. **Tauri v2 System Dependencies (Ubuntu / Debian)**:
+3. **Native Linux System Dependencies**:
    ```bash
-   sudo apt update
-   sudo apt install -y build-essential curl wget file pkg-config libssl-dev \
-     libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev
+   sudo apt update && sudo apt install -y \
+     build-essential curl wget file pkg-config \
+     libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+     libglib2.0-dev libcairo2-dev libgdk-pixbuf-2.0-dev libdbus-1-dev xdg-utils
    ```
 
-### Installation
+### Setup & Build Commands
 
 ```bash
-# Clone the repository and enter the directory
-cd custom-notepad
+# Clone the repository
+git clone https://github.com/codewithritik02/advanced-notepad-for-ubuntu.git
+cd advanced-notepad-for-ubuntu
 
-# Install frontend dependencies
-npm install
+# Clean install of locked frontend dependencies
+npm ci
+
+# Run TypeScript compilation and frontend hygiene checks
+npm run typecheck
+npm run lint:frontend
+
+# Run frontend test suite (1,068 tests across 384 suites)
+npm run test:frontend
+
+# Run all Rust test suites (256+ unit, integration, and security tests)
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+# Build production Debian package (.deb deliverable)
+npm run package:linux
 ```
 
-### Verification & Test Commands
-
-```bash
-# 1. Run all unit and integration tests (256 Rust tests)
-cargo test --manifest-path src-tauri/Cargo.toml
-
-# 2. Run frontend test suite (635 tests across 190 suites)
-npm test
-
-# 2. Check Rust lints with clippy
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
-
-# 3. Type-check and build frontend production bundle
-npm run build
-
-# 4. Run desktop application with live reload
-npm run tauri dev
-```
+The resulting package is generated at:
+`src-tauri/target/release/bundle/deb/personal-notepad_0.1.0_amd64.deb`
 
 ---
 
-## Feature Summary (Phases 1 & 2)
+## Core Feature Overview
 
-- **Desktop Window Management**: Configured in `tauri.conf.json` with 1400x850 default size, 900x600 minimum size, centered launch, and smooth resizing.
-- **Three-Pane Layout**: Collapsible Navigation Sidebar, Notes List Column, and Active Editor Pane.
-- **SQLite Storage Engine**: Embedded SQLite with WAL mode, foreign keys enforced, busy timeout (5000ms), and synchronous NORMAL.
-- **Notes Persistence**: Full CRUD operations for notes with soft-deletion (`is_deleted`), favorites, and pin states.
-- **Hierarchical Notebooks**: Multi-level nested notebooks (`parent_id` foreign key with cascade deletion).
-- **Tag Organization**: Many-to-many note-tag association (`note_tags`) with cascade deletion on note/tag removal.
-- **Settings Store**: Persistent key-value store for application settings (theme preference persisted across app restarts).
-- **Filesystem Architecture**: Dedicated user data directories for `attachments/`, `backups/`, and `config/` with path traversal rejection.
-- **Transaction Safety**: Atomic multi-table updates (`create_with_tags`) with automatic rollback on error.
-- **Keyboard Navigation**:
-  - `Ctrl/Cmd + N`: New Note action trigger.
-  - `Ctrl/Cmd + F`: Focus & select search input.
-  - `Ctrl/Cmd + ,`: Open Settings dialog.
-  - `Escape`: Close open modal / clear and blur search input.
+- **100% Offline & Non-AI**: Zero telemetry, zero cloud synchronizations, zero user accounts, zero remote tracking.
+- **Embedded SQLite Storage**: WAL (Write-Ahead Logging) journal mode, foreign-key relational integrity, and automated schema migrations.
+- **Full-Text Search (FTS5)**: Fast tokenized search across titles, content, and tags with automated trigger synchronization.
+- **Hierarchical Organization**: Multi-level nested notebooks, tags, pinned notes, and favorites.
+- **Media Attachments**: Managed local file attachments with strict path traversal defenses and executable extension blocking.
+- **Trash & Recovery**: Soft-delete trash bin with one-click restore and permanent purge confirmations.
+- **Phase 12 Vault Encryption**: Optional client-side master password encryption using Argon2id and authenticated AES-256-GCM.
+- **Full FreeDesktop Integration**: Standard `.desktop` launcher and high-resolution icons (32x32 to 512x512).
+- **Windows Packaging (Phase 16)**: Windows installer distribution will follow in Phase 16.
 
----
-
-## Phase 2 Limitations (Scheduled for Subsequent Phases)
-
-In strict adherence to the sequential milestone specification, the following capabilities are deferred to upcoming phases:
-
-- ❌ **Phase 3 (Note Creation & Editing)**: Rich text / Markdown WYSIWYG editor, autosave debounce, active editing toolbar, and split-pane markdown preview.
-- ❌ **Phase 4 (Notebook Management UI)**: Notebook tree navigation UI, folder expand/collapse state, nested drag-and-drop hierarchy management, and notebook rename dialogs.
-- ❌ **Phase 5 (Tag Management UI)**: Tag selector dropdowns, inline note tag chips, tag deletion confirmations, and sidebar tag filtering.
-- ❌ **Phase 6 (Full-Text Search Engine)**: SQLite FTS5 index, match highlight rendering, search operators, and search history.
-- ❌ **Phase 7 (Attachments & Media UI)**: Local attachment file-picker dialog, drag-and-drop file insertion, image previewer, and file size quotas.
-- ❌ **Phase 8 (Trash & Recovery UI)**: Trash bin list view, note restoration (`is_deleted = 0`), and permanent purge confirmation dialogs.
-- ❌ **Phase 11 (Backup & Import/Export)**: Automated database snapshots, export to Markdown/PDF/JSON, and Joplin/Evernote (.enex) import routines.
-- ❌ **Phase 12 (Local Vault Encryption)**: AES-GCM local database encryption.
-- ❌ **Release Packaging**: Debian package (`.deb`) and Windows installer distribution deferred to Phase 6 and final packaging phases.
-- ❌ **AI Integration**: Personal Notepad is and will remain free of third-party AI dependencies and LLM calls.

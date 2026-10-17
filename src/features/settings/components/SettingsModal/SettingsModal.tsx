@@ -351,7 +351,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="info-row">
               <span className="info-label">Phase:</span>
               <Badge variant="accent" size="sm">
-                Phase 1 Shell
+                Phase 15 Distribution
               </Badge>
             </div>
             <div className="info-row">
