@@ -32,6 +32,8 @@ export interface SettingsModalProps {
   editorFontSize: number;
   onEditorFontSizeChange: (px: number) => void;
   onEditorFontSizeReset: () => void;
+  showMinimap: boolean;
+  onShowMinimapChange: (show: boolean) => void;
   onCreateBackup?: () => void;
   onViewBackups?: () => void;
   onLock?: () => Promise<void> | void;
@@ -53,6 +55,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   editorFontSize,
   onEditorFontSizeChange,
   onEditorFontSizeReset,
+  showMinimap,
+  onShowMinimapChange,
   onCreateBackup,
   onViewBackups,
   onLock,
@@ -244,6 +248,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Reset
                 </Button>
               </div>
+            </div>
+            <div className="display-setting-row">
+              <label className="display-setting-label" htmlFor="show-minimap">
+                Minimap
+              </label>
+              <label className="display-toggle" htmlFor="show-minimap">
+                <input
+                  id="show-minimap"
+                  type="checkbox"
+                  checked={showMinimap}
+                  onChange={(e) => onShowMinimapChange(e.target.checked)}
+                />
+                <span>Show an overview strip beside long notes</span>
+              </label>
             </div>
           </div>
 

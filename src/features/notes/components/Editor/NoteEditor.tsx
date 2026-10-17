@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useDeferredValue } from "react";
 import { Note, NoteFormat, EditorStatus, getFormatDisplayName } from "../../types";
 import { storageService, Tag } from "../../../../services/storage";
 import { TagPicker } from "../../../tags";
@@ -9,6 +9,8 @@ import { NotePickerModal } from "../NotePicker";
 import { insertInternalLinkIntoContent, parseInternalLinks } from "../../../../utils/linkParser";
 import { formatAttachmentImageMarkdown } from "../../../../utils/markdown";
 import { ConvertToMarkdownDialog } from "../ConvertToMarkdownDialog";
+import { ScrollToTopButton } from "./ScrollToTopButton";
+import { NoteMinimap } from "./NoteMinimap";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import { ExportNoteModal } from "../../../importExport";
 import { logger } from "../../../../utils/logger";
@@ -17,6 +19,8 @@ import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
   noteId: string | null;
+  /** Show the overview strip (minimap) beside long notes. Defaults to on. */
+  showMinimap?: boolean;
   onSaveNote?: (id: string, title: string, content: string, format?: NoteFormat) => Promise<void> | void;
   onNoteUpdated?: (updatedNote: Note) => void;
   onRegisterSave?: (saveFn: (() => Promise<void>) | null) => void;
@@ -220,6 +224,7 @@ function countWords(text: string): number {
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   noteId,
+  showMinimap = true,
   onSaveNote,
   onNoteUpdated,
   onRegisterSave,
@@ -645,11 +650,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     };
   }, [noteId, onNoteUpdated]);
 
-  // Auto-grow textarea to accommodate content without secondary scrollbars
-  useEffect(() => {
-    if (contentRef.current) {
-      contentRef.current.style.height = "auto";
-      contentRef.current.style.height = `${Math.max(contentRef.current.scrollHeight, 380)}px`;
+  // Auto-grow textarea to accommodate content without secondary scrollbars.
+  // Measuring needs `height: auto`, which momentarily shrinks the whole document; the browser then
+  // clamps the scroll position (usually to the top). The scroll offset is therefore restored, in a
+  // layout effect so nothing visibly jumps.
+  useLayoutEffect(() => {
+    const textarea = contentRef.current;
+    if (!textarea) return;
+    const scroller = scrollAreaRef.current;
+    const previousScrollTop = scroller ? scroller.scrollTop : 0;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(textarea.scrollHeight, 380)}px`;
+    if (scroller && scroller.scrollTop !== previousScrollTop) {
+      scroller.scrollTop = previousScrollTop;
     }
   }, [content]);
 
@@ -926,23 +939,39 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const closeImagePanel = useCallback(() => setIsImagePanelOpen(false), []);
 
   /**
-   * Remembers where the cursor is before a button steals focus. If the user never placed a cursor
-   * in the text (or the note is shown in Preview), the image goes to the end of the note instead of
-   * the very top.
+   * Remembers where to put the image before a button steals focus: at the cursor if the user placed
+   * one. Otherwise (never clicked in the text, or the note is shown in Preview) it goes where they
+   * are looking: the paragraph break just below the middle of the visible area of the note.
    */
   const captureImageInsertionPoint = () => {
-    const length = latestDataRef.current.content.length;
+    const text = latestDataRef.current.content;
+    const length = text.length;
     const textarea = contentRef.current;
     const cached = noteId ? sessionViewCache.get(noteId) : undefined;
     const hasCursor =
       Boolean(textarea) && (cursorTouchedRef.current || (cached?.cursorStart ?? 0) > 0);
-    imageInsertSelectionRef.current =
-      textarea && hasCursor
-        ? {
-            start: Math.min(textarea.selectionStart, length),
-            end: Math.min(textarea.selectionEnd, length),
-          }
-        : { start: length, end: length };
+    if (textarea && hasCursor) {
+      imageInsertSelectionRef.current = {
+        start: Math.min(textarea.selectionStart, length),
+        end: Math.min(textarea.selectionEnd, length),
+      };
+      return;
+    }
+
+    const scroller = scrollAreaRef.current;
+    if (!scroller || length === 0 || scroller.scrollHeight <= scroller.clientHeight) {
+      imageInsertSelectionRef.current = { start: length, end: length };
+      return;
+    }
+    // Map the middle of the visible area onto the text, then move to the next paragraph break
+    const textTop = textarea ? textarea.offsetTop : 0;
+    const textHeight = textarea ? textarea.offsetHeight : scroller.scrollHeight;
+    const focusY = scroller.scrollTop + scroller.clientHeight * 0.5 - textTop;
+    const ratio = Math.min(1, Math.max(0, focusY / Math.max(1, textHeight)));
+    const guess = Math.floor(ratio * length);
+    const nextBreak = text.indexOf("\n\n", guess);
+    const point = nextBreak === -1 ? length : nextBreak;
+    imageInsertSelectionRef.current = { start: point, end: point };
   };
 
   /** Places `![name](notepad://attachment/<id>)` blocks at the remembered cursor position. */
@@ -978,9 +1007,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     scheduleAutosave(noteId);
     imageInsertSelectionRef.current = null;
 
+    // Put the cursor after the image but leave the view exactly where it was
     requestAnimationFrame(() => {
       if (contentRef.current) {
-        contentRef.current.focus();
+        contentRef.current.focus({ preventScroll: true });
         contentRef.current.selectionStart = cursor;
         contentRef.current.selectionEnd = cursor;
         handleRecordSelection();
@@ -1600,7 +1630,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
       )}
 
-      {/* Editor Main Content Area */}
+      {/* Editor Main Content Area (scrolling column + optional minimap) */}
+      <div className="editor-scroll-wrap">
+      <div className="editor-scroll-column">
       <div
         ref={scrollAreaRef}
         className="editor-scroll-area"
@@ -1720,6 +1752,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             refreshTrigger={lastSavedAt}
           />
         </div>
+      </div>
+      <ScrollToTopButton scrollRef={scrollAreaRef} />
+      </div>
+      {showMinimap && (
+        <NoteMinimap scrollRef={scrollAreaRef} content={content} viewMode={viewMode} />
+      )}
       </div>
 
       {/* Note Status Bar */}

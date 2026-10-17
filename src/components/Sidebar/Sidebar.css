@@ -18,6 +18,8 @@
   padding: 0 var(--spacing-base);
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
   border-bottom: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
 }
@@ -278,3 +280,93 @@
   background-color: rgba(239, 68, 68, 0.22);
 }
 
+
+/* ==========================================================================
+   Pin button (keeps the sidebar open)
+   ========================================================================== */
+.sidebar-pin-btn {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transform: rotate(45deg);
+  transition: color var(--transition-fast), background-color var(--transition-fast), transform var(--transition-normal);
+}
+
+.sidebar-pin-btn:hover {
+  background-color: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.sidebar-pin-btn.is-pinned {
+  color: var(--color-accent-default);
+  background-color: var(--color-surface-selected);
+  transform: rotate(0deg);
+}
+
+/* ==========================================================================
+   Compact mode: narrow icon rail shown while the sidebar is collapsed
+   ========================================================================== */
+.sidebar-container.is-compact .sidebar-header {
+  padding: 0;
+  justify-content: center;
+}
+
+.sidebar-container.is-compact .sidebar-brand-name,
+.sidebar-container.is-compact .btn-import-notes,
+.sidebar-container.is-compact .sidebar-section--notebooks,
+.sidebar-container.is-compact .sidebar-section--tags,
+.sidebar-container.is-compact .sidebar-section-title {
+  display: none;
+}
+
+.sidebar-container.is-compact .sidebar-actions {
+  padding: var(--spacing-md) 0 var(--spacing-xs);
+  justify-content: center;
+}
+
+.sidebar-container.is-compact .btn-new-note {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+/* Text labels stay available to screen readers, but are not drawn in the rail */
+.sidebar-container.is-compact .btn-new-note span,
+.sidebar-container.is-compact .nav-item-label,
+.sidebar-container.is-compact .nav-item-count {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.sidebar-container.is-compact .sidebar-nav-scroll {
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+.sidebar-container.is-compact .sidebar-section {
+  margin-top: var(--spacing-sm);
+}
+
+.sidebar-container.is-compact .sidebar-nav-item {
+  position: relative;
+  width: 40px;
+  margin: 0 auto;
+  padding: 0;
+  justify-content: center;
+}

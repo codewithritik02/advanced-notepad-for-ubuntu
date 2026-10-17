@@ -4,6 +4,7 @@ import { NotebookTree } from "../../features/notebooks/components/NotebookTree";
 import type { Notebook, NotebooksStatus } from "../../features/notebooks/types";
 import { TagList } from "../../features/tags/components/TagList";
 import type { Tag } from "../../features/tags/types";
+import { useSidebarState } from "../../layouts/sidebarState";
 
 export type NavItemId =
   | "all-notes"
@@ -45,6 +46,13 @@ export interface SidebarProps {
 }
 
 // Inline lightweight SVG icons for zero external dependencies
+const PinIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="17" x2="12" y2="22" />
+    <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+  </svg>
+);
+
 const PlusIcon = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <line x1="12" y1="5" x2="12" y2="19" />
@@ -127,6 +135,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onManageTags,
 }) => {
   const [isUnfiledDragOver, setIsUnfiledDragOver] = React.useState(false);
+  const { isCompact, isPinned, togglePin } = useSidebarState();
 
   const handleNavClick = (navId: NavItemId) => {
     onSelectNav?.(navId);
@@ -156,7 +165,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   return (
-    <div className="sidebar-container">
+    <div className={`sidebar-container ${isCompact ? "is-compact" : ""}`}>
       {/* Brand Header */}
       <div className="sidebar-header">
         <div className="sidebar-brand">
@@ -165,6 +174,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
           <span className="sidebar-brand-name">Personal Notepad</span>
         </div>
+        {togglePin && !isCompact && (
+          <button
+            type="button"
+            className={`sidebar-pin-btn ${isPinned ? "is-pinned" : ""}`}
+            onClick={togglePin}
+            aria-pressed={isPinned}
+            aria-label={isPinned ? "Unpin sidebar" : "Pin sidebar open"}
+            title={
+              isPinned
+                ? "Unpin sidebar (it collapses when you move away)"
+                : "Pin sidebar open"
+            }
+          >
+            <PinIcon />
+          </button>
+        )}
       </div>
 
       {/* Action Area */}
@@ -174,6 +199,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           className="btn-new-note"
           onClick={onNewNoteClick}
           aria-label="Create new note"
+          title="New Note"
         >
           <PlusIcon />
           <span>New Note</span>
@@ -203,6 +229,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 className={`sidebar-nav-item ${activeNavId === "all-notes" ? "is-active" : ""}`}
                 onClick={() => handleNavClick("all-notes")}
+                title="All Notes"
                 role="menuitem"
                 aria-current={activeNavId === "all-notes" ? "page" : undefined}
               >
@@ -221,6 +248,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onDragOver={handleUnfiledDragOver}
                 onDragLeave={handleUnfiledDragLeave}
                 onDrop={handleUnfiledDrop}
+                title="Unfiled"
                 role="menuitem"
                 aria-current={activeNavId === "unfiled" ? "page" : undefined}
               >
@@ -236,6 +264,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 className={`sidebar-nav-item ${activeNavId === "favorites" ? "is-active" : ""}`}
                 onClick={() => handleNavClick("favorites")}
+                title="Favorites"
                 role="menuitem"
                 aria-current={activeNavId === "favorites" ? "page" : undefined}
               >
@@ -250,7 +279,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Section: Notebooks Tree */}
-        <div className="sidebar-section">
+        <div className="sidebar-section sidebar-section--notebooks">
           <div className="sidebar-section-header">
             <span className="sidebar-section-title">Notebooks</span>
             {onCreateNotebook && (
@@ -284,7 +313,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         {/* Section: Tags */}
-        <div className="sidebar-section">
+        <div className="sidebar-section sidebar-section--tags">
           <div className="sidebar-section-header">
             <span
               className="sidebar-section-title"
@@ -345,6 +374,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 className={`sidebar-nav-item sidebar-nav-item--trash ${activeNavId === "trash" ? "is-active" : ""}`}
                 onClick={() => handleNavClick("trash")}
+                title="Trash"
                 role="menuitem"
                 aria-current={activeNavId === "trash" ? "page" : undefined}
               >

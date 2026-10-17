@@ -237,3 +237,16 @@
   width: 120px;
   accent-color: var(--color-accent-primary, #3b82f6);
 }
+
+.display-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.display-toggle input {
+  accent-color: var(--color-accent-default);
+}

@@ -3450,7 +3450,7 @@ describe("Phase 14 Task 19 — Keyboard Shortcuts and Accessibility Basics Tests
     // MainLayout semantic landmarks
     const layoutPath = path.resolve("./src/layouts/MainLayout.tsx");
     const layoutCode = await fs.readFile(layoutPath, "utf-8");
-    assert.ok(layoutCode.includes('<aside className="app-pane app-sidebar-pane" aria-label="Sidebar navigation">'));
+    assert.ok(/<aside\s+className=\{`app-pane app-sidebar-pane [^`]*`\}\s+aria-label="Sidebar navigation"/.test(layoutCode));
     assert.ok(layoutCode.includes('<section className="app-pane app-notes-list-pane" aria-label="Notes list">'));
     assert.ok(layoutCode.includes('<main className="app-pane app-editor-pane" aria-label="Note editor">'));
 
@@ -8949,7 +8949,9 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
         assert.ok(mainLayoutCss.includes("@media (min-width: 1600px)"), "MainLayout must scale on large screens >= 1600px");
 
         // Verify minimum width constraints preventing pane collapse
-        assert.ok(mainLayoutCss.includes("min-width: var(--sidebar-min-width)"), "Sidebar must enforce minimum width");
+        // The sidebar is a fixed-width icon rail, or its full width when pinned: it never gets squeezed.
+        assert.ok(mainLayoutCss.includes("min-width: var(--sidebar-rail-width)"), "Collapsed sidebar must keep its rail width");
+        assert.ok(/\.app-sidebar-pane\.is-pinned \{[^}]*min-width: var\(--sidebar-expanded-width\)/.test(mainLayoutCss), "Pinned sidebar must enforce its minimum width");
         assert.ok(mainLayoutCss.includes("min-width: var(--notes-list-min-width)"), "Notes list must enforce minimum width");
         assert.ok(mainLayoutCss.includes(".app-editor-pane"), "Editor pane must be present");
       });
@@ -28962,5 +28964,229 @@ describe("Inline images: cursor placement and editor layout", () => {
 
   it("never leaves debug logging in the attachments hook", () => {
     assert.ok(!/\[att\]/.test(read("src/features/attachments/hooks/useAttachments.ts")));
+  });
+});
+
+describe("Scroll tools: back-to-top, minimap and no scroll jump on insert", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("eases scrolling smoothly and scales the duration with the distance", async () => {
+    const m = await import("../src/features/notes/utils/scrollAnimation.ts");
+    assert.equal(m.easeInOutCubic(0), 0);
+    assert.equal(m.easeInOutCubic(1), 1);
+    assert.equal(m.easeInOutCubic(0.5), 0.5);
+    let previous = -1;
+    for (let i = 0; i <= 20; i += 1) {
+      const value = m.easeInOutCubic(i / 20);
+      assert.ok(value >= previous, "easing never goes backwards");
+      previous = value;
+    }
+    assert.equal(m.scrollDurationMs(0), 0);
+    assert.ok(m.scrollDurationMs(50) >= 320, "short trips are not instant");
+    assert.ok(m.scrollDurationMs(1_000_000) <= 900, "long trips are capped");
+    assert.ok(m.scrollDurationMs(4000) > m.scrollDurationMs(200));
+  });
+
+  it("animates scrollTop to the top, jumps instantly for reduced motion, and stops on user input", async () => {
+    const { animateScrollTo } = await import("../src/features/notes/utils/scrollAnimation.ts");
+    const frames = [];
+    globalThis.requestAnimationFrame = (cb) => {
+      frames.push(cb);
+      return frames.length;
+    };
+    globalThis.cancelAnimationFrame = () => {};
+    const makeElement = (scrollTop) => {
+      const listeners = {};
+      return {
+        scrollTop,
+        scrollHeight: 5000,
+        clientHeight: 600,
+        addEventListener: (type, fn) => (listeners[type] = fn),
+        removeEventListener: (type) => delete listeners[type],
+        fire: (type) => listeners[type]?.(),
+      };
+    };
+
+    const instant = makeElement(2000);
+    animateScrollTo(instant, 0, { reducedMotion: true });
+    assert.equal(instant.scrollTop, 0, "reduced motion jumps directly");
+
+    const smooth = makeElement(2000);
+    let done = false;
+    animateScrollTo(smooth, 0, { durationMs: 400, reducedMotion: false, onDone: () => (done = true) });
+    const start = performance.now();
+    frames.shift()(start + 200);
+    assert.ok(smooth.scrollTop > 0 && smooth.scrollTop < 2000, "partway through the glide");
+    frames.shift()(start + 500);
+    assert.equal(smooth.scrollTop, 0);
+    assert.ok(done);
+
+    const interrupted = makeElement(2000);
+    animateScrollTo(interrupted, 0, { durationMs: 400, reducedMotion: false });
+    frames.shift()(performance.now() + 100);
+    const atInterrupt = interrupted.scrollTop;
+    interrupted.fire("wheel"); // user takes over
+    frames.shift()?.(performance.now() + 300);
+    assert.equal(interrupted.scrollTop, atInterrupt, "wheel input cancels the animation");
+    delete globalThis.requestAnimationFrame;
+    delete globalThis.cancelAnimationFrame;
+  });
+
+  it("maps clicks and drags on the minimap to the right scroll offsets", async () => {
+    const m = await import("../src/features/notes/utils/minimapMath.ts");
+    assert.equal(m.minimapScale(1000, 800), m.MINIMAP_MAX_SCALE, "short notes are not blown up");
+    assert.equal(m.minimapScale(10_000, 800), 0.08, "long notes are fitted into the strip");
+
+    const slider = m.sliderRect(1000, 600, 0.1);
+    assert.deepEqual(slider, { top: 100, height: 60 });
+    assert.equal(m.sliderRect(0, 100, 0.01).height, m.MINIMAP_MIN_SLIDER_PX, "tiny windows stay grabbable");
+
+    // click: the clicked point becomes the middle of the viewport
+    const click = m.pointerToScrollTop({ pointerY: 300, clientHeight: 600, scrollHeight: 10_000, scale: 0.1 });
+    assert.equal(click, 300 / 0.1 - 300);
+    // drag: the grip point stays under the pointer
+    const drag = m.pointerToScrollTop({ pointerY: 300, clientHeight: 600, scrollHeight: 10_000, scale: 0.1, grabOffset: 20 });
+    assert.equal(drag, (300 - 20) / 0.1);
+    // always inside the scrollable range
+    assert.equal(m.pointerToScrollTop({ pointerY: -50, clientHeight: 600, scrollHeight: 10_000, scale: 0.1 }), 0);
+    assert.equal(m.pointerToScrollTop({ pointerY: 9999, clientHeight: 600, scrollHeight: 10_000, scale: 0.1 }), 9400);
+    assert.deepEqual(m.estimateRows([0, 100, 250, 1000], 100), [1, 1, 3, 10]);
+  });
+
+  it("stops the textarea auto-grow from throwing the view to the top, and inserts where the user is looking", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /useLayoutEffect\(\(\) => \{[\s\S]{0,400}previousScrollTop/);
+    assert.match(editor, /scroller\.scrollTop = previousScrollTop/);
+    assert.match(editor, /focus\(\{ preventScroll: true \}\)/);
+    assert.match(editor, /scroller\.clientHeight \* 0\.5/, "untouched cursor uses the middle of the visible area");
+  });
+
+  it("wires the floating back-to-top button, minimap and the minimap setting", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /<ScrollToTopButton scrollRef=\{scrollAreaRef\}/);
+    assert.match(editor, /showMinimap && \(\s*<NoteMinimap/);
+    assert.match(editor, /className="editor-scroll-wrap"/);
+    const button = read("src/features/notes/components/Editor/ScrollToTopButton.tsx");
+    assert.match(button, /animateScrollTo\(element, 0\)/);
+    assert.match(button, /aria-label="Scroll to top of note"/);
+    const minimap = read("src/features/notes/components/Editor/NoteMinimap.tsx");
+    assert.match(minimap, /onPointerDown=\{handlePointerDown\}/);
+    assert.match(minimap, /pointerToScrollTop/);
+    assert.match(minimap, /aria-hidden="true"/);
+    const css = read("src/features/notes/components/Editor/EditorScrollTools.css");
+    assert.match(css, /prefers-reduced-motion: reduce/);
+    const settings = read("src/features/settings/components/SettingsModal/SettingsModal.tsx");
+    assert.match(settings, /Show an overview strip beside long notes/);
+    assert.match(read("src/app/App.tsx"), /showMinimap=\{display\.showMinimap\}/);
+  });
+
+  it("reads the minimap setting safely", async () => {
+    const m = await import("../src/features/settings/utils/displaySettings.ts");
+    assert.equal(m.normalizeShowMinimap("false"), false);
+    assert.equal(m.normalizeShowMinimap("0"), false);
+    assert.equal(m.normalizeShowMinimap(false), false);
+    assert.equal(m.normalizeShowMinimap("true"), true);
+    assert.equal(m.normalizeShowMinimap("garbage"), m.DEFAULT_SHOW_MINIMAP);
+    assert.equal(m.normalizeShowMinimap(null), true);
+  });
+});
+
+describe("Collapsible sidebar (hover to open, pin to keep open)", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("collapses to an icon rail, opens over the notes list on hover/focus/drag, and can be pinned", () => {
+    const layout = read("src/layouts/MainLayout.tsx");
+    assert.match(layout, /onPointerEnter=/);
+    assert.match(layout, /onPointerLeave=\{\(\) => reveal\(false\)\}/);
+    assert.match(layout, /onFocusCapture=\{\(\) => reveal\(true, true\)\}/);
+    assert.match(layout, /onDragEnter=\{\(\) => reveal\(true, true\)\}/);
+    assert.match(layout, /if \(isSidebarPinned\) reveal\(false, true\)/, "unpinning collapses immediately");
+    const css = read("src/layouts/MainLayout.css");
+    assert.match(css, /--sidebar-rail-width:\s*56px/);
+    assert.match(css, /\.app-sidebar-pane\.is-unpinned\.is-open \.app-sidebar-surface \{[^}]*width:\s*var\(--sidebar-expanded-width\)/);
+    assert.match(css, /\.app-sidebar-pane\.is-pinned \{[^}]*width:\s*var\(--sidebar-expanded-width\)/);
+    assert.match(css, /prefers-reduced-motion: reduce/);
+  });
+
+  it("shows an icon-only rail with accessible labels, plus a pin button when expanded", () => {
+    const sidebar = read("src/components/Sidebar/Sidebar.tsx");
+    assert.match(sidebar, /sidebar-container \$\{isCompact \? "is-compact" : ""\}/);
+    assert.match(sidebar, /togglePin && !isCompact/);
+    assert.match(sidebar, /aria-pressed=\{isPinned\}/);
+    for (const label of ["All Notes", "Unfiled", "Favorites", "Trash"]) {
+      assert.match(sidebar, new RegExp(`title="${label}"`));
+    }
+    const css = read("src/components/Sidebar/Sidebar.css");
+    // labels are visually hidden, not removed, so screen readers still announce them
+    assert.match(css, /\.sidebar-container\.is-compact \.nav-item-label[\s\S]{0,300}clip: rect\(0, 0, 0, 0\)/);
+    assert.match(css, /\.sidebar-container\.is-compact \.sidebar-section--notebooks/);
+  });
+
+  it("remembers the pin state and starts collapsed", () => {
+    const hook = read("src/hooks/useSidebarPin.ts");
+    assert.match(hook, /DEFAULT_SIDEBAR_PINNED = false/);
+    assert.match(hook, /SIDEBAR_PIN_SETTING_KEY = "sidebar_pinned"/);
+    assert.match(read("src/app/App.tsx"), /isSidebarPinned=\{sidebarPin\.isPinned\}/);
+  });
+});
+
+describe("Minimap shows a real miniature of the text", () => {
+  const fixed = { measure: (text) => text.length * 8, availableWidth: 400, lineHeight: 20 };
+
+  it("lays words out like the editor wraps them, one box per word", async () => {
+    const { layoutTextWords } = await import("../src/features/notes/utils/minimapText.ts");
+    const result = layoutTextWords("alpha beta\n\ngamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi", fixed);
+    const first = result.boxes.filter((b) => b.y === 0);
+    assert.deepEqual(first.map((b) => [b.x, b.w]), [[0, 40], [48, 32]], "words keep their gaps");
+    assert.ok(!result.boxes.some((b) => b.y === 20), "a blank line leaves an empty row");
+    const rows = new Set(result.boxes.map((b) => b.y / 20));
+    assert.ok(rows.size >= 3, "the long line wraps onto more rows");
+    assert.equal(result.rows, 2 + Math.max(...[...rows]) - 1);
+    assert.ok(result.boxes.every((b) => b.x + b.w <= 400 + 1e-6), "nothing sticks out past the right edge");
+  });
+
+  it("colours headings, code, links, quotes, list markers and image lines", async () => {
+    const { layoutTextWords } = await import("../src/features/notes/utils/minimapText.ts");
+    const source = [
+      "# Title here",
+      "plain **bold** and `code` and [a link](https://x.test) done",
+      "> quoted line",
+      "- list item",
+      "```",
+      "const x = 1;",
+      "```",
+      "![pic](notepad://attachment/abc-1)",
+    ].join("\n");
+    const { boxes } = layoutTextWords(source, { ...fixed, availableWidth: 1000 });
+    const kindsOnRow = (row) => boxes.filter((b) => b.y === row * 20).map((b) => b.kind);
+    assert.deepEqual(kindsOnRow(0), ["strong", "strong", "strong"]);
+    assert.deepEqual(kindsOnRow(1), ["text", "strong", "text", "code", "text", "link", "link", "text"]);
+    assert.deepEqual(kindsOnRow(2), ["quote", "quote", "quote"]);
+    assert.deepEqual(kindsOnRow(3), ["marker", "text", "text"]);
+    assert.deepEqual(kindsOnRow(5), ["code", "code", "code", "code"], "fenced code is coloured as code");
+    assert.deepEqual(kindsOnRow(7), ["image"], "an attached image is drawn as one block");
+  });
+
+  it("wraps very long words and stays bounded for huge notes", async () => {
+    const { layoutTextWords } = await import("../src/features/notes/utils/minimapText.ts");
+    const long = layoutTextWords("x".repeat(120), fixed); // 960px wide in a 400px column
+    assert.ok(new Set(long.boxes.map((b) => b.y)).size >= 3);
+    const huge = layoutTextWords("word ".repeat(50_000), { ...fixed, maxWords: 1000 });
+    assert.equal(huge.truncated, true);
+    assert.ok(huge.boxes.length <= 1000);
+    const blank = layoutTextWords("", fixed);
+    assert.deepEqual(blank.boxes, []);
+  });
+
+  it("draws words in both modes and keeps the minimap switch in Settings", () => {
+    const minimap = fs.readFileSync("src/features/notes/components/Editor/NoteMinimap.tsx", "utf8");
+    assert.match(minimap, /layoutTextWords\(textarea\.value/);
+    assert.match(minimap, /document\.createTreeWalker\(root, NodeFilter\.SHOW_TEXT\)/);
+    assert.match(minimap, /MAX_PREVIEW_WORDS/);
+    const settings = fs.readFileSync("src/features/settings/components/SettingsModal/SettingsModal.tsx", "utf8");
+    assert.match(settings, /checked=\{showMinimap\}/);
+    assert.match(settings, /onShowMinimapChange\(e\.target\.checked\)/);
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.match(editor, /\{showMinimap && \(\s*<NoteMinimap/);
   });
 });

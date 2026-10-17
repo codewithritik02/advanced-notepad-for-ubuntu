@@ -8,6 +8,7 @@ import { NoteEditor } from "../features/notes/components/Editor/NoteEditor";
 import { SettingsModal } from "../features/settings/components/SettingsModal/SettingsModal";
 import { useTheme } from "../hooks/useTheme";
 import { useDisplaySettings } from "../hooks/useDisplaySettings";
+import { useSidebarPin } from "../hooks/useSidebarPin";
 import { markdownToPlainText } from "../utils/markdown";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import {
@@ -133,6 +134,7 @@ async function fetchNotePage(context: NotePageContext, offset: number): Promise<
 export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const display = useDisplaySettings();
+  const sidebarPin = useSidebarPin();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -2007,6 +2009,8 @@ export function App() {
   return (
     <>
       <MainLayout
+        isSidebarPinned={sidebarPin.isPinned}
+        onToggleSidebarPin={sidebarPin.toggle}
         topBar={
           <TopBar
             searchInputRef={searchInputRef}
@@ -2204,6 +2208,7 @@ export function App() {
           <NoteEditor
             key={`${selectedNoteId || "empty"}-${noteRefreshKey}`}
             noteId={selectedNoteId}
+            showMinimap={display.showMinimap}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
             onActivateLink={handleActivateInternalLink}
@@ -2253,6 +2258,8 @@ export function App() {
         editorFontSize={display.editorFontSize}
         onEditorFontSizeChange={display.setEditorFontSize}
         onEditorFontSizeReset={display.resetEditorFontSize}
+        showMinimap={display.showMinimap}
+        onShowMinimapChange={display.setShowMinimap}
         onCreateBackup={() => {
           setIsSettingsOpen(false);
           setIsCreateBackupOpen(true);

@@ -6,6 +6,9 @@ import {
   DEFAULT_EDITOR_FONT_SIZE_PX,
   ZOOM_SETTING_KEY,
   EDITOR_FONT_SIZE_SETTING_KEY,
+  MINIMAP_SETTING_KEY,
+  DEFAULT_SHOW_MINIMAP,
+  normalizeShowMinimap,
   normalizeZoomPercent,
   stepZoomPercent,
   normalizeEditorFontSize,
@@ -14,11 +17,14 @@ import {
 
 const ZOOM_CACHE_KEY = "personal_notepad_zoom_percent";
 const FONT_CACHE_KEY = "personal_notepad_editor_font_size";
+const MINIMAP_CACHE_KEY = "personal_notepad_show_minimap";
 const WHEEL_ZOOM_INTERVAL_MS = 120;
 
 export interface UseDisplaySettingsReturn {
   zoomPercent: number;
   editorFontSize: number;
+  showMinimap: boolean;
+  setShowMinimap: (show: boolean) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -72,6 +78,13 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
       : normalizeEditorFontSize(cached);
   });
 
+  const [showMinimap, setShowMinimapState] = useState<boolean>(() => {
+    const cached = readCache(MINIMAP_CACHE_KEY);
+    return cached === null ? DEFAULT_SHOW_MINIMAP : normalizeShowMinimap(cached);
+  });
+  const minimapRef = useRef(showMinimap);
+  const minimapTouchedRef = useRef(false);
+
   // Latest values, so updates stay pure and persistence runs exactly once per change
   const zoomRef = useRef(zoomPercent);
   const fontRef = useRef(editorFontSize);
@@ -101,6 +114,21 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
           fontRef.current = size;
           setFontState(size);
           writeCache(FONT_CACHE_KEY, size);
+        }
+      })
+      .catch(() => {});
+    storageService.settings
+      .get(MINIMAP_SETTING_KEY)
+      .then((v) => {
+        if (isMounted && v !== null && !minimapTouchedRef.current) {
+          const show = normalizeShowMinimap(v);
+          minimapRef.current = show;
+          setShowMinimapState(show);
+          try {
+            localStorage.setItem(MINIMAP_CACHE_KEY, String(show));
+          } catch {
+            // Ignore cache write errors
+          }
         }
       })
       .catch(() => {});
@@ -140,6 +168,19 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
     storageService.settings
       .set(EDITOR_FONT_SIZE_SETTING_KEY, String(next))
       .catch(() => {});
+  }, []);
+
+  const setShowMinimap = useCallback((show: boolean) => {
+    if (show === minimapRef.current) return;
+    minimapTouchedRef.current = true;
+    minimapRef.current = show;
+    setShowMinimapState(show);
+    try {
+      localStorage.setItem(MINIMAP_CACHE_KEY, String(show));
+    } catch {
+      // Ignore cache write errors
+    }
+    storageService.settings.set(MINIMAP_SETTING_KEY, String(show)).catch(() => {});
   }, []);
 
   const zoomIn = useCallback(
@@ -191,6 +232,8 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
   return {
     zoomPercent,
     editorFontSize,
+    showMinimap,
+    setShowMinimap,
     zoomIn,
     zoomOut,
     resetZoom,

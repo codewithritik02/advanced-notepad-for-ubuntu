@@ -58,12 +58,52 @@
    Left Pane — Sidebar Navigation
    ========================================================================== */
 .app-sidebar-pane {
-  width: var(--sidebar-default-width);
-  min-width: var(--sidebar-min-width);
+  /* Width the sidebar has when open; the media queries below only change this variable. */
+  --sidebar-expanded-width: var(--sidebar-default-width);
+  --sidebar-rail-width: 56px;
+  /* The pane is the space the sidebar takes in the layout: a narrow icon rail unless pinned.
+     Hovering opens the sidebar on top of the notes list without pushing anything. */
+  width: var(--sidebar-rail-width);
+  min-width: var(--sidebar-rail-width);
   flex-shrink: 0;
+  overflow: visible;
+  z-index: 30;
+  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1), min-width 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.app-sidebar-pane.is-pinned {
+  width: var(--sidebar-expanded-width);
+  min-width: var(--sidebar-expanded-width);
+}
+
+.app-sidebar-surface {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid var(--color-border-default);
   background-color: var(--color-bg-sidebar);
-  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+  transition:
+    width 200ms cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 200ms ease,
+    background-color var(--transition-normal),
+    border-color var(--transition-normal);
+}
+
+.app-sidebar-pane.is-unpinned.is-open .app-sidebar-surface {
+  width: var(--sidebar-expanded-width);
+  box-shadow: 8px 0 28px rgba(0, 0, 0, 0.16);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar-pane,
+  .app-sidebar-surface {
+    transition-duration: 1ms;
+  }
 }
 
 /* ==========================================================================
@@ -118,8 +158,7 @@
    ========================================================================== */
 @media (max-width: 1100px) {
   .app-sidebar-pane {
-    width: 200px;
-    min-width: 180px;
+    --sidebar-expanded-width: 200px;
   }
 
   .app-notes-list-pane {
@@ -134,8 +173,7 @@
 
 @media (max-width: 960px) {
   .app-sidebar-pane {
-    width: 190px;
-    min-width: 175px;
+    --sidebar-expanded-width: 190px;
   }
 
   .app-notes-list-pane {
@@ -150,7 +188,7 @@
 
 @media (min-width: 1600px) {
   .app-sidebar-pane {
-    width: 260px;
+    --sidebar-expanded-width: 260px;
   }
 
   .app-notes-list-pane {
