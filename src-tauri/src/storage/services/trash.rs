@@ -1,9 +1,9 @@
-use rusqlite::{params, Connection, OptionalExtension};
 use crate::storage::attachment_storage::AttachmentStorage;
 use crate::storage::crypto::SecretBytes;
 use crate::storage::errors::{StorageError, TrashError};
 use crate::storage::models::{EmptyTrashResult, Note, PermanentDeleteResult};
 use crate::storage::repositories::NoteRepository;
+use rusqlite::{params, Connection, OptionalExtension};
 
 /// High-level domain service that coordinates note lifecycle operations (Phase 8: Trash & Recovery)
 pub struct TrashService;
@@ -13,10 +13,14 @@ impl TrashService {
     fn validate_note_id(note_id: &str) -> Result<&str, TrashError> {
         let trimmed_id = note_id.trim();
         if trimmed_id.is_empty() {
-            return Err(TrashError::InvalidRequest("Note ID cannot be empty".to_string()));
+            return Err(TrashError::InvalidRequest(
+                "Note ID cannot be empty".to_string(),
+            ));
         }
         if trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
-            return Err(TrashError::InvalidRequest("Invalid note ID format".to_string()));
+            return Err(TrashError::InvalidRequest(
+                "Invalid note ID format".to_string(),
+            ));
         }
         Ok(trimmed_id)
     }
@@ -160,10 +164,11 @@ impl TrashService {
         }
 
         // 2. Coordinate associated attachment file cleanup after DB commit
-        let (attachment_cleanup_failed, cleanup_err) = match storage.remove_note_directory(trimmed_id) {
-            Ok(()) => (false, None),
-            Err(e) => (true, Some(e.user_friendly_message())),
-        };
+        let (attachment_cleanup_failed, cleanup_err) =
+            match storage.remove_note_directory(trimmed_id) {
+                Ok(()) => (false, None),
+                Err(e) => (true, Some(e.user_friendly_message())),
+            };
 
         Ok(PermanentDeleteResult {
             note_id: trimmed_id.to_string(),
@@ -229,13 +234,20 @@ impl TrashService {
                     if perm_res.attachment_cleanup_failed {
                         attachment_cleanup_failures.push(note.id.clone());
                         if let Some(msg) = perm_res.error_message {
-                            errors.push(format!("Note {}: attachment cleanup issue: {}", note.id, msg));
+                            errors.push(format!(
+                                "Note {}: attachment cleanup issue: {}",
+                                note.id, msg
+                            ));
                         }
                     }
                 }
                 Err(err) => {
                     failed_count += 1;
-                    errors.push(format!("Failed to delete note {}: {}", note.id, err.user_friendly_message()));
+                    errors.push(format!(
+                        "Failed to delete note {}: {}",
+                        note.id,
+                        err.user_friendly_message()
+                    ));
                 }
             }
         }
@@ -256,7 +268,7 @@ mod tests {
         attachment_storage::AttachmentStorage,
         database::init_connection,
         migrations::run_migrations,
-        models::{CreateNotebookDto, CreateNoteDto, NoteLifecycle},
+        models::{CreateNoteDto, CreateNotebookDto, NoteLifecycle},
         paths::StoragePaths,
         repositories::{AttachmentRepository, NotebookRepository, TagRepository},
         services::AttachmentService,
@@ -264,7 +276,8 @@ mod tests {
 
     #[test]
     fn test_trash_service_soft_delete_lifecycle_and_validation() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_service_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trash_service_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -281,21 +294,29 @@ mod tests {
         assert!(matches!(not_found_err, TrashError::NoteNotFound(_)));
 
         // 3. Setup active note with notebook, tag, favorite, and content
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Work Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Work Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
 
         let tag = TagRepository::create(&conn, "urgent").unwrap();
 
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Important Project Specs".to_string()),
-            content: Some("Critical architectural notes".to_string()),
-            format: Some("md".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            is_favorite: Some(true),
-            is_pinned: Some(false),
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Important Project Specs".to_string()),
+                content: Some("Critical architectural notes".to_string()),
+                format: Some("md".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
         assert_eq!(note.lifecycle(), NoteLifecycle::Active);
@@ -352,7 +373,8 @@ mod tests {
 
     #[test]
     fn test_trash_service_restore_lifecycle_and_notebook_handling() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_restore_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trash_restore_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -366,21 +388,29 @@ mod tests {
         assert!(matches!(not_found_err, TrashError::NoteNotFound(_)));
 
         // 3. Create active note with notebook, tag, favorite
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Research Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Research Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
 
         let tag = TagRepository::create(&conn, "active-tag").unwrap();
 
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Quantum Algorithms".to_string()),
-            content: Some("Notes on Grover search and Shor algorithm".to_string()),
-            format: Some("txt".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            is_favorite: Some(true),
-            is_pinned: Some(false),
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Quantum Algorithms".to_string()),
+                content: Some("Notes on Grover search and Shor algorithm".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
         // 4. Validation: Cannot restore an already active note
@@ -400,7 +430,10 @@ mod tests {
         assert_eq!(restored.id, note.id);
         // - Content, title, format, creation timestamp preserved
         assert_eq!(restored.title, "Quantum Algorithms");
-        assert_eq!(restored.content, "Notes on Grover search and Shor algorithm");
+        assert_eq!(
+            restored.content,
+            "Notes on Grover search and Shor algorithm"
+        );
         assert_eq!(restored.format, "txt");
         assert_eq!(restored.created_at, note.created_at);
         // - Lifecycle is Active, deleted_at cleared
@@ -430,7 +463,10 @@ mod tests {
         let restored_unfiled = TrashService::restore(&conn, &note.id).unwrap();
         assert_eq!(restored_unfiled.id, note.id);
         assert!(!restored_unfiled.is_deleted);
-        assert_eq!(restored_unfiled.notebook_id, None, "Note must be safely unfiled if notebook was deleted");
+        assert_eq!(
+            restored_unfiled.notebook_id, None,
+            "Note must be safely unfiled if notebook was deleted"
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -438,7 +474,8 @@ mod tests {
 
     #[test]
     fn test_trash_service_permanent_delete_lifecycle_and_validation() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_perm_del_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trash_perm_del_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -456,25 +493,34 @@ mod tests {
         assert!(matches!(ws_err, TrashError::InvalidRequest(_)));
 
         // 2. Validation: Reject nonexistent note
-        let not_found_err = TrashService::permanently_delete_note(&conn, &storage, "non-existent-id").unwrap_err();
+        let not_found_err =
+            TrashService::permanently_delete_note(&conn, &storage, "non-existent-id").unwrap_err();
         assert!(matches!(not_found_err, TrashError::NoteNotFound(_)));
 
         // 3. Create active note with notebook, tag, favorite, and an attachment
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Permanent Delete Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Permanent Delete Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
 
         let tag = TagRepository::create(&conn, "perm-tag").unwrap();
 
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Note to be destroyed".to_string()),
-            content: Some("Sensitive data to be permanently erased".to_string()),
-            format: Some("txt".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            is_favorite: Some(true),
-            is_pinned: Some(false),
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Note to be destroyed".to_string()),
+                content: Some("Sensitive data to be permanently erased".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                is_pinned: Some(false),
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
         // Add attachment file
@@ -483,22 +529,33 @@ mod tests {
         let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap();
 
         let note_att_dir = attachments_dir.join(&note.id);
-        assert!(note_att_dir.exists(), "Attachment directory must exist on disk");
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert!(
+            note_att_dir.exists(),
+            "Attachment directory must exist on disk"
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(),
+            1
+        );
 
         // 4. Validation: Cannot permanently delete an active note (must be in Trash first)
-        let active_err = TrashService::permanently_delete_note(&conn, &storage, &note.id).unwrap_err();
+        let active_err =
+            TrashService::permanently_delete_note(&conn, &storage, &note.id).unwrap_err();
         assert!(matches!(active_err, TrashError::InvalidState(_)));
 
         // 5. Create an unrelated note to verify strict isolation
-        let other_note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Survivor Note".to_string()),
-            content: Some("Must not be touched".to_string()),
-            format: Some("txt".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            is_favorite: Some(false),
-            is_pinned: Some(false),
-        }).unwrap();
+        let other_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Survivor Note".to_string()),
+                content: Some("Must not be touched".to_string()),
+                format: Some("txt".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(false),
+                is_pinned: Some(false),
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &other_note.id, &tag.id).unwrap();
 
         // 6. Soft delete target note into Trash
@@ -515,21 +572,36 @@ mod tests {
 
         // 8. Verify target note is completely removed from DB
         assert_eq!(NoteRepository::get_by_id(&conn, &note.id).unwrap(), None);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 0);
-        assert_eq!(AttachmentRepository::get_by_id(&conn, &att.id).unwrap(), None);
-        assert!(TagRepository::get_tags_for_note(&conn, &note.id).unwrap().is_empty());
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(),
+            0
+        );
+        assert_eq!(
+            AttachmentRepository::get_by_id(&conn, &att.id).unwrap(),
+            None
+        );
+        assert!(TagRepository::get_tags_for_note(&conn, &note.id)
+            .unwrap()
+            .is_empty());
 
         // 9. Verify physical attachment directory is wiped
-        assert!(!note_att_dir.exists(), "Note attachment folder must be wiped from disk");
+        assert!(
+            !note_att_dir.exists(),
+            "Note attachment folder must be wiped from disk"
+        );
 
         // 10. Verify unrelated data is preserved (shared entities and survivor note)
         assert_eq!(NoteRepository::count_active(&conn).unwrap(), 1);
         assert_eq!(NoteRepository::count_trashed(&conn).unwrap(), 0);
-        let survivor = NoteRepository::get_by_id(&conn, &other_note.id).unwrap().unwrap();
+        let survivor = NoteRepository::get_by_id(&conn, &other_note.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(survivor.title, "Survivor Note");
 
         // Notebook and tag records remain 100% intact
-        let nb_check = NotebookRepository::get_by_id(&conn, &nb.id).unwrap().unwrap();
+        let nb_check = NotebookRepository::get_by_id(&conn, &nb.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(nb_check.name, "Permanent Delete Notebook");
         let tags_check = TagRepository::get_tags_for_note(&conn, &other_note.id).unwrap();
         assert_eq!(tags_check.len(), 1);
@@ -544,7 +616,8 @@ mod tests {
     fn test_trash_service_permanent_delete_reports_attachment_cleanup_failure_honestly() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_perm_fail_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trash_perm_fail_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -554,11 +627,15 @@ mod tests {
         let mut conn = init_connection(&db_path).expect("Init failed");
         run_migrations(&mut conn).expect("Migrations failed");
 
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Locked Attachment Note".to_string()),
-            content: Some("Test partial cleanup reporting".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Locked Attachment Note".to_string()),
+                content: Some("Test partial cleanup reporting".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let src_file = temp_dir.join("locked.txt");
         std::fs::write(&src_file, b"sample file").unwrap();
@@ -575,8 +652,14 @@ mod tests {
         let res = TrashService::permanently_delete_note(&conn, &storage, &note.id).unwrap();
         assert_eq!(res.note_id, note.id);
         assert!(res.success, "Database deletion still succeeds");
-        assert!(res.attachment_cleanup_failed, "Must report attachment cleanup failure honestly");
-        assert!(res.error_message.is_some(), "Must provide detailed error message");
+        assert!(
+            res.attachment_cleanup_failed,
+            "Must report attachment cleanup failure honestly"
+        );
+        assert!(
+            res.error_message.is_some(),
+            "Must provide detailed error message"
+        );
 
         // Restore permissions for cleanup
         let _ = std::fs::set_permissions(&note_att_dir, std::fs::Permissions::from_mode(0o755));
@@ -586,7 +669,8 @@ mod tests {
 
     #[test]
     fn test_trash_service_empty_trash_lifecycle_and_invariants() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_empty_trash_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_empty_trash_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -604,60 +688,85 @@ mod tests {
         assert!(empty_res.errors.is_empty());
 
         // 2. Setup: 2 active survivor notes (one with notebook, tag, and attachment)
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Survivor Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Survivor Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
         let tag = TagRepository::create(&conn, "survivor-tag").unwrap();
 
-        let survivor1 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Active Survivor 1".to_string()),
-            content: Some("I will never be deleted by empty trash".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            ..Default::default()
-        }).unwrap();
+        let survivor1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active Survivor 1".to_string()),
+                content: Some("I will never be deleted by empty trash".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &survivor1.id, &tag.id).unwrap();
 
         let src_file1 = temp_dir.join("survivor_att.txt");
         std::fs::write(&src_file1, b"survivor attachment").unwrap();
-        let survivor_att = AttachmentService::add_attachment(&conn, &storage, &survivor1.id, &src_file1).unwrap();
+        let survivor_att =
+            AttachmentService::add_attachment(&conn, &storage, &survivor1.id, &src_file1).unwrap();
         let survivor_att_path = attachments_dir.join(&survivor_att.relative_path);
         assert!(survivor_att_path.exists());
 
-        let survivor2 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Active Survivor 2".to_string()),
-            content: Some("I am also active".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let survivor2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active Survivor 2".to_string()),
+                content: Some("I am also active".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 3. Setup: 3 notes doomed to be in Trash
-        let doomed1 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Doomed Note 1".to_string()),
-            content: Some("Content 1".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let doomed1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Doomed Note 1".to_string()),
+                content: Some("Content 1".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let src_file2 = temp_dir.join("doomed1.txt");
         std::fs::write(&src_file2, b"doomed attachment 1").unwrap();
         AttachmentService::add_attachment(&conn, &storage, &doomed1.id, &src_file2).unwrap();
         let doomed1_att_dir = attachments_dir.join(&doomed1.id);
         assert!(doomed1_att_dir.exists());
 
-        let doomed2 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Doomed Note 2".to_string()),
-            content: Some("Content 2".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let doomed2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Doomed Note 2".to_string()),
+                content: Some("Content 2".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let src_file3 = temp_dir.join("doomed2.txt");
         std::fs::write(&src_file3, b"doomed attachment 2").unwrap();
         AttachmentService::add_attachment(&conn, &storage, &doomed2.id, &src_file3).unwrap();
         let doomed2_att_dir = attachments_dir.join(&doomed2.id);
         assert!(doomed2_att_dir.exists());
 
-        let doomed3 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Doomed Note 3 without attachments".to_string()),
-            content: Some("Content 3".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let doomed3 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Doomed Note 3 without attachments".to_string()),
+                content: Some("Content 3".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Soft-delete the 3 doomed notes
         TrashService::soft_delete(&conn, &doomed1.id).unwrap();
@@ -669,7 +778,10 @@ mod tests {
 
         // 4. Execute empty_trash
         let res = TrashService::empty_trash(&conn, &storage).unwrap();
-        assert_eq!(res.deleted_count, 3, "All 3 trashed notes must be permanently deleted");
+        assert_eq!(
+            res.deleted_count, 3,
+            "All 3 trashed notes must be permanently deleted"
+        );
         assert_eq!(res.failed_count, 0);
         assert!(res.attachment_cleanup_failures.is_empty());
         assert!(res.errors.is_empty());
@@ -688,21 +800,35 @@ mod tests {
         assert!(!doomed2_att_dir.exists());
 
         // 6. Verify survivor active notes are completely untouched
-        let s1_check = NoteRepository::get_by_id(&conn, &survivor1.id).unwrap().unwrap();
+        let s1_check = NoteRepository::get_by_id(&conn, &survivor1.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(s1_check.title, "Active Survivor 1");
         assert!(!s1_check.is_deleted);
 
-        let s2_check = NoteRepository::get_by_id(&conn, &survivor2.id).unwrap().unwrap();
+        let s2_check = NoteRepository::get_by_id(&conn, &survivor2.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(s2_check.title, "Active Survivor 2");
         assert!(!s2_check.is_deleted);
 
         // Survivor attachment remains intact on disk
         assert!(survivor_att_path.exists());
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &survivor1.id).unwrap(), 1);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &survivor1.id).unwrap(),
+            1
+        );
 
         // Notebook and tag remain intact
-        assert!(NotebookRepository::get_by_id(&conn, &nb.id).unwrap().is_some());
-        assert_eq!(TagRepository::get_tags_for_note(&conn, &survivor1.id).unwrap().len(), 1);
+        assert!(NotebookRepository::get_by_id(&conn, &nb.id)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            TagRepository::get_tags_for_note(&conn, &survivor1.id)
+                .unwrap()
+                .len(),
+            1
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -713,7 +839,8 @@ mod tests {
     fn test_trash_service_empty_trash_handles_partial_failures() {
         use std::os::unix::fs::PermissionsExt;
 
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_empty_trash_fail_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_empty_trash_fail_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -724,18 +851,26 @@ mod tests {
         run_migrations(&mut conn).expect("Migrations failed");
 
         // Create 2 notes with attachments
-        let note_normal = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Normal Trashed".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let note_normal = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Normal Trashed".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let f1 = temp_dir.join("f1.txt");
         std::fs::write(&f1, b"file 1").unwrap();
         AttachmentService::add_attachment(&conn, &storage, &note_normal.id, &f1).unwrap();
 
-        let note_locked = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Locked Trashed".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let note_locked = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Locked Trashed".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let f2 = temp_dir.join("f2.txt");
         std::fs::write(&f2, b"file 2").unwrap();
         AttachmentService::add_attachment(&conn, &storage, &note_locked.id, &f2).unwrap();
@@ -748,7 +883,10 @@ mod tests {
         let _ = std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555));
 
         let res = TrashService::empty_trash(&conn, &storage).unwrap();
-        assert_eq!(res.deleted_count, 2, "Both database records permanently removed");
+        assert_eq!(
+            res.deleted_count, 2,
+            "Both database records permanently removed"
+        );
         assert_eq!(res.failed_count, 0);
         assert_eq!(res.attachment_cleanup_failures.len(), 1);
         assert_eq!(res.attachment_cleanup_failures[0], note_locked.id);
@@ -762,7 +900,10 @@ mod tests {
 
     #[test]
     fn test_task_22_database_integrity_and_lifecycle_invariants() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_task_22_integrity_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "pn_test_task_22_integrity_{}",
+            uuid::Uuid::new_v4()
+        ));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -775,29 +916,41 @@ mod tests {
         let foreign_keys_enabled: bool = conn
             .query_row("PRAGMA foreign_keys;", [], |r| r.get(0))
             .expect("PRAGMA foreign_keys query failed");
-        assert!(foreign_keys_enabled, "Foreign keys must be actively enforced");
+        assert!(
+            foreign_keys_enabled,
+            "Foreign keys must be actively enforced"
+        );
 
         // 2. Setup notebook and tag
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Integrity Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Integrity Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
         let tag = TagRepository::create(&conn, "integrity-tag").unwrap();
 
         // 3. Test note with unusual / SQL injection-like content and title
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Robert'); DROP TABLE notes;-- 🚀".to_string()),
-            content: Some("SELECT * FROM attachments WHERE '1'='1';".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            is_favorite: Some(true),
-            ..Default::default()
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Robert'); DROP TABLE notes;-- 🚀".to_string()),
+                content: Some("SELECT * FROM attachments WHERE '1'='1';".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
         // Add attachment
         let sample_file = temp_dir.join("payload.txt");
         std::fs::write(&sample_file, b"injection payload test").unwrap();
-        let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &sample_file).unwrap();
+        let att =
+            AttachmentService::add_attachment(&conn, &storage, &note.id, &sample_file).unwrap();
 
         // Verify injection strings did not corrupt database schema or tables
         let notes_table_exists: bool = conn
@@ -825,22 +978,39 @@ mod tests {
         assert!(perm_del.success);
 
         // Verify note record removed
-        assert!(NoteRepository::get_by_id(&conn, &note.id).unwrap().is_none());
+        assert!(NoteRepository::get_by_id(&conn, &note.id)
+            .unwrap()
+            .is_none());
         // Verify note_tags assignment cascaded
-        assert_eq!(TagRepository::get_tags_for_note(&conn, &note.id).unwrap().len(), 0);
+        assert_eq!(
+            TagRepository::get_tags_for_note(&conn, &note.id)
+                .unwrap()
+                .len(),
+            0
+        );
         // Verify attachment record cascaded
-        assert!(AttachmentRepository::get_by_id(&conn, &att.id).unwrap().is_none());
+        assert!(AttachmentRepository::get_by_id(&conn, &att.id)
+            .unwrap()
+            .is_none());
         // Verify parent notebook and tag records remain completely intact
-        assert!(NotebookRepository::get_by_id(&conn, &nb.id).unwrap().is_some());
+        assert!(NotebookRepository::get_by_id(&conn, &nb.id)
+            .unwrap()
+            .is_some());
         assert!(TagRepository::get_by_id(&conn, &tag.id).unwrap().is_some());
 
         // 6. Migration idempotency: running migrations on existing database preserves data
-        let survivor = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Survivor Note".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let survivor = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Survivor Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         run_migrations(&mut conn).expect("Re-running migrations must succeed idempotently");
-        assert!(NoteRepository::get_by_id(&conn, &survivor.id).unwrap().is_some());
+        assert!(NoteRepository::get_by_id(&conn, &survivor.id)
+            .unwrap()
+            .is_some());
 
         // 7. Repeated empty-trash calls: multiple consecutive calls must be safe and idempotent
         let empty_1 = TrashService::empty_trash(&conn, &storage).unwrap();
@@ -854,7 +1024,8 @@ mod tests {
 
     #[test]
     fn test_task_24_data_safety_security_and_reliability_verification() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_t24_verification_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_t24_verification_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
         let db_path = paths.database_file.clone();
@@ -867,18 +1038,26 @@ mod tests {
         let mut conn = init_connection(&db_path).expect("Initial connection failed");
         run_migrations(&mut conn).expect("Initial migrations failed");
 
-        let nb = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Restart Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Restart Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
         let tag = TagRepository::create(&conn, "restart-tag").unwrap();
 
-        let note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Restart Note".to_string()),
-            content: Some("Restart content body".to_string()),
-            notebook_id: Some(nb.id.clone()),
-            ..Default::default()
-        }).unwrap();
+        let note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Restart Note".to_string()),
+                content: Some("Restart content body".to_string()),
+                notebook_id: Some(nb.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
         let att_src = temp_dir.join("restart_file.txt");
@@ -913,18 +1092,25 @@ mod tests {
         let perm_res = TrashService::permanently_delete_note(&conn3, &storage, &note.id).unwrap();
         assert!(perm_res.success);
         assert!(!storage.file_exists(&att.relative_path));
-        assert!(NoteRepository::get_by_id(&conn3, &note.id).unwrap().is_none());
+        assert!(NoteRepository::get_by_id(&conn3, &note.id)
+            .unwrap()
+            .is_none());
 
         // -------------------------------------------------------------
         // 2. MISSING ATTACHMENT RESILIENCE DURING PERMANENT DELETION
         // -------------------------------------------------------------
-        let ghost_note = NoteRepository::create(&conn3, CreateNoteDto {
-            title: Some("Ghost Attachment Note".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let ghost_note = NoteRepository::create(
+            &conn3,
+            CreateNoteDto {
+                title: Some("Ghost Attachment Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let ghost_src = temp_dir.join("ghost.txt");
         std::fs::write(&ghost_src, b"ghost payload").unwrap();
-        let _ = AttachmentService::add_attachment(&conn3, &storage, &ghost_note.id, &ghost_src).unwrap();
+        let _ = AttachmentService::add_attachment(&conn3, &storage, &ghost_note.id, &ghost_src)
+            .unwrap();
         TrashService::soft_delete(&conn3, &ghost_note.id).unwrap();
 
         // Delete disk directory externally before permanent deletion
@@ -934,18 +1120,25 @@ mod tests {
         }
 
         // Permanent deletion must succeed cleanly and purge DB rows without error
-        let ghost_del = TrashService::permanently_delete_note(&conn3, &storage, &ghost_note.id).unwrap();
+        let ghost_del =
+            TrashService::permanently_delete_note(&conn3, &storage, &ghost_note.id).unwrap();
         assert!(ghost_del.success);
         assert!(!ghost_del.attachment_cleanup_failed);
-        assert!(NoteRepository::get_by_id(&conn3, &ghost_note.id).unwrap().is_none());
+        assert!(NoteRepository::get_by_id(&conn3, &ghost_note.id)
+            .unwrap()
+            .is_none());
 
         // -------------------------------------------------------------
         // 3. BACKEND BOUNDARY SECURITY: REJECT ACTIVE NOTE DELETIONS
         // -------------------------------------------------------------
-        let active_note = NoteRepository::create(&conn3, CreateNoteDto {
-            title: Some("Active Boundary Note".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let active_note = NoteRepository::create(
+            &conn3,
+            CreateNoteDto {
+                title: Some("Active Boundary Note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Reject permanently deleting active notes
         assert!(TrashService::permanently_delete_note(&conn3, &storage, &active_note.id).is_err());
@@ -956,10 +1149,14 @@ mod tests {
         // 4. LARGE TRASH LIST EMPTYING & ACTIVE SURVIVOR PRESERVATION
         // -------------------------------------------------------------
         for i in 0..25 {
-            let n = NoteRepository::create(&conn3, CreateNoteDto {
-                title: Some(format!("Bulk Trashed Note {}", i)),
-                ..Default::default()
-            }).unwrap();
+            let n = NoteRepository::create(
+                &conn3,
+                CreateNoteDto {
+                    title: Some(format!("Bulk Trashed Note {}", i)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             TrashService::soft_delete(&conn3, &n.id).unwrap();
         }
 
@@ -968,7 +1165,9 @@ mod tests {
         assert_eq!(empty_batch.failed_count, 0);
 
         // Active note must remain untouched
-        let active_survivor = NoteRepository::get_by_id(&conn3, &active_note.id).unwrap().unwrap();
+        let active_survivor = NoteRepository::get_by_id(&conn3, &active_note.id)
+            .unwrap()
+            .unwrap();
         assert!(!active_survivor.is_deleted);
         assert_eq!(active_survivor.title, "Active Boundary Note");
 

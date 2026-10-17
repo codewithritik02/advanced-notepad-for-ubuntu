@@ -1,9 +1,9 @@
-use rusqlite::{params, Connection, Row};
 use crate::storage::crypto::{decrypt_string, encrypt_string, is_encrypted_string, SecretBytes};
 use crate::storage::errors::StorageError;
 use crate::storage::models::{
     CreateNoteDto, ListNotesQueryOptions, Note, NoteCountsDto, TrashedNoteItem, UpdateNoteDto,
 };
+use rusqlite::{params, Connection, Row};
 
 pub struct NoteRepository;
 
@@ -90,7 +90,10 @@ impl NoteRepository {
             rusqlite::Error::FromSqlConversionFailure(
                 1,
                 rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                )),
             )
         })
     }
@@ -443,11 +446,10 @@ impl NoteRepository {
             by_notebook.insert(nb_id, count.max(0) as usize);
         }
 
-        let trash: i64 = conn.query_row(
-            "SELECT COUNT(1) FROM notes WHERE is_deleted = 1",
-            [],
-            |r| r.get(0),
-        )?;
+        let trash: i64 =
+            conn.query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                r.get(0)
+            })?;
 
         Ok(NoteCountsDto {
             total: total.max(0) as usize,
@@ -462,7 +464,10 @@ impl NoteRepository {
         Self::list_filtered(conn, include_deleted, None, false)
     }
 
-    pub fn list_by_notebook(conn: &Connection, notebook_id: &str) -> Result<Vec<Note>, StorageError> {
+    pub fn list_by_notebook(
+        conn: &Connection,
+        notebook_id: &str,
+    ) -> Result<Vec<Note>, StorageError> {
         Self::list_filtered_with_key(conn, false, Some(notebook_id), false, None)
     }
 
@@ -639,7 +644,9 @@ impl NoteRepository {
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
 
         if existing.is_deleted {
-            return Err(StorageError::Conflict(format!("Note with id '{id}' is already in Trash")));
+            return Err(StorageError::Conflict(format!(
+                "Note with id '{id}' is already in Trash"
+            )));
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -791,10 +798,7 @@ impl NoteRepository {
         )
     }
 
-    pub fn toggle_favorite(
-        conn: &Connection,
-        id: &str,
-    ) -> Result<Note, StorageError> {
+    pub fn toggle_favorite(conn: &Connection, id: &str) -> Result<Note, StorageError> {
         Self::toggle_favorite_with_key(conn, id, None)
     }
 
@@ -806,6 +810,41 @@ impl NoteRepository {
         let note = Self::get_by_id_with_key(conn, id, dek)?
             .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
         Self::set_favorite_with_key(conn, id, !note.is_favorite, dek)
+    }
+
+    pub fn set_pinned(conn: &Connection, id: &str, is_pinned: bool) -> Result<Note, StorageError> {
+        Self::set_pinned_with_key(conn, id, is_pinned, None)
+    }
+
+    pub fn set_pinned_with_key(
+        conn: &Connection,
+        id: &str,
+        is_pinned: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        Self::update_with_key(
+            conn,
+            id,
+            UpdateNoteDto {
+                is_pinned: Some(is_pinned),
+                ..Default::default()
+            },
+            dek,
+        )
+    }
+
+    pub fn toggle_pinned(conn: &Connection, id: &str) -> Result<Note, StorageError> {
+        Self::toggle_pinned_with_key(conn, id, None)
+    }
+
+    pub fn toggle_pinned_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let note = Self::get_by_id_with_key(conn, id, dek)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+        Self::set_pinned_with_key(conn, id, !note.is_pinned, dek)
     }
 
     pub fn list_favorites(conn: &Connection) -> Result<Vec<Note>, StorageError> {
@@ -906,7 +945,10 @@ impl NoteRepository {
         let tags = crate::storage::repositories::tags::TagRepository::get_tags_for_note(conn, id)?;
         let mut metadata = crate::storage::models::NoteMetadata::from_note_and_tags(&note, tags);
         if let Some(ref nb_id) = note.notebook_id {
-            let path = crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(conn, nb_id)?;
+            let path =
+                crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(
+                    conn, nb_id,
+                )?;
             metadata.notebook_path = Some(path);
         }
         Ok(Some(metadata))
@@ -915,15 +957,21 @@ impl NoteRepository {
     /// Returns the human-readable notebook path for a note (or "Unfiled" if unassigned).
     pub fn get_notebook_path(conn: &Connection, note_id: &str) -> Result<String, StorageError> {
         let mut stmt = conn.prepare("SELECT notebook_id FROM notes WHERE id = ?1")?;
-        let nb_id_opt: Option<String> = stmt.query_row(params![note_id], |r| r.get(0)).map_err(|e| {
-            if e == rusqlite::Error::QueryReturnedNoRows {
-                StorageError::NotFound(format!("Note with id '{note_id}' not found"))
-            } else {
-                StorageError::Database(e)
-            }
-        })?;
+        let nb_id_opt: Option<String> =
+            stmt.query_row(params![note_id], |r| r.get(0))
+                .map_err(|e| {
+                    if e == rusqlite::Error::QueryReturnedNoRows {
+                        StorageError::NotFound(format!("Note with id '{note_id}' not found"))
+                    } else {
+                        StorageError::Database(e)
+                    }
+                })?;
         match nb_id_opt {
-            Some(ref nb_id) => crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(conn, nb_id),
+            Some(ref nb_id) => {
+                crate::storage::repositories::notebooks::NotebookRepository::get_hierarchy_path(
+                    conn, nb_id,
+                )
+            }
             None => Ok("Unfiled".to_string()),
         }
     }
@@ -967,7 +1015,11 @@ mod tests {
 
         // Verify that the note was NOT inserted into notes table
         let all_notes = NoteRepository::list(&conn, true).expect("List notes failed");
-        assert_eq!(all_notes.len(), 0, "Failed transaction must roll back and leave 0 notes");
+        assert_eq!(
+            all_notes.len(),
+            0,
+            "Failed transaction must roll back and leave 0 notes"
+        );
 
         // 2. Transaction success: Valid tags
         let success_res = NoteRepository::create_with_tags(
@@ -978,13 +1030,15 @@ mod tests {
                 ..Default::default()
             },
             std::slice::from_ref(&tag.id),
-        ).expect("Valid transaction should succeed");
+        )
+        .expect("Valid transaction should succeed");
 
         let fetched_notes = NoteRepository::list(&conn, true).expect("List notes failed");
         assert_eq!(fetched_notes.len(), 1);
         assert_eq!(fetched_notes[0].id, success_res.id);
 
-        let note_tags = TagRepository::get_tags_for_note(&conn, &success_res.id).expect("Get tags failed");
+        let note_tags =
+            TagRepository::get_tags_for_note(&conn, &success_res.id).expect("Get tags failed");
         assert_eq!(note_tags.len(), 1);
         assert_eq!(note_tags[0].id, tag.id);
 
@@ -1008,7 +1062,8 @@ mod tests {
                 content: Some("First note content".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 1");
+        )
+        .expect("create note 1");
         assert!(!note1.is_favorite);
 
         // Favorite note
@@ -1025,8 +1080,13 @@ mod tests {
         // 3. Favorite persists across connection drop / reopen
         drop(conn);
         let conn2 = init_connection(&db_path).expect("Reopen failed");
-        let note1_reloaded = NoteRepository::get_by_id(&conn2, &note1.id).unwrap().unwrap();
-        assert!(note1_reloaded.is_favorite, "3. favorite must persist across connection reload");
+        let note1_reloaded = NoteRepository::get_by_id(&conn2, &note1.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            note1_reloaded.is_favorite,
+            "3. favorite must persist across connection reload"
+        );
 
         // 4. Favorite filtering
         let note2 = NoteRepository::create(
@@ -1036,7 +1096,8 @@ mod tests {
                 content: Some("Second note content (not favorite)".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 2");
+        )
+        .expect("create note 2");
         assert!(!note2.is_favorite);
 
         let note3 = NoteRepository::create(
@@ -1046,7 +1107,8 @@ mod tests {
                 content: Some("Third note content (favorite)".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 3");
+        )
+        .expect("create note 3");
         NoteRepository::toggle_favorite(&conn2, &note3.id).expect("favorite note 3");
 
         let favorites = NoteRepository::list_favorites(&conn2).expect("4. list favorites");
@@ -1057,7 +1119,8 @@ mod tests {
 
         // 5. Deleted note does not appear in Favorites
         NoteRepository::delete(&conn2, &note1.id, true).expect("soft delete note 1");
-        let favorites_after_delete = NoteRepository::list_favorites(&conn2).expect("5. list favorites after delete");
+        let favorites_after_delete =
+            NoteRepository::list_favorites(&conn2).expect("5. list favorites after delete");
         assert_eq!(favorites_after_delete.len(), 1);
         assert_eq!(favorites_after_delete[0].id, note3.id);
 
@@ -1074,8 +1137,13 @@ mod tests {
 
         // 1. Tag with no notes
         let empty_tag = TagRepository::create(&conn, "empty-tag").expect("create empty tag");
-        let empty_notes = NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("1. list empty tag notes");
-        assert_eq!(empty_notes.len(), 0, "Tag with no notes must return empty vector");
+        let empty_notes =
+            NoteRepository::list_by_tag(&conn, &empty_tag.id).expect("1. list empty tag notes");
+        assert_eq!(
+            empty_notes.len(),
+            0,
+            "Tag with no notes must return empty vector"
+        );
 
         // 2. Tag with one note
         let note1 = NoteRepository::create(
@@ -1085,12 +1153,14 @@ mod tests {
                 content: Some("Content 1".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 1");
+        )
+        .expect("create note 1");
 
         let solo_tag = TagRepository::create(&conn, "solo-tag").expect("create solo tag");
         TagRepository::add_tag_to_note(&conn, &note1.id, &solo_tag.id).expect("assign solo tag");
 
-        let solo_notes = NoteRepository::list_by_tag(&conn, &solo_tag.id).expect("2. list solo tag notes");
+        let solo_notes =
+            NoteRepository::list_by_tag(&conn, &solo_tag.id).expect("2. list solo tag notes");
         assert_eq!(solo_notes.len(), 1);
         assert_eq!(solo_notes[0].id, note1.id);
 
@@ -1102,7 +1172,8 @@ mod tests {
                 content: Some("Content 2".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 2");
+        )
+        .expect("create note 2");
 
         let note3 = NoteRepository::create(
             &conn,
@@ -1111,20 +1182,27 @@ mod tests {
                 content: Some("Content 3".to_string()),
                 ..Default::default()
             },
-        ).expect("create note 3");
+        )
+        .expect("create note 3");
 
         let shared_tag = TagRepository::create(&conn, "shared-tag").expect("create shared tag");
         TagRepository::add_tag_to_note(&conn, &note1.id, &shared_tag.id).expect("assign note 1");
         TagRepository::add_tag_to_note(&conn, &note2.id, &shared_tag.id).expect("assign note 2");
         TagRepository::add_tag_to_note(&conn, &note3.id, &shared_tag.id).expect("assign note 3");
 
-        let shared_notes = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("3. list shared tag notes");
+        let shared_notes =
+            NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("3. list shared tag notes");
         assert_eq!(shared_notes.len(), 3);
 
         // 4. Deleted note excluded
         NoteRepository::delete(&conn, &note2.id, true).expect("soft delete note 2");
-        let notes_after_soft_delete = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("4. list after soft delete");
-        assert_eq!(notes_after_soft_delete.len(), 2, "Deleted note must be excluded from tag filter");
+        let notes_after_soft_delete =
+            NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("4. list after soft delete");
+        assert_eq!(
+            notes_after_soft_delete.len(),
+            2,
+            "Deleted note must be excluded from tag filter"
+        );
         assert!(notes_after_soft_delete.iter().any(|n| n.id == note1.id));
         assert!(notes_after_soft_delete.iter().any(|n| n.id == note3.id));
         assert!(!notes_after_soft_delete.iter().any(|n| n.id == note2.id));
@@ -1137,10 +1215,15 @@ mod tests {
                 is_pinned: Some(true),
                 ..Default::default()
             },
-        ).expect("pin note 3");
-        let ordered_notes = NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("5. list ordered notes");
+        )
+        .expect("pin note 3");
+        let ordered_notes =
+            NoteRepository::list_by_tag(&conn, &shared_tag.id).expect("5. list ordered notes");
         assert_eq!(ordered_notes.len(), 2);
-        assert_eq!(ordered_notes[0].id, note3.id, "Pinned note must be ordered first");
+        assert_eq!(
+            ordered_notes[0].id, note3.id,
+            "Pinned note must be ordered first"
+        );
         assert_eq!(ordered_notes[1].id, note1.id);
 
         drop(conn);
@@ -1149,7 +1232,8 @@ mod tests {
 
     #[test]
     fn test_centralized_active_and_trashed_query_rules() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_query_rules_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_query_rules_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("init failed");
         run_migrations(&mut conn).expect("migrations failed");
@@ -1161,17 +1245,25 @@ mod tests {
         assert_eq!(NoteRepository::count_trashed(&conn).unwrap(), 0);
 
         // 2. Create active notes
-        let active1 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Active 1".to_string()),
-            content: Some("First active note".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let active1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active 1".to_string()),
+                content: Some("First active note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let active2 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Active 2".to_string()),
-            content: Some("Second active note".to_string()),
-            ..Default::default()
-        }).unwrap();
+        let active2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active 2".to_string()),
+                content: Some("Second active note".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 3. Move active2 to Trash via soft delete
         NoteRepository::delete(&conn, &active2.id, true).unwrap();
@@ -1181,19 +1273,35 @@ mod tests {
         assert_eq!(NoteRepository::count_trashed(&conn).unwrap(), 1);
 
         // 5. Verify single-note queries respect lifecycle state
-        assert!(NoteRepository::get_active_by_id(&conn, &active1.id).unwrap().is_some());
-        assert!(NoteRepository::get_trashed_by_id(&conn, &active1.id).unwrap().is_none());
+        assert!(NoteRepository::get_active_by_id(&conn, &active1.id)
+            .unwrap()
+            .is_some());
+        assert!(NoteRepository::get_trashed_by_id(&conn, &active1.id)
+            .unwrap()
+            .is_none());
 
-        assert!(NoteRepository::get_active_by_id(&conn, &active2.id).unwrap().is_none());
-        assert!(NoteRepository::get_trashed_by_id(&conn, &active2.id).unwrap().is_some());
+        assert!(NoteRepository::get_active_by_id(&conn, &active2.id)
+            .unwrap()
+            .is_none());
+        assert!(NoteRepository::get_trashed_by_id(&conn, &active2.id)
+            .unwrap()
+            .is_some());
 
         // get_by_id returns both for administrative/lifecycle inspection
-        assert!(NoteRepository::get_by_id(&conn, &active1.id).unwrap().is_some());
-        assert!(NoteRepository::get_by_id(&conn, &active2.id).unwrap().is_some());
+        assert!(NoteRepository::get_by_id(&conn, &active1.id)
+            .unwrap()
+            .is_some());
+        assert!(NoteRepository::get_by_id(&conn, &active2.id)
+            .unwrap()
+            .is_some());
 
         // Non-existent note returns None cleanly
-        assert!(NoteRepository::get_active_by_id(&conn, "non-existent").unwrap().is_none());
-        assert!(NoteRepository::get_trashed_by_id(&conn, "non-existent").unwrap().is_none());
+        assert!(NoteRepository::get_active_by_id(&conn, "non-existent")
+            .unwrap()
+            .is_none());
+        assert!(NoteRepository::get_trashed_by_id(&conn, "non-existent")
+            .unwrap()
+            .is_none());
 
         // 6. Verify list_active and list_trashed separation
         let active_list = NoteRepository::list_active(&conn).unwrap();
@@ -1212,7 +1320,8 @@ mod tests {
 
     #[test]
     fn test_list_trashed_items_dto_mapping_and_ordering() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trashed_items_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trashed_items_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -1222,74 +1331,108 @@ mod tests {
         assert!(empty_list.is_empty());
 
         // 2. Setup: 2 notebooks
-        let nb_alpha = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Alpha Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
-        let nb_beta = NotebookRepository::create(&conn, CreateNotebookDto {
-            name: "Beta Notebook".to_string(),
-            parent_id: None,
-        }).unwrap();
+        let nb_alpha = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Alpha Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        let nb_beta = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: "Beta Notebook".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
 
         // 3. Active Note (must be excluded from trashed items)
-        let _active_note = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Active Note".to_string()),
-            content: Some("Active content that must not appear in trash".to_string()),
-            notebook_id: Some(nb_alpha.id.clone()),
-            ..Default::default()
-        }).unwrap();
+        let _active_note = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Active Note".to_string()),
+                content: Some("Active content that must not appear in trash".to_string()),
+                notebook_id: Some(nb_alpha.id.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 4. Trashed Note 1 (in Alpha, with long content > 200 chars, favorite, attachment)
         let long_content = "A".repeat(350);
-        let note1 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Long Trashed Note 1".to_string()),
-            content: Some(long_content.clone()),
-            notebook_id: Some(nb_alpha.id.clone()),
-            is_favorite: Some(true),
-            ..Default::default()
-        }).unwrap();
+        let note1 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Long Trashed Note 1".to_string()),
+                content: Some(long_content.clone()),
+                notebook_id: Some(nb_alpha.id.clone()),
+                is_favorite: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // Soft delete note1 with an earlier deleted timestamp
         let time_early = "2026-10-01T10:00:00Z";
         conn.execute(
             "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
             params![time_early, note1.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Add 2 attachments to note1
-        AttachmentRepository::create(&conn, CreateAttachmentDto {
-            note_id: note1.id.clone(),
-            file_name: "file1.pdf".to_string(),
-            relative_path: "note1/file1.pdf".to_string(),
-            mime_type: Some("application/pdf".to_string()),
-            file_size: 1024,
-        }).unwrap();
-        AttachmentRepository::create(&conn, CreateAttachmentDto {
-            note_id: note1.id.clone(),
-            file_name: "file2.png".to_string(),
-            relative_path: "note1/file2.png".to_string(),
-            mime_type: Some("image/png".to_string()),
-            file_size: 2048,
-        }).unwrap();
+        AttachmentRepository::create(
+            &conn,
+            CreateAttachmentDto {
+                note_id: note1.id.clone(),
+                file_name: "file1.pdf".to_string(),
+                relative_path: "note1/file1.pdf".to_string(),
+                mime_type: Some("application/pdf".to_string()),
+                file_size: 1024,
+            },
+        )
+        .unwrap();
+        AttachmentRepository::create(
+            &conn,
+            CreateAttachmentDto {
+                note_id: note1.id.clone(),
+                file_name: "file2.png".to_string(),
+                relative_path: "note1/file2.png".to_string(),
+                mime_type: Some("image/png".to_string()),
+                file_size: 2048,
+            },
+        )
+        .unwrap();
 
         // 5. Trashed Note 2 (in Beta, deleted more recently, no attachments)
-        let note2 = NoteRepository::create(&conn, CreateNoteDto {
-            title: Some("Recent Trashed Note 2".to_string()),
-            content: Some("Short preview content".to_string()),
-            notebook_id: Some(nb_beta.id.clone()),
-            is_favorite: Some(false),
-            ..Default::default()
-        }).unwrap();
+        let note2 = NoteRepository::create(
+            &conn,
+            CreateNoteDto {
+                title: Some("Recent Trashed Note 2".to_string()),
+                content: Some("Short preview content".to_string()),
+                notebook_id: Some(nb_beta.id.clone()),
+                is_favorite: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let time_recent = "2026-10-08T12:00:00Z";
         conn.execute(
             "UPDATE notes SET is_deleted = 1, deleted_at = ?1 WHERE id = ?2",
             params![time_recent, note2.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 6. Query list_trashed_items
         let items = NoteRepository::list_trashed_items(&conn).unwrap();
-        assert_eq!(items.len(), 2, "Must only return the 2 trashed notes, active note excluded");
+        assert_eq!(
+            items.len(),
+            2,
+            "Must only return the 2 trashed notes, active note excluded"
+        );
 
         // Verify ordering: most recently deleted first (note2, then note1)
         assert_eq!(items[0].id, note2.id);
@@ -1359,10 +1502,22 @@ mod tests {
             )
             .expect("Raw query failed");
 
-        assert!(raw_title.starts_with(ENCRYPTED_PREFIX_V1), "Raw title in SQLite must start with ENC$v1$");
-        assert!(raw_content.starts_with(ENCRYPTED_PREFIX_V1), "Raw content in SQLite must start with ENC$v1$");
-        assert!(!raw_title.contains("Vault"), "Raw SQLite title leaked plaintext!");
-        assert!(!raw_content.contains("SuperSecretToken1234"), "Raw SQLite content leaked plaintext!");
+        assert!(
+            raw_title.starts_with(ENCRYPTED_PREFIX_V1),
+            "Raw title in SQLite must start with ENC$v1$"
+        );
+        assert!(
+            raw_content.starts_with(ENCRYPTED_PREFIX_V1),
+            "Raw content in SQLite must start with ENC$v1$"
+        );
+        assert!(
+            !raw_title.contains("Vault"),
+            "Raw SQLite title leaked plaintext!"
+        );
+        assert!(
+            !raw_content.contains("SuperSecretToken1234"),
+            "Raw SQLite content leaked plaintext!"
+        );
 
         // 3. Read back with active key
         let fetched = NoteRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
@@ -1457,7 +1612,8 @@ mod tests {
 
     #[test]
     fn test_ciphertext_tamper_detection() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_tamper_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_tamper_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -1477,7 +1633,11 @@ mod tests {
 
         // Tamper with content in SQLite by modifying a character in the ciphertext
         let raw_content: String = conn
-            .query_row("SELECT content FROM notes WHERE id = ?1", params![created.id], |r| r.get(0))
+            .query_row(
+                "SELECT content FROM notes WHERE id = ?1",
+                params![created.id],
+                |r| r.get(0),
+            )
             .unwrap();
 
         // Mutate a byte in base64 envelope
@@ -1536,7 +1696,11 @@ mod tests {
 
         // Attacker attempts ciphertext splicing: copy Note A's content ciphertext into Note B's content row
         let raw_content_a: String = conn
-            .query_row("SELECT content FROM notes WHERE id = ?1", params![note_a.id], |r| r.get(0))
+            .query_row(
+                "SELECT content FROM notes WHERE id = ?1",
+                params![note_a.id],
+                |r| r.get(0),
+            )
             .unwrap();
 
         conn.execute(
@@ -1589,10 +1753,18 @@ mod tests {
 
         // Verify SQLite raw storage
         let raw_legacy_title: String = conn
-            .query_row("SELECT title FROM notes WHERE id = ?1", params![note_legacy.id], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM notes WHERE id = ?1",
+                params![note_legacy.id],
+                |r| r.get(0),
+            )
             .unwrap();
         let raw_enc_title: String = conn
-            .query_row("SELECT title FROM notes WHERE id = ?1", params![note_encrypted.id], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM notes WHERE id = ?1",
+                params![note_encrypted.id],
+                |r| r.get(0),
+            )
             .unwrap();
 
         assert_eq!(raw_legacy_title, "Plaintext Legacy Note");
@@ -1605,7 +1777,8 @@ mod tests {
         assert_eq!(fetched_legacy.title, "Plaintext Legacy Note");
 
         // Reading both with DEK active
-        let all_notes = NoteRepository::list_filtered_with_key(&conn, false, None, false, Some(&dek)).unwrap();
+        let all_notes =
+            NoteRepository::list_filtered_with_key(&conn, false, None, false, Some(&dek)).unwrap();
         assert_eq!(all_notes.len(), 2);
 
         let titles: Vec<String> = all_notes.into_iter().map(|n| n.title).collect();
@@ -1650,13 +1823,19 @@ mod tests {
 
         // Verify note row is completely removed from SQLite
         let exists: bool = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE id = ?1", params![note.id], |r| r.get::<_, i64>(0))
-            .unwrap() > 0;
-        assert!(!exists, "Permanently deleted encrypted note must be removed from notes table");
+            .query_row(
+                "SELECT COUNT(1) FROM notes WHERE id = ?1",
+                params![note.id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+        assert!(
+            !exists,
+            "Permanently deleted encrypted note must be removed from notes table"
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-
-

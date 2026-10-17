@@ -1,8 +1,8 @@
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
-use chrono::{DateTime, Utc};
 
-use crate::storage::models::{BackupType, PRIMARY_BACKUP_EXTENSION, BACKUP_FORMAT_IDENTIFIER};
+use crate::storage::models::{BackupType, BACKUP_FORMAT_IDENTIFIER, PRIMARY_BACKUP_EXTENSION};
 use crate::storage::services::manifest::ManifestManager;
 
 /// Represents an eligible, verified automatic backup candidate discovered on disk.
@@ -185,22 +185,18 @@ impl BackupRetentionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use chrono::Duration;
-    use uuid::Uuid;
-    use zip::write::SimpleFileOptions;
-    use zip::ZipWriter;
     use crate::storage::models::{
         BackupAttachmentsSummary, BackupDatabaseInfo, BackupManifest, BackupType,
         CURRENT_BACKUP_FORMAT_VERSION,
     };
+    use chrono::Duration;
+    use std::io::Write;
+    use uuid::Uuid;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     /// Helper creating a minimal valid mock backup archive on disk
-    fn create_mock_backup_archive(
-        path: &Path,
-        backup_type: BackupType,
-        created_at: DateTime<Utc>,
-    ) {
+    fn create_mock_backup_archive(path: &Path, backup_type: BackupType, created_at: DateTime<Utc>) {
         let file = fs::File::create(path).expect("Create mock backup file");
         let mut zip = ZipWriter::new(file);
 
@@ -237,7 +233,8 @@ mod tests {
 
         let json = serde_json::to_vec_pretty(&manifest).expect("Serialize manifest");
         let options = SimpleFileOptions::default();
-        zip.start_file("manifest.json", options).expect("Start manifest file");
+        zip.start_file("manifest.json", options)
+            .expect("Start manifest file");
         zip.write_all(&json).expect("Write manifest bytes");
         zip.finish().expect("Finish zip");
     }
@@ -269,7 +266,10 @@ mod tests {
 
         // Oldest two (0 and 1) should be deleted
         assert!(!file_paths[0].exists(), "Oldest backup 0 must be pruned");
-        assert!(!file_paths[1].exists(), "Second oldest backup 1 must be pruned");
+        assert!(
+            !file_paths[1].exists(),
+            "Second oldest backup 1 must be pruned"
+        );
 
         // Newest three (2, 3, and 4) must still exist
         assert!(file_paths[2].exists(), "Backup 2 must be kept");
@@ -281,37 +281,59 @@ mod tests {
 
     #[test]
     fn test_retention_never_touches_manual_backups_or_checkpoints() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_retention_manual_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_retention_manual_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).expect("Create temp dir");
 
         let base_time = Utc::now();
 
         // 1. Create a manual backup (very old)
         let manual_path = temp_dir.join("personal-notepad-backup-manual.pnbackup");
-        create_mock_backup_archive(&manual_path, BackupType::Manual, base_time - Duration::days(100));
+        create_mock_backup_archive(
+            &manual_path,
+            BackupType::Manual,
+            base_time - Duration::days(100),
+        );
 
         // 2. Create a checkpoint backup (old)
         let checkpoint_path = temp_dir.join("personal-notepad-checkpoint.pnbackup");
-        create_mock_backup_archive(&checkpoint_path, BackupType::Checkpoint, base_time - Duration::days(50));
+        create_mock_backup_archive(
+            &checkpoint_path,
+            BackupType::Checkpoint,
+            base_time - Duration::days(50),
+        );
 
         // 3. Create 3 automatic backups
         let mut auto_paths = Vec::new();
         for i in 0..3 {
             let auto_path = temp_dir.join(format!("personal-notepad-auto-backup-{i}.pnbackup"));
-            create_mock_backup_archive(&auto_path, BackupType::Automatic, base_time - Duration::hours(3 - i));
+            create_mock_backup_archive(
+                &auto_path,
+                BackupType::Automatic,
+                base_time - Duration::hours(3 - i),
+            );
             auto_paths.push(auto_path);
         }
 
         // Apply retention = 2 on automatic backups
         let result = BackupRetentionManager::apply_retention(&temp_dir, 2, None);
 
-        assert_eq!(result.total_managed_found, 3, "Only automatic backups are counted");
+        assert_eq!(
+            result.total_managed_found, 3,
+            "Only automatic backups are counted"
+        );
         assert_eq!(result.kept_count, 2);
         assert_eq!(result.deleted_paths.len(), 1);
 
         // Verify: Manual backup and checkpoint are completely untouched!
-        assert!(manual_path.exists(), "Manual backups must NEVER be deleted by automatic retention");
-        assert!(checkpoint_path.exists(), "Checkpoints must NEVER be deleted by automatic retention");
+        assert!(
+            manual_path.exists(),
+            "Manual backups must NEVER be deleted by automatic retention"
+        );
+        assert!(
+            checkpoint_path.exists(),
+            "Checkpoints must NEVER be deleted by automatic retention"
+        );
 
         // Auto backup 0 deleted, auto backups 1 and 2 kept
         assert!(!auto_paths[0].exists());
@@ -323,7 +345,8 @@ mod tests {
 
     #[test]
     fn test_retention_never_deletes_unrelated_files_or_arbitrary_data() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_retention_unrelated_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_retention_unrelated_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).expect("Create temp dir");
 
         // Create arbitrary user files
@@ -340,7 +363,8 @@ mod tests {
         {
             let f = fs::File::create(&foreign_zip).unwrap();
             let mut zip = ZipWriter::new(f);
-            zip.start_file("some_file.txt", SimpleFileOptions::default()).unwrap();
+            zip.start_file("some_file.txt", SimpleFileOptions::default())
+                .unwrap();
             zip.write_all(b"Hello").unwrap();
             zip.finish().unwrap();
         }
@@ -364,14 +388,20 @@ mod tests {
     fn test_retention_never_follows_symbolic_links() {
         use std::os::unix::fs::symlink;
 
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_retention_symlink_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_retention_symlink_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).expect("Create temp dir");
 
         // Target file in another directory
-        let target_dir = std::env::temp_dir().join(format!("pn_test_symlink_target_{}", Uuid::new_v4()));
+        let target_dir =
+            std::env::temp_dir().join(format!("pn_test_symlink_target_{}", Uuid::new_v4()));
         fs::create_dir_all(&target_dir).unwrap();
         let target_file = target_dir.join("target_backup.pnbackup");
-        create_mock_backup_archive(&target_file, BackupType::Automatic, Utc::now() - Duration::days(10));
+        create_mock_backup_archive(
+            &target_file,
+            BackupType::Automatic,
+            Utc::now() - Duration::days(10),
+        );
 
         // Create symlink inside the retention directory pointing to target_file
         let symlink_path = temp_dir.join("personal-notepad-auto-backup-symlink.pnbackup");
@@ -382,7 +412,10 @@ mod tests {
 
         // Symlink must be ignored, target file must NEVER be deleted
         assert_eq!(result.total_managed_found, 0);
-        assert!(target_file.exists(), "Target file pointed to by symlink must NEVER be touched");
+        assert!(
+            target_file.exists(),
+            "Target file pointed to by symlink must NEVER be touched"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
         let _ = fs::remove_dir_all(&target_dir);

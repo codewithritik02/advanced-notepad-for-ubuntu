@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection, Row};
 use crate::storage::errors::StorageError;
 use crate::storage::models::{Tag, UpdateTagDto};
+use rusqlite::{params, Connection, Row};
 
 pub struct TagRepository;
 
@@ -25,7 +25,8 @@ impl TagRepository {
 
     pub fn get_by_name(conn: &Connection, name: &str) -> Result<Option<Tag>, StorageError> {
         let trimmed = name.trim();
-        let mut stmt = conn.prepare("SELECT id, name, created_at FROM tags WHERE LOWER(name) = LOWER(?1)")?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, created_at FROM tags WHERE LOWER(name) = LOWER(?1)")?;
         let mut iter = stmt.query_map(params![trimmed], Self::map_row)?;
         if let Some(item) = iter.next() {
             Ok(Some(item?))
@@ -79,13 +80,14 @@ impl TagRepository {
             )));
         }
 
-        let rows_affected = conn.execute(
-            "UPDATE tags SET name = ?1 WHERE id = ?2",
-            params![name, id],
-        )?;
+        let rows_affected =
+            conn.execute("UPDATE tags SET name = ?1 WHERE id = ?2", params![name, id])?;
 
         if rows_affected == 0 {
-            return Err(StorageError::NotFound(format!("Tag with id '{}' not found", id)));
+            return Err(StorageError::NotFound(format!(
+                "Tag with id '{}' not found",
+                id
+            )));
         }
 
         Self::get_by_id(conn, id)?
@@ -111,7 +113,11 @@ impl TagRepository {
         Ok(tags)
     }
 
-    pub fn add_tag_to_note(conn: &Connection, note_id: &str, tag_id: &str) -> Result<(), StorageError> {
+    pub fn add_tag_to_note(
+        conn: &Connection,
+        note_id: &str,
+        tag_id: &str,
+    ) -> Result<(), StorageError> {
         conn.execute(
             "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             params![note_id, tag_id],
@@ -119,7 +125,11 @@ impl TagRepository {
         Ok(())
     }
 
-    pub fn remove_tag_from_note(conn: &Connection, note_id: &str, tag_id: &str) -> Result<(), StorageError> {
+    pub fn remove_tag_from_note(
+        conn: &Connection,
+        note_id: &str,
+        tag_id: &str,
+    ) -> Result<(), StorageError> {
         conn.execute(
             "DELETE FROM note_tags WHERE note_id = ?1 AND tag_id = ?2",
             params![note_id, tag_id],
@@ -194,7 +204,8 @@ impl TagRepository {
              ORDER BY t.name ASC",
         )?;
 
-        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -229,8 +240,12 @@ impl TagRepository {
         );
 
         let mut stmt = conn.prepare(&query)?;
-        let params: Vec<&dyn rusqlite::ToSql> = note_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        let params: Vec<&dyn rusqlite::ToSql> = note_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -266,7 +281,8 @@ mod tests {
         assert_eq!(tag1.name, "महत्वपूर्ण 📌");
 
         // 2. Duplicate tag resolution (case-insensitive) returns existing tag and preserves casing
-        let dup = TagRepository::create(&conn, "Personal").expect("Duplicate tag creation should return existing tag");
+        let dup = TagRepository::create(&conn, "Personal")
+            .expect("Duplicate tag creation should return existing tag");
         assert_eq!(dup.id, tag2.id);
         assert_eq!(dup.name, "personal");
 
@@ -278,7 +294,8 @@ mod tests {
                 content: Some("Testing note-tag relationship".to_string()),
                 ..Default::default()
             },
-        ).expect("Create note failed");
+        )
+        .expect("Create note failed");
 
         TagRepository::add_tag_to_note(&conn, &note.id, &tag1.id).expect("Link tag 1 failed");
         TagRepository::add_tag_to_note(&conn, &note.id, &tag2.id).expect("Link tag 2 failed");
@@ -289,7 +306,8 @@ mod tests {
 
         // 5. Remove one tag association
         TagRepository::remove_tag_from_note(&conn, &note.id, &tag2.id).expect("Remove tag failed");
-        let note_tags_after = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get tags failed");
+        let note_tags_after =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("Get tags failed");
         assert_eq!(note_tags_after.len(), 1);
         assert_eq!(note_tags_after[0].id, tag1.id);
 
@@ -302,7 +320,10 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("Count query failed");
-        assert_eq!(count, 0, "Deleting note must cascade and remove note_tags relations");
+        assert_eq!(
+            count, 0,
+            "Deleting note must cascade and remove note_tags relations"
+        );
 
         // 7. Get tag by ID
         let fetched = TagRepository::get_by_id(&conn, &tag1.id).expect("Get tag failed");
@@ -310,8 +331,14 @@ mod tests {
         assert_eq!(fetched.unwrap().name, "महत्वपूर्ण 📌");
 
         // 8. Update (rename) tag
-        let updated = TagRepository::update(&conn, &tag1.id, UpdateTagDto { name: "महत्वपूर्ण (अपडेटेड)".to_string() })
-            .expect("Update tag failed");
+        let updated = TagRepository::update(
+            &conn,
+            &tag1.id,
+            UpdateTagDto {
+                name: "महत्वपूर्ण (अपडेटेड)".to_string(),
+            },
+        )
+        .expect("Update tag failed");
         assert_eq!(updated.name, "महत्वपूर्ण (अपडेटेड)");
 
         // 9. Delete tag and ensure cascade from note_tags
@@ -321,7 +348,8 @@ mod tests {
                 title: Some("Note 2".to_string()),
                 ..Default::default()
             },
-        ).expect("Create note 2 failed");
+        )
+        .expect("Create note 2 failed");
         TagRepository::add_tag_to_note(&conn, &note2.id, &tag2.id).expect("Link tag 2 failed");
 
         let deleted = TagRepository::delete(&conn, &tag2.id).expect("Delete tag failed");
@@ -331,7 +359,10 @@ mod tests {
 
         // Note 2 still exists
         let note2_check = NoteRepository::get_by_id(&conn, &note2.id).expect("Get note 2 failed");
-        assert!(note2_check.is_some(), "Deleting a tag must not delete notes");
+        assert!(
+            note2_check.is_some(),
+            "Deleting a tag must not delete notes"
+        );
 
         // Clean up
         drop(conn);
@@ -340,7 +371,8 @@ mod tests {
 
     #[test]
     fn test_tag_validation() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_tag_val_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_tag_val_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -363,16 +395,37 @@ mod tests {
 
         // 4. Unicode support with emojis and international scripts within length limit
         let unicode_tag = "🚀 प्रोजेक्ट 2026";
-        let tag_unicode = TagRepository::create(&conn, unicode_tag).expect("Unicode tag should succeed");
+        let tag_unicode =
+            TagRepository::create(&conn, unicode_tag).expect("Unicode tag should succeed");
         assert_eq!(tag_unicode.name, unicode_tag);
 
         // 5. Validation on update
-        assert!(TagRepository::update(&conn, &tag.id, UpdateTagDto { name: "".to_string() }).is_err());
-        assert!(TagRepository::update(&conn, &tag.id, UpdateTagDto { name: "   ".to_string() }).is_err());
+        assert!(TagRepository::update(
+            &conn,
+            &tag.id,
+            UpdateTagDto {
+                name: "".to_string()
+            }
+        )
+        .is_err());
+        assert!(TagRepository::update(
+            &conn,
+            &tag.id,
+            UpdateTagDto {
+                name: "   ".to_string()
+            }
+        )
+        .is_err());
         assert!(TagRepository::update(&conn, &tag.id, UpdateTagDto { name: over_100 }).is_err());
 
-        let updated = TagRepository::update(&conn, &tag.id, UpdateTagDto { name: "  deep-work  ".to_string() })
-            .expect("Valid update with trimming should succeed");
+        let updated = TagRepository::update(
+            &conn,
+            &tag.id,
+            UpdateTagDto {
+                name: "  deep-work  ".to_string(),
+            },
+        )
+        .expect("Valid update with trimming should succeed");
         assert_eq!(updated.name, "deep-work");
 
         drop(conn);
@@ -381,7 +434,8 @@ mod tests {
 
     #[test]
     fn test_tag_case_insensitive_uniqueness_and_rename_conflict() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_tag_case_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_tag_case_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -409,12 +463,27 @@ mod tests {
         assert_eq!(p1.name, "Personal");
 
         // 5. Renaming "Personal" to "work" (conflicts with t1) should be rejected
-        let conflict = TagRepository::update(&conn, &p1.id, UpdateTagDto { name: "work".to_string() });
-        assert!(conflict.is_err(), "Renaming to existing tag name should return error");
+        let conflict = TagRepository::update(
+            &conn,
+            &p1.id,
+            UpdateTagDto {
+                name: "work".to_string(),
+            },
+        );
+        assert!(
+            conflict.is_err(),
+            "Renaming to existing tag name should return error"
+        );
 
         // 6. Renaming "Work" to "work" (changing its own casing) succeeds
-        let updated_case = TagRepository::update(&conn, &t1.id, UpdateTagDto { name: "work".to_string() })
-            .expect("Renaming own tag casing should succeed");
+        let updated_case = TagRepository::update(
+            &conn,
+            &t1.id,
+            UpdateTagDto {
+                name: "work".to_string(),
+            },
+        )
+        .expect("Renaming own tag casing should succeed");
         assert_eq!(updated_case.id, t1.id);
         assert_eq!(updated_case.name, "work");
 
@@ -424,7 +493,8 @@ mod tests {
 
     #[test]
     fn test_note_tag_assignment_and_batch_set() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_note_tags_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_note_tags_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -439,7 +509,8 @@ mod tests {
                 title: Some("Financial Report".to_string()),
                 ..Default::default()
             },
-        ).expect("Create note");
+        )
+        .expect("Create note");
 
         // 1. Add single tags
         TagRepository::add_tag_to_note(&conn, &note.id, &tag_a.id).expect("Add tag A");
@@ -460,8 +531,8 @@ mod tests {
         assert!(!tags2.iter().any(|t| t.id == tag_a.id));
 
         // 3. Batch clear tags (empty list)
-        let empty_tags = TagRepository::set_tags_for_note(&mut conn, &note.id, &[])
-            .expect("Batch clear tags");
+        let empty_tags =
+            TagRepository::set_tags_for_note(&mut conn, &note.id, &[]).expect("Batch clear tags");
         assert_eq!(empty_tags.len(), 0);
 
         drop(conn);
@@ -507,25 +578,32 @@ mod tests {
             UpdateTagDto {
                 name: "dev-ops".to_string(),
             },
-        ).expect("4. rename tag");
+        )
+        .expect("4. rename tag");
         assert_eq!(renamed.id, created.id);
         assert_eq!(renamed.name, "dev-ops");
 
-        let fetched_after_rename = TagRepository::get_by_id(&conn, &created.id).unwrap().unwrap();
+        let fetched_after_rename = TagRepository::get_by_id(&conn, &created.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(fetched_after_rename.name, "dev-ops");
 
         // 5. Delete tag
         let deleted = TagRepository::delete(&conn, &created.id).expect("5. delete tag");
         assert!(deleted, "First delete must return true");
 
-        let deleted_again = TagRepository::delete(&conn, &created.id).expect("delete already-deleted tag");
+        let deleted_again =
+            TagRepository::delete(&conn, &created.id).expect("delete already-deleted tag");
         assert!(!deleted_again, "Subsequent delete must return false");
 
-        assert!(TagRepository::get_by_id(&conn, &created.id).unwrap().is_none());
+        assert!(TagRepository::get_by_id(&conn, &created.id)
+            .unwrap()
+            .is_none());
 
         // 6. Duplicate tag handling (case-insensitive create returns existing, rename conflict errors)
         let dup_initial = TagRepository::create(&conn, "Research").expect("create Research");
-        let dup_recreate = TagRepository::create(&conn, "research").expect("6. duplicate create returns existing");
+        let dup_recreate =
+            TagRepository::create(&conn, "research").expect("6. duplicate create returns existing");
         assert_eq!(dup_recreate.id, dup_initial.id);
         assert_eq!(dup_recreate.name, "Research");
 
@@ -545,7 +623,9 @@ mod tests {
         // 7. Unicode tag (multi-byte Devanagari Hindi and emojis)
         let unicode = TagRepository::create(&conn, "यात्रा 🗺️").expect("7. Unicode tag");
         assert_eq!(unicode.name, "यात्रा 🗺️");
-        let unicode_fetched = TagRepository::get_by_name(&conn, "यात्रा 🗺️").unwrap().unwrap();
+        let unicode_fetched = TagRepository::get_by_name(&conn, "यात्रा 🗺️")
+            .unwrap()
+            .unwrap();
         assert_eq!(unicode_fetched.id, unicode.id);
 
         // 8. Empty tag validation
@@ -570,7 +650,9 @@ mod tests {
         let invalid_101: String = (0..101).map(|_| 'x').collect();
         let long_err = TagRepository::create(&conn, &invalid_101);
         match long_err {
-            Err(StorageError::Validation(msg)) => assert!(msg.contains("cannot exceed 100 characters")),
+            Err(StorageError::Validation(msg)) => {
+                assert!(msg.contains("cannot exceed 100 characters"))
+            }
             other => panic!("Expected ValidationError, got {:?}", other),
         }
 
@@ -592,7 +674,8 @@ mod tests {
                 content: Some("Testing note-tag relationship operations.".to_string()),
                 ..Default::default()
             },
-        ).expect("create note");
+        )
+        .expect("create note");
 
         let tag1 = TagRepository::create(&conn, "urgent").expect("create tag 1");
         let tag2 = TagRepository::create(&conn, "backend").expect("create tag 2");
@@ -606,19 +689,28 @@ mod tests {
         assert_eq!(initial_tags[0].id, tag1.id);
 
         // 2. Assign same tag twice (idempotent, no duplicates)
-        TagRepository::add_tag_to_note(&conn, &note.id, &tag1.id).expect("2. assign same tag twice");
-        let tags_after_duplicate = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after dup");
-        assert_eq!(tags_after_duplicate.len(), 1, "Duplicate assignment must not create duplicate row");
+        TagRepository::add_tag_to_note(&conn, &note.id, &tag1.id)
+            .expect("2. assign same tag twice");
+        let tags_after_duplicate =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after dup");
+        assert_eq!(
+            tags_after_duplicate.len(),
+            1,
+            "Duplicate assignment must not create duplicate row"
+        );
 
         // 3. Remove tag
         TagRepository::remove_tag_from_note(&conn, &note.id, &tag1.id).expect("3. remove tag");
-        let tags_after_remove = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after remove");
+        let tags_after_remove =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after remove");
         assert_eq!(tags_after_remove.len(), 0);
 
         // 4. Remove missing tag (safe no-op, returns Ok)
         let unlinked_tag = TagRepository::create(&conn, "unlinked").expect("create unlinked tag");
-        TagRepository::remove_tag_from_note(&conn, &note.id, &unlinked_tag.id).expect("4. remove missing tag");
-        let tags_after_missing = TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after missing");
+        TagRepository::remove_tag_from_note(&conn, &note.id, &unlinked_tag.id)
+            .expect("4. remove missing tag");
+        let tags_after_missing =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("get tags after missing");
         assert_eq!(tags_after_missing.len(), 0);
 
         // 5. Multiple tags (assign 4 tags, verify all 4 returned in alphabetical order)
@@ -627,7 +719,8 @@ mod tests {
         TagRepository::add_tag_to_note(&conn, &note.id, &tag3.id).expect("add tag 3");
         TagRepository::add_tag_to_note(&conn, &note.id, &tag4.id).expect("add tag 4");
 
-        let multi_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("5. multiple tags");
+        let multi_tags =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("5. multiple tags");
         assert_eq!(multi_tags.len(), 4);
         assert_eq!(multi_tags[0].name, "backend");
         assert_eq!(multi_tags[1].name, "performance");
@@ -638,19 +731,23 @@ mod tests {
         let deleted = TagRepository::delete(&conn, &tag3.id).expect("6. delete tag");
         assert!(deleted);
 
-        let tags_after_tag_delete = TagRepository::get_tags_for_note(&conn, &note.id).expect("tags after delete");
+        let tags_after_tag_delete =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("tags after delete");
         assert_eq!(tags_after_tag_delete.len(), 3);
         assert!(!tags_after_tag_delete.iter().any(|t| t.id == tag3.id));
 
         // 7. Note survives tag deletion
-        let note_check = NoteRepository::get_by_id(&conn, &note.id).expect("query note").expect("7. note must survive");
+        let note_check = NoteRepository::get_by_id(&conn, &note.id)
+            .expect("query note")
+            .expect("7. note must survive");
         assert_eq!(note_check.id, note.id);
         assert_eq!(note_check.title, "Task 60 Note");
-        assert_eq!(note_check.content, "Testing note-tag relationship operations.");
+        assert_eq!(
+            note_check.content,
+            "Testing note-tag relationship operations."
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-
-

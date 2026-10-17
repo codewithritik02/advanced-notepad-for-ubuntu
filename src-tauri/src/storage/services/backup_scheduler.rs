@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::storage::errors::BackupError;
 use crate::storage::models::{
@@ -191,12 +191,10 @@ impl BackupSchedulerService {
     }
 
     /// Persists the scheduler execution state into SQLite settings.
-    pub fn save_state(
-        conn: &Connection,
-        state: &BackupSchedulerState,
-    ) -> Result<(), BackupError> {
-        let serialized = serde_json::to_string_pretty(state)
-            .map_err(|e| BackupError::InvalidRequest(format!("Failed to serialize scheduler state: {e}")))?;
+    pub fn save_state(conn: &Connection, state: &BackupSchedulerState) -> Result<(), BackupError> {
+        let serialized = serde_json::to_string_pretty(state).map_err(|e| {
+            BackupError::InvalidRequest(format!("Failed to serialize scheduler state: {e}"))
+        })?;
 
         SettingsRepository::set(conn, BACKUP_SCHEDULER_STATE_KEY, &serialized)
             .map_err(|e| BackupError::DatabaseSnapshotFailed(e.to_string()))?;
@@ -353,9 +351,9 @@ impl BackupSchedulerService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
+    use chrono::Duration;
 
     #[test]
     fn test_scheduler_state_defaults_and_roundtrip_persistence() {
@@ -386,7 +384,8 @@ mod tests {
 
     #[test]
     fn test_check_and_run_backup_lifecycle() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_sched_run_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_sched_run_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
@@ -394,7 +393,13 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         // 1. Initial run on startup (backup_on_startup: true) -> runs backup
-        let result = BackupSchedulerService::check_and_run_backup(&conn, &paths, true, None::<fn(BackupProgressEvent)>).unwrap();
+        let result = BackupSchedulerService::check_and_run_backup(
+            &conn,
+            &paths,
+            true,
+            None::<fn(BackupProgressEvent)>,
+        )
+        .unwrap();
         assert!(result.is_some());
         let backup_info = result.unwrap();
         assert!(backup_info.verified);
@@ -406,7 +411,13 @@ mod tests {
         assert_eq!(state.failure_count, 0);
 
         // 2. Second rapid run on startup immediately after -> skipped (rapid restart protection!)
-        let result2 = BackupSchedulerService::check_and_run_backup(&conn, &paths, true, None::<fn(BackupProgressEvent)>).unwrap();
+        let result2 = BackupSchedulerService::check_and_run_backup(
+            &conn,
+            &paths,
+            true,
+            None::<fn(BackupProgressEvent)>,
+        )
+        .unwrap();
         assert!(result2.is_none());
 
         // Clean up
@@ -421,8 +432,12 @@ mod tests {
         let state = BackupSchedulerState::default();
         let now = Utc::now();
 
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state, now, true));
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state, now, false));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings, &state, now, true
+        ));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings, &state, now, false
+        ));
     }
 
     #[test]
@@ -434,11 +449,15 @@ mod tests {
         let now = Utc::now();
 
         // When backup_on_startup is true and no backup exists, it is due on startup
-        assert!(BackupSchedulerService::is_backup_due(&settings, &state, now, true));
+        assert!(BackupSchedulerService::is_backup_due(
+            &settings, &state, now, true
+        ));
 
         // When backup_on_startup is false and no backup exists, it is NOT due on startup
         settings.backup_on_startup = false;
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state, now, true));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings, &state, now, true
+        ));
     }
 
     #[test]
@@ -462,10 +481,14 @@ mod tests {
         };
 
         // On startup 10 minutes later, backup is NOT due despite backup_on_startup: true!
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state, now, true));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings, &state, now, true
+        ));
 
         // Routine check 10 minutes later is also NOT due
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state, now, false));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings, &state, now, false
+        ));
     }
 
     #[test]
@@ -489,8 +512,12 @@ mod tests {
         };
 
         // Both startup and routine checks recognize interval has elapsed
-        assert!(BackupSchedulerService::is_backup_due(&settings, &state, now, true));
-        assert!(BackupSchedulerService::is_backup_due(&settings, &state, now, false));
+        assert!(BackupSchedulerService::is_backup_due(
+            &settings, &state, now, true
+        ));
+        assert!(BackupSchedulerService::is_backup_due(
+            &settings, &state, now, false
+        ));
     }
 
     #[test]
@@ -513,7 +540,12 @@ mod tests {
             failure_count: 1,
             ..Default::default()
         };
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state_backoff, now, false));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings,
+            &state_backoff,
+            now,
+            false
+        ));
 
         // 2. Single failure 20 minutes ago: exceeded 15-minute backoff window -> retry is due
         let state_retriable = BackupSchedulerState {
@@ -523,7 +555,12 @@ mod tests {
             failure_count: 1,
             ..Default::default()
         };
-        assert!(BackupSchedulerService::is_backup_due(&settings, &state_retriable, now, false));
+        assert!(BackupSchedulerService::is_backup_due(
+            &settings,
+            &state_retriable,
+            now,
+            false
+        ));
 
         // 3. Max consecutive failures reached (5) -> paused, NOT due
         let state_max_failures = BackupSchedulerState {
@@ -533,7 +570,12 @@ mod tests {
             failure_count: MAX_CONSECUTIVE_FAILURES,
             ..Default::default()
         };
-        assert!(!BackupSchedulerService::is_backup_due(&settings, &state_max_failures, now, false));
+        assert!(!BackupSchedulerService::is_backup_due(
+            &settings,
+            &state_max_failures,
+            now,
+            false
+        ));
     }
 
     #[test]

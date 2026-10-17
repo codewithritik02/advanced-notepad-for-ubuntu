@@ -1,22 +1,22 @@
-use serde::Serialize;
-use tauri::State;
-use tauri_plugin_opener::OpenerExt;
 use crate::storage::{
     attachment_storage::AttachmentStorage,
     crypto::{CryptoSession, SecretBytes},
     errors::{AttachmentError, CryptoError, StorageError},
     models::{
-        AttachmentConsistencyReport, AttachmentMetadataDto, BacklinkItem, CreateNotebookDto, CreateNoteDto,
-        EmptyTrashResult, Note, Notebook, PermanentDeleteResult, ResolvedLinkTarget, SearchIndexDiagnostic,
-        SearchResult, Tag, TrashedNoteItem, UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
+        AttachmentConsistencyReport, AttachmentMetadataDto, BacklinkItem, CreateNoteDto,
+        CreateNotebookDto, EmptyTrashResult, Note, Notebook, PermanentDeleteResult,
+        ResolvedLinkTarget, SearchIndexDiagnostic, SearchResult, Tag, TrashedNoteItem,
+        UpdateNoteDto, UpdateNotebookDto, UpdateTagDto,
     },
     repositories::{
-        AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
-        TagRepository,
+        AttachmentRepository, NoteRepository, NotebookRepository, SettingsRepository, TagRepository,
     },
     services::{AttachmentService, InternalLinkService, SearchService, TrashService},
     Database, StoragePaths,
 };
+use serde::Serialize;
+use tauri::State;
+use tauri_plugin_opener::OpenerExt;
 
 fn get_active_dek(session: &CryptoSession) -> Result<Option<SecretBytes>, String> {
     match session.get_active_dek() {
@@ -46,7 +46,9 @@ pub fn get_storage_info(paths: State<'_, StoragePaths>) -> Result<StorageInfo, S
 }
 
 #[tauri::command]
-pub fn get_note_counts(db: State<'_, Database>) -> Result<crate::storage::models::NoteCountsDto, String> {
+pub fn get_note_counts(
+    db: State<'_, Database>,
+) -> Result<crate::storage::models::NoteCountsDto, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     NoteRepository::get_note_counts(&conn).map_err(|e| e.to_string())
 }
@@ -145,7 +147,8 @@ pub fn soft_delete_note(
 ) -> Result<Note, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    TrashService::soft_delete_with_key(&conn, &id, dek.as_ref()).map_err(|e| e.user_friendly_message())
+    TrashService::soft_delete_with_key(&conn, &id, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
@@ -192,7 +195,8 @@ pub fn list_trashed_notes(
 ) -> Result<Vec<TrashedNoteItem>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_trashed_items_with_key(&conn, dek.as_ref()).map_err(|e| e.user_friendly_message())
+    NoteRepository::list_trashed_items_with_key(&conn, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
 }
 
 #[tauri::command]
@@ -234,6 +238,31 @@ pub fn toggle_note_favorite(
 }
 
 #[tauri::command]
+pub fn set_note_pinned(
+    db: State<'_, Database>,
+    session: State<'_, CryptoSession>,
+    id: String,
+    is_pinned: bool,
+) -> Result<Note, String> {
+    let dek = get_active_dek(&session)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::set_pinned_with_key(&conn, &id, is_pinned, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn toggle_note_pinned(
+    db: State<'_, Database>,
+    session: State<'_, CryptoSession>,
+    id: String,
+) -> Result<Note, String> {
+    let dek = get_active_dek(&session)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::toggle_pinned_with_key(&conn, &id, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
 pub fn list_favorite_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
@@ -241,7 +270,8 @@ pub fn list_favorite_notes(
 ) -> Result<Vec<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_favorites_with_options(&conn, content_limit, dek.as_ref()).map_err(|e| e.to_string())
+    NoteRepository::list_favorites_with_options(&conn, content_limit, dek.as_ref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -300,11 +330,7 @@ pub fn create_tag(db: State<'_, Database>, name: String) -> Result<Tag, String> 
 }
 
 #[tauri::command]
-pub fn update_tag(
-    db: State<'_, Database>,
-    id: String,
-    dto: UpdateTagDto,
-) -> Result<Tag, String> {
+pub fn update_tag(db: State<'_, Database>, id: String, dto: UpdateTagDto) -> Result<Tag, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     TagRepository::update(&conn, &id, dto).map_err(|e| e.to_string())
 }
@@ -360,7 +386,8 @@ pub fn get_notes_for_tag(
 ) -> Result<Vec<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_by_tag_with_options(&conn, &tag_id, content_limit, dek.as_ref()).map_err(|e| e.to_string())
+    NoteRepository::list_by_tag_with_options(&conn, &tag_id, content_limit, dek.as_ref())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -400,10 +427,7 @@ pub fn get_note_metadata(
 }
 
 #[tauri::command]
-pub fn get_note_notebook_path(
-    db: State<'_, Database>,
-    note_id: String,
-) -> Result<String, String> {
+pub fn get_note_notebook_path(db: State<'_, Database>, note_id: String) -> Result<String, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     NoteRepository::get_notebook_path(&conn, &note_id).map_err(|e| e.to_string())
 }
@@ -415,11 +439,7 @@ pub fn get_setting(db: State<'_, Database>, key: String) -> Result<Option<String
 }
 
 #[tauri::command]
-pub fn set_setting(
-    db: State<'_, Database>,
-    key: String,
-    value: String,
-) -> Result<(), String> {
+pub fn set_setting(db: State<'_, Database>, key: String, value: String) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     SettingsRepository::set(&conn, &key, &value).map_err(|e| e.to_string())
 }
@@ -434,14 +454,19 @@ pub fn search_notes(
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, String> {
     let dek = get_active_dek(&session)?;
-    let conn = db.conn.lock().map_err(|_| "Unable to search notes.".to_string())?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Unable to search notes.".to_string())?;
     let search_res = match dek {
         Some(ref key) => SearchService::search_with_key(&conn, &query, limit, Some(key)),
         None => SearchService::search(&conn, &query, limit),
     };
     search_res.map_err(|e| match e {
         StorageError::Validation(msg) => msg,
-        StorageError::SearchError(_) | StorageError::Database(_) => "Unable to search notes.".to_string(),
+        StorageError::SearchError(_) | StorageError::Database(_) => {
+            "Unable to search notes.".to_string()
+        }
         other => other.user_friendly_message(),
     })
 }
@@ -452,7 +477,10 @@ pub fn diagnose_search_index(
     db: State<'_, Database>,
     _session: State<'_, CryptoSession>,
 ) -> Result<SearchIndexDiagnostic, String> {
-    let conn = db.conn.lock().map_err(|_| "Unable to diagnose search index.".to_string())?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Unable to diagnose search index.".to_string())?;
     SearchService::diagnose_index(&conn).map_err(|e| e.user_friendly_message())
 }
 
@@ -462,7 +490,10 @@ pub fn rebuild_search_index(
     db: State<'_, Database>,
     _session: State<'_, CryptoSession>,
 ) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|_| "Unable to rebuild search index.".to_string())?;
+    let conn = db
+        .conn
+        .lock()
+        .map_err(|_| "Unable to rebuild search index.".to_string())?;
     SearchService::rebuild_index(&conn).map_err(|e| e.user_friendly_message())
 }
 
@@ -494,8 +525,14 @@ pub fn add_attachment(
     let storage = AttachmentStorage::new((*paths).clone());
     let src = std::path::Path::new(trimmed_source);
 
-    let attachment = AttachmentService::add_attachment_with_key(&conn, &storage, trimmed_note_id, src, dek.as_ref())
-        .map_err(|e| e.user_friendly_message())?;
+    let attachment = AttachmentService::add_attachment_with_key(
+        &conn,
+        &storage,
+        trimmed_note_id,
+        src,
+        dek.as_ref(),
+    )
+    .map_err(|e| e.user_friendly_message())?;
 
     Ok(AttachmentMetadataDto::from(attachment))
 }
@@ -520,10 +557,14 @@ pub fn list_attachments(
         .lock()
         .map_err(|_| "Database connection is unavailable.".to_string())?;
 
-    let attachments = AttachmentService::list_attachments_with_key(&conn, trimmed_note_id, dek.as_ref())
-        .map_err(|e| e.user_friendly_message())?;
+    let attachments =
+        AttachmentService::list_attachments_with_key(&conn, trimmed_note_id, dek.as_ref())
+            .map_err(|e| e.user_friendly_message())?;
 
-    Ok(attachments.into_iter().map(AttachmentMetadataDto::from).collect())
+    Ok(attachments
+        .into_iter()
+        .map(AttachmentMetadataDto::from)
+        .collect())
 }
 
 /// Removes an attachment from a note and cleans up its managed file safely (Phase 7, Task 8; Phase 12, Task 10).
@@ -576,8 +617,13 @@ pub fn open_attachment(
         .map_err(|_| "Database connection is unavailable.".to_string())?;
     let storage = AttachmentStorage::new((*paths).clone());
 
-    let safe_path = AttachmentService::get_attachment_for_open_with_key(&conn, &storage, trimmed_id, dek.as_ref())
-        .map_err(|e| e.user_friendly_message())?;
+    let safe_path = AttachmentService::get_attachment_for_open_with_key(
+        &conn,
+        &storage,
+        trimmed_id,
+        dek.as_ref(),
+    )
+    .map_err(|e| e.user_friendly_message())?;
 
     app.opener()
         .open_path(safe_path.to_string_lossy(), None::<&str>)
@@ -588,10 +634,7 @@ pub fn open_attachment(
 
 /// Returns the number of attachments associated with a note (Phase 7, Task 19).
 #[tauri::command]
-pub fn get_attachment_count(
-    db: State<'_, Database>,
-    note_id: String,
-) -> Result<usize, String> {
+pub fn get_attachment_count(db: State<'_, Database>, note_id: String) -> Result<usize, String> {
     let trimmed_note_id = note_id.trim();
     if trimmed_note_id.is_empty() {
         return Ok(0);
@@ -618,8 +661,7 @@ pub fn check_attachment_consistency(
         .map_err(|_| "Database connection is unavailable.".to_string())?;
     let storage = AttachmentStorage::new((*paths).clone());
 
-    AttachmentService::check_consistency(&conn, &storage)
-        .map_err(|e| e.user_friendly_message())
+    AttachmentService::check_consistency(&conn, &storage).map_err(|e| e.user_friendly_message())
 }
 
 /// Cleans up abandoned temporary staging files left behind by interrupted operations (Phase 7, Task 21).
@@ -649,7 +691,9 @@ pub fn resolve_link_target(
         .map_err(|_| "Database connection is unavailable.".to_string())?;
 
     match dek {
-        Some(ref key) => InternalLinkService::resolve_link_target_with_key(&conn, &target_id, Some(key)),
+        Some(ref key) => {
+            InternalLinkService::resolve_link_target_with_key(&conn, &target_id, Some(key))
+        }
         None => InternalLinkService::resolve_link_target(&conn, &target_id),
     }
     .map_err(|e| e.user_friendly_message())
@@ -669,7 +713,9 @@ pub fn get_backlinks(
         .map_err(|_| "Database connection is unavailable.".to_string())?;
 
     match dek {
-        Some(ref key) => InternalLinkService::get_backlinks_with_key(&conn, &target_note_id, Some(key)),
+        Some(ref key) => {
+            InternalLinkService::get_backlinks_with_key(&conn, &target_note_id, Some(key))
+        }
         None => InternalLinkService::get_backlinks(&conn, &target_note_id),
     }
     .map_err(|e| e.user_friendly_message())
@@ -677,9 +723,7 @@ pub fn get_backlinks(
 
 /// Flushes committed SQLite WAL pages to disk and checkpoints the database (Phase 13, Task 19).
 #[tauri::command]
-pub fn flush_and_checkpoint_db(
-    db: State<'_, Database>,
-) -> Result<(), String> {
+pub fn flush_and_checkpoint_db(db: State<'_, Database>) -> Result<(), String> {
     let conn = db
         .conn
         .lock()
@@ -687,4 +731,3 @@ pub fn flush_and_checkpoint_db(
 
     crate::storage::database::checkpoint_wal(&conn).map_err(|e| e.user_friendly_message())
 }
-

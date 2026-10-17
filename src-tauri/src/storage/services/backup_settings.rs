@@ -1,6 +1,6 @@
+use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
-use rusqlite::Connection;
 
 use crate::storage::errors::BackupError;
 use crate::storage::models::BackupSettings;
@@ -33,15 +33,13 @@ impl BackupSettingsService {
             .map_err(|e| BackupError::DatabaseSnapshotFailed(e.to_string()))?;
 
         match stored_json {
-            Some(raw) => {
-                match serde_json::from_str::<BackupSettings>(&raw) {
-                    Ok(settings) => Ok(settings),
-                    Err(e) => {
-                        eprintln!("Warning: Malformed backup settings JSON in database: {e}. Falling back to default.");
-                        Ok(BackupSettings::default())
-                    }
+            Some(raw) => match serde_json::from_str::<BackupSettings>(&raw) {
+                Ok(settings) => Ok(settings),
+                Err(e) => {
+                    eprintln!("Warning: Malformed backup settings JSON in database: {e}. Falling back to default.");
+                    Ok(BackupSettings::default())
                 }
-            }
+            },
             None => Ok(BackupSettings::default()),
         }
     }
@@ -129,8 +127,9 @@ impl BackupSettingsService {
         }
 
         // 4. Persist serialized JSON
-        let serialized = serde_json::to_string_pretty(&settings)
-            .map_err(|e| BackupError::InvalidRequest(format!("Failed to serialize settings: {e}")))?;
+        let serialized = serde_json::to_string_pretty(&settings).map_err(|e| {
+            BackupError::InvalidRequest(format!("Failed to serialize settings: {e}"))
+        })?;
 
         SettingsRepository::set(conn, BACKUP_SETTINGS_KEY, &serialized)
             .map_err(|e| BackupError::DatabaseSnapshotFailed(e.to_string()))?;
@@ -148,10 +147,12 @@ impl BackupSettingsService {
                 Ok(())
             }
             Err(e) => match e.kind() {
-                std::io::ErrorKind::PermissionDenied => Err(BackupError::PermissionDenied(format!(
-                    "Directory '{}' is not writable: Permission denied.",
-                    dir.display()
-                ))),
+                std::io::ErrorKind::PermissionDenied => {
+                    Err(BackupError::PermissionDenied(format!(
+                        "Directory '{}' is not writable: Permission denied.",
+                        dir.display()
+                    )))
+                }
                 _ => Err(BackupError::Io(e)),
             },
         }
@@ -210,7 +211,8 @@ mod tests {
 
     #[test]
     fn test_task_10_backup_settings_validation_bounds() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_bsettings_bounds_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_bsettings_bounds_{}", Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection");
         run_migrations(&mut conn).expect("Run migrations");
@@ -229,21 +231,27 @@ mod tests {
             interval_minutes: 50_000,
             ..BackupSettings::default()
         };
-        assert!(BackupSettingsService::save_settings(&conn, &paths, invalid_high_interval).is_err());
+        assert!(
+            BackupSettingsService::save_settings(&conn, &paths, invalid_high_interval).is_err()
+        );
 
         // Retention below minimum (0 < 1)
         let invalid_low_retention = BackupSettings {
             retention_count: 0,
             ..BackupSettings::default()
         };
-        assert!(BackupSettingsService::save_settings(&conn, &paths, invalid_low_retention).is_err());
+        assert!(
+            BackupSettingsService::save_settings(&conn, &paths, invalid_low_retention).is_err()
+        );
 
         // Retention above maximum (51 > 50)
         let invalid_high_retention = BackupSettings {
             retention_count: 55,
             ..BackupSettings::default()
         };
-        assert!(BackupSettingsService::save_settings(&conn, &paths, invalid_high_retention).is_err());
+        assert!(
+            BackupSettingsService::save_settings(&conn, &paths, invalid_high_retention).is_err()
+        );
 
         // Clean up
         drop(conn);
@@ -252,7 +260,8 @@ mod tests {
 
     #[test]
     fn test_task_10_backup_settings_destination_safety_guards() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_bsettings_guards_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_bsettings_guards_{}", Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection");
         run_migrations(&mut conn).expect("Run migrations");

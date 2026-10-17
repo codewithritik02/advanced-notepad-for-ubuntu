@@ -31,7 +31,9 @@ pub fn derive_kek(password: &str, config: &KdfConfig) -> Result<SecretBytes, Cry
     let mut kek = [0u8; DEK_LEN_BYTES];
     argon2
         .hash_password_into(password.as_bytes(), &salt_bytes, &mut kek)
-        .map_err(|e| CryptoError::InvalidKdfConfig(format!("Argon2id key derivation failed: {e}")))?;
+        .map_err(|e| {
+            CryptoError::InvalidKdfConfig(format!("Argon2id key derivation failed: {e}"))
+        })?;
 
     Ok(SecretBytes::new(kek.to_vec()))
 }
@@ -169,11 +171,13 @@ mod tests {
         wrapped.validate().expect("Wrapped key should be valid");
 
         // 4. Unwrap DEK with correct password
-        let recovered_dek = unwrap_dek(&wrapped, &kek).expect("Unwrapping with correct KEK should succeed");
+        let recovered_dek =
+            unwrap_dek(&wrapped, &kek).expect("Unwrapping with correct KEK should succeed");
         assert_eq!(dek.as_slice(), recovered_dek.as_slice());
 
         // 5. Unwrap DEK with incorrect password -> MUST fail with AuthenticationFailed
-        let wrong_kek = derive_kek("WrongPassword123!", &config).expect("Derivation of wrong key succeeds");
+        let wrong_kek =
+            derive_kek("WrongPassword123!", &config).expect("Derivation of wrong key succeeds");
         let fail_res = unwrap_dek(&wrapped, &wrong_kek);
         assert_eq!(fail_res, Err(CryptoError::AuthenticationFailed));
 
@@ -181,7 +185,8 @@ mod tests {
         let mut tampered_wrapped = wrapped.clone();
         let mut tampered_tag = tampered_wrapped.tag_bytes().unwrap();
         tampered_tag[0] ^= 0xFF; // Flip bits in auth tag
-        tampered_wrapped.tag_base64 = base64::engine::general_purpose::STANDARD.encode(&tampered_tag);
+        tampered_wrapped.tag_base64 =
+            base64::engine::general_purpose::STANDARD.encode(&tampered_tag);
         let tamper_res = unwrap_dek(&tampered_wrapped, &kek);
         assert_eq!(tamper_res, Err(CryptoError::AuthenticationFailed));
     }

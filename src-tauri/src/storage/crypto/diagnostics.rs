@@ -1,10 +1,10 @@
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use chrono::Utc;
-use serde::{Deserialize, Serialize};
 
 use crate::storage::errors::CryptoError;
 
@@ -299,9 +299,15 @@ mod tests {
         }
 
         let entries = auditor.get_entries(300);
-        assert_eq!(entries.len(), MAX_AUDIT_LOGS, "Buffer must cap at MAX_AUDIT_LOGS");
+        assert_eq!(
+            entries.len(),
+            MAX_AUDIT_LOGS,
+            "Buffer must cap at MAX_AUDIT_LOGS"
+        );
         // Most recent should be unlock attempt (MAX_AUDIT_LOGS + 19)
-        assert!(entries[0].message.contains(&format!("Unlock attempt {}", MAX_AUDIT_LOGS + 19)));
+        assert!(entries[0]
+            .message
+            .contains(&format!("Unlock attempt {}", MAX_AUDIT_LOGS + 19)));
     }
 
     #[test]
@@ -322,17 +328,26 @@ mod tests {
         let auth_err = CryptoError::AuthenticationFailed;
         let (auth_class, auth_is_corrupt) = classify_crypto_failure(&auth_err);
         assert_eq!(auth_class, "credential_mismatch");
-        assert_eq!(auth_is_corrupt, false, "Auth failure must not be classified as corruption");
+        assert_eq!(
+            auth_is_corrupt, false,
+            "Auth failure must not be classified as corruption"
+        );
 
         let corrupt_err = CryptoError::TamperedOrCorrupted("Tag mismatch".to_string());
         let (corrupt_class, corrupt_is_corrupt) = classify_crypto_failure(&corrupt_err);
         assert_eq!(corrupt_class, "data_corruption_or_tampering");
-        assert_eq!(corrupt_is_corrupt, true, "Data tampering must be classified as corruption");
+        assert_eq!(
+            corrupt_is_corrupt, true,
+            "Data tampering must be classified as corruption"
+        );
 
         let meta_err = CryptoError::InvalidMetadata("Invalid JSON".to_string());
         let (meta_class, meta_is_corrupt) = classify_crypto_failure(&meta_err);
         assert_eq!(meta_class, "metadata_corruption");
-        assert_eq!(meta_is_corrupt, true, "Metadata error must be classified as corruption");
+        assert_eq!(
+            meta_is_corrupt, true,
+            "Metadata error must be classified as corruption"
+        );
     }
 
     #[test]

@@ -1,17 +1,16 @@
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::storage::errors::BackupError;
 use crate::storage::migrations::MIGRATIONS;
 use crate::storage::models::{
-    BackupAttachmentsSummary, BackupCompatibilityStatus, BackupDatabaseInfo,
-    BackupManifest, BackupScopeDeclaration, BackupType, BackupValidationIssue,
-    BackupValidationIssueSeverity, BackupValidationResult, BACKUP_FORMAT_IDENTIFIER,
-    CURRENT_BACKUP_FORMAT_VERSION,
+    BackupAttachmentsSummary, BackupCompatibilityStatus, BackupDatabaseInfo, BackupManifest,
+    BackupScopeDeclaration, BackupType, BackupValidationIssue, BackupValidationIssueSeverity,
+    BackupValidationResult, BACKUP_FORMAT_IDENTIFIER, CURRENT_BACKUP_FORMAT_VERSION,
 };
 use crate::storage::services::attachment_capture::CapturedAttachment;
 
@@ -282,7 +281,11 @@ impl ManifestManager {
             }
 
             // Schema version check
-            let max_supported_schema = MIGRATIONS.iter().map(|mig| mig.version).max().unwrap_or(CURRENT_APP_SCHEMA_VERSION);
+            let max_supported_schema = MIGRATIONS
+                .iter()
+                .map(|mig| mig.version)
+                .max()
+                .unwrap_or(CURRENT_APP_SCHEMA_VERSION);
             if m.database.schema_version > max_supported_schema {
                 issues.push(BackupValidationIssue {
                     severity: BackupValidationIssueSeverity::Error,
@@ -358,7 +361,8 @@ impl ManifestManager {
                     issues.push(BackupValidationIssue {
                         severity: BackupValidationIssueSeverity::Error,
                         code: "DATABASE_ENTRY_MISSING".to_string(),
-                        message: "Archive does not contain required 'database.sqlite' file.".to_string(),
+                        message: "Archive does not contain required 'database.sqlite' file."
+                            .to_string(),
                     });
                     compatibility = BackupCompatibilityStatus::Corrupted;
                 }
@@ -433,7 +437,9 @@ impl ManifestManager {
         }
 
         let is_valid = manifest.is_some()
-            && !issues.iter().any(|i| i.severity == BackupValidationIssueSeverity::Error);
+            && !issues
+                .iter()
+                .any(|i| i.severity == BackupValidationIssueSeverity::Error);
 
         Ok(BackupValidationResult {
             is_valid,
@@ -447,11 +453,11 @@ impl ManifestManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::models::BackupAttachmentItem;
     use std::io::Write;
+    use uuid::Uuid;
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
-    use uuid::Uuid;
-    use crate::storage::models::BackupAttachmentItem;
 
     #[test]
     fn test_task_7_manifest_generation_and_checksum_verification() {
@@ -523,31 +529,41 @@ mod tests {
         {
             let file = File::create(&archive_path).expect("Create archive");
             let mut zip = ZipWriter::new(file);
-            let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             // Add manifest.json
-            zip.start_file("manifest.json", options).expect("Add manifest.json");
+            zip.start_file("manifest.json", options)
+                .expect("Add manifest.json");
             let manifest_json = serde_json::to_vec_pretty(&manifest).expect("Serialize manifest");
             zip.write_all(&manifest_json).expect("Write manifest");
 
             // Add database.sqlite
-            zip.start_file("database.sqlite", options).expect("Add database.sqlite");
+            zip.start_file("database.sqlite", options)
+                .expect("Add database.sqlite");
             zip.write_all(db_bytes).expect("Write database");
 
             // Add attachment
-            zip.start_file(format!("attachments/{note_id}/test.png"), options).expect("Add attachment");
+            zip.start_file(format!("attachments/{note_id}/test.png"), options)
+                .expect("Add attachment");
             zip.write_all(att_bytes).expect("Write attachment");
 
             zip.finish().expect("Finish zip");
         }
 
         // 4. Validate valid archive
-        let valid_res = ManifestManager::validate_archive(&archive_path)
-            .expect("Validate valid archive");
+        let valid_res =
+            ManifestManager::validate_archive(&archive_path).expect("Validate valid archive");
 
         assert!(valid_res.is_valid, "Valid archive must pass validation");
-        assert_eq!(valid_res.compatibility, BackupCompatibilityStatus::Compatible);
-        assert!(valid_res.issues.is_empty(), "Valid archive should have no issues");
+        assert_eq!(
+            valid_res.compatibility,
+            BackupCompatibilityStatus::Compatible
+        );
+        assert!(
+            valid_res.issues.is_empty(),
+            "Valid archive should have no issues"
+        );
         assert!(valid_res.manifest.is_some());
 
         // 5. Test Corrupted Checksum Detection
@@ -555,15 +571,19 @@ mod tests {
         {
             let file = File::create(&corrupt_archive_path).expect("Create corrupt archive");
             let mut zip = ZipWriter::new(file);
-            let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-            zip.start_file("manifest.json", options).expect("Add manifest.json");
+            zip.start_file("manifest.json", options)
+                .expect("Add manifest.json");
             let manifest_json = serde_json::to_vec_pretty(&manifest).expect("Serialize manifest");
             zip.write_all(&manifest_json).expect("Write manifest");
 
             // Intentionally write altered database bytes
-            zip.start_file("database.sqlite", options).expect("Add database.sqlite");
-            zip.write_all(b"TAMPERED_DATABASE_BYTES").expect("Write corrupt database");
+            zip.start_file("database.sqlite", options)
+                .expect("Add database.sqlite");
+            zip.write_all(b"TAMPERED_DATABASE_BYTES")
+                .expect("Write corrupt database");
 
             zip.finish().expect("Finish zip");
         }
@@ -571,10 +591,19 @@ mod tests {
         let corrupt_res = ManifestManager::validate_archive(&corrupt_archive_path)
             .expect("Validate corrupt archive");
 
-        assert!(!corrupt_res.is_valid, "Tampered archive must fail validation");
-        assert_eq!(corrupt_res.compatibility, BackupCompatibilityStatus::Corrupted);
         assert!(
-            corrupt_res.issues.iter().any(|i| i.code == "DATABASE_CHECKSUM_MISMATCH"),
+            !corrupt_res.is_valid,
+            "Tampered archive must fail validation"
+        );
+        assert_eq!(
+            corrupt_res.compatibility,
+            BackupCompatibilityStatus::Corrupted
+        );
+        assert!(
+            corrupt_res
+                .issues
+                .iter()
+                .any(|i| i.code == "DATABASE_CHECKSUM_MISMATCH"),
             "Must report DATABASE_CHECKSUM_MISMATCH issue"
         );
 

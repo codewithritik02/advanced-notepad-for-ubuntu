@@ -1,9 +1,9 @@
+use rusqlite::Connection;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use rusqlite::Connection;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -160,7 +160,21 @@ impl RestoreService {
                 .unwrap_or_else(chrono::Utc::now)
                 .to_rfc3339();
 
-            (0, 0, 0, 0, 0, 0, false, fallback_mtime, BackupType::Manual, 0, 0, false, None)
+            (
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                false,
+                fallback_mtime,
+                BackupType::Manual,
+                0,
+                0,
+                false,
+                None,
+            )
         };
 
         // 3. Assemble disclosure warnings and issues
@@ -319,20 +333,24 @@ impl RestoreService {
         let write_archive = || -> Result<(), BackupError> {
             let archive_file = File::create(&temp_archive_path).map_err(BackupError::Io)?;
             let mut zip = ZipWriter::new(BufWriter::new(archive_file));
-            let options = SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             // manifest.json
-            zip.start_file("manifest.json", options)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to start manifest: {e}")))?;
-            let manifest_bytes = serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to serialize manifest: {e}")))?;
+            zip.start_file("manifest.json", options).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to start manifest: {e}"))
+            })?;
+            let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to serialize manifest: {e}"))
+            })?;
             zip.write_all(&manifest_bytes).map_err(BackupError::Io)?;
 
             // database.sqlite
-            zip.start_file("database.sqlite", options)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to start database: {e}")))?;
-            let mut db_file = BufReader::new(File::open(&temp_db_snapshot_path).map_err(BackupError::Io)?);
+            zip.start_file("database.sqlite", options).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to start database: {e}"))
+            })?;
+            let mut db_file =
+                BufReader::new(File::open(&temp_db_snapshot_path).map_err(BackupError::Io)?);
             let mut buffer = [0u8; 65536];
             loop {
                 let n = db_file.read(&mut buffer).map_err(BackupError::Io)?;
@@ -345,8 +363,13 @@ impl RestoreService {
             // attachments
             for captured in &captured_attachments {
                 zip.start_file(&captured.archive_entry_path, options)
-                    .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to add attachment entry: {e}")))?;
-                let mut att_file = BufReader::new(File::open(&captured.source_path).map_err(BackupError::Io)?);
+                    .map_err(|e| {
+                        BackupError::ArchiveWriteFailed(format!(
+                            "Failed to add attachment entry: {e}"
+                        ))
+                    })?;
+                let mut att_file =
+                    BufReader::new(File::open(&captured.source_path).map_err(BackupError::Io)?);
                 loop {
                     let n = att_file.read(&mut buffer).map_err(BackupError::Io)?;
                     if n == 0 {
@@ -356,8 +379,9 @@ impl RestoreService {
                 }
             }
 
-            zip.finish()
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to finalize checkpoint zip: {e}")))?;
+            zip.finish().map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to finalize checkpoint zip: {e}"))
+            })?;
             Ok(())
         };
 
@@ -653,17 +677,25 @@ impl RestoreService {
             ));
         }
 
-        paths.ensure_directories().map_err(|e| BackupError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?;
+        paths.ensure_directories().map_err(|e| {
+            BackupError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        })?;
 
         let staging_id = Uuid::new_v4().to_string();
-        let staging_dir = paths.backups_dir.join(format!(".restore_staging_{}", staging_id));
+        let staging_dir = paths
+            .backups_dir
+            .join(format!(".restore_staging_{}", staging_id));
         fs::create_dir_all(&staging_dir).map_err(BackupError::Io)?;
 
         // Safe extraction with fail-fast cleanup
         let extract_result = (|| -> Result<(u64, usize), BackupError> {
             let file = File::open(archive_path).map_err(BackupError::Io)?;
-            let mut archive = ZipArchive::new(file)
-                .map_err(|e| BackupError::ArchiveReadFailed(format!("Failed to open zip archive: {e}")))?;
+            let mut archive = ZipArchive::new(file).map_err(|e| {
+                BackupError::ArchiveReadFailed(format!("Failed to open zip archive: {e}"))
+            })?;
 
             if archive.len() > Self::MAX_RESTORE_ENTRY_COUNT {
                 return Err(BackupError::ArchiveReadFailed(format!(
@@ -679,7 +711,9 @@ impl RestoreService {
 
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i).map_err(|e| {
-                    BackupError::ArchiveReadFailed(format!("Failed to access archive entry index {i}: {e}"))
+                    BackupError::ArchiveReadFailed(format!(
+                        "Failed to access archive entry index {i}: {e}"
+                    ))
                 })?;
 
                 // Prohibit symbolic links
@@ -716,7 +750,8 @@ impl RestoreService {
                         fs::create_dir_all(parent).map_err(BackupError::Io)?;
                     }
 
-                    let mut out_file = BufWriter::new(File::create(&dest_path).map_err(BackupError::Io)?);
+                    let mut out_file =
+                        BufWriter::new(File::create(&dest_path).map_err(BackupError::Io)?);
                     let mut buffer = [0u8; 65536];
                     let mut file_decompressed: u64 = 0;
 
@@ -763,7 +798,12 @@ impl RestoreService {
         };
 
         // Independent verification of extracted staged data
-        match Self::validate_staged_data(&staging_dir, &staging_id, total_decompressed_bytes, total_extracted_files) {
+        match Self::validate_staged_data(
+            &staging_dir,
+            &staging_id,
+            total_decompressed_bytes,
+            total_extracted_files,
+        ) {
             Ok(summary) => Ok(summary),
             Err(e) => {
                 let _ = fs::remove_dir_all(&staging_dir);
@@ -790,8 +830,10 @@ impl RestoreService {
         let conn = rusqlite::Connection::open_with_flags(
             &staged_db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ).map_err(BackupError::Database)?;
-        conn.pragma_update(None, "query_only", "ON").map_err(BackupError::Database)?;
+        )
+        .map_err(BackupError::Database)?;
+        conn.pragma_update(None, "query_only", "ON")
+            .map_err(BackupError::Database)?;
 
         // PRAGMA integrity_check
         let integrity_res: String = conn
@@ -805,7 +847,9 @@ impl RestoreService {
 
         // PRAGMA foreign_key_check
         {
-            let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check;").map_err(BackupError::Database)?;
+            let mut fk_stmt = conn
+                .prepare("PRAGMA foreign_key_check;")
+                .map_err(BackupError::Database)?;
             let mut fk_rows = fk_stmt.query([]).map_err(BackupError::Database)?;
             if fk_rows.next().map_err(BackupError::Database)?.is_some() {
                 return Err(BackupError::ValidationFailed(
@@ -815,7 +859,14 @@ impl RestoreService {
         }
 
         // Verify core required tables
-        let required_tables = ["notes", "notebooks", "tags", "note_tags", "attachments", "_migrations"];
+        let required_tables = [
+            "notes",
+            "notebooks",
+            "tags",
+            "note_tags",
+            "attachments",
+            "_migrations",
+        ];
         for table in required_tables {
             let count: i64 = conn
                 .query_row(
@@ -840,10 +891,14 @@ impl RestoreService {
             .unwrap_or(0);
 
         let note_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let trash_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let notebook_count: usize = conn
             .query_row("SELECT COUNT(1) FROM notebooks", [], |r| r.get::<_, i64>(0))
@@ -852,7 +907,9 @@ impl RestoreService {
             .query_row("SELECT COUNT(1) FROM tags", [], |r| r.get::<_, i64>(0))
             .unwrap_or(0) as usize;
         let attachment_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM attachments", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM attachments", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
 
         drop(conn);
@@ -863,8 +920,12 @@ impl RestoreService {
 
         if manifest_present {
             let manifest_bytes = fs::read(&manifest_path).map_err(BackupError::Io)?;
-            let manifest: BackupManifest = serde_json::from_slice(&manifest_bytes)
-                .map_err(|e| BackupError::ManifestInvalid(format!("Failed to parse staged manifest.json: {e}")))?;
+            let manifest: BackupManifest =
+                serde_json::from_slice(&manifest_bytes).map_err(|e| {
+                    BackupError::ManifestInvalid(format!(
+                        "Failed to parse staged manifest.json: {e}"
+                    ))
+                })?;
 
             let (db_sha256, _) = compute_file_sha256(&staged_db_path)?;
             if db_sha256 != manifest.database.sha256 {
@@ -884,7 +945,9 @@ impl RestoreService {
                 };
                 let att_path = staging_dir.join(&staged_rel);
                 if !att_path.exists() {
-                    return Err(BackupError::RequiredAttachmentMissing(item.file_name.clone()));
+                    return Err(BackupError::RequiredAttachmentMissing(
+                        item.file_name.clone(),
+                    ));
                 }
 
                 let (att_sha256, att_size) = compute_file_sha256(&att_path)?;
@@ -926,7 +989,8 @@ impl RestoreService {
             .unwrap_or("");
         if !dir_name.starts_with(".restore_staging_") {
             return Err(BackupError::InvalidRequest(
-                "Refusing to remove directory that is not a designated restore staging folder".to_string(),
+                "Refusing to remove directory that is not a designated restore staging folder"
+                    .to_string(),
             ));
         }
 
@@ -962,9 +1026,7 @@ impl RestoreService {
     }
 
     /// Removes any abandoned or orphaned restore staging directories found in the backups root (Task 17).
-    pub fn cleanup_stale_staging_directories(
-        paths: &StoragePaths,
-    ) -> Result<usize, BackupError> {
+    pub fn cleanup_stale_staging_directories(paths: &StoragePaths) -> Result<usize, BackupError> {
         if !paths.backups_dir.exists() || !paths.backups_dir.is_dir() {
             return Ok(0);
         }
@@ -1030,12 +1092,14 @@ impl RestoreService {
         let staged_db_str = staged_db_path.to_string_lossy().to_string();
         if staged_db_str == live_db_str {
             return Err(BackupError::RestoreFailed(
-                "Safety guard: attempted to run staging migration on live database file.".to_string(),
+                "Safety guard: attempted to run staging migration on live database file."
+                    .to_string(),
             ));
         }
 
         let mut conn = Connection::open(&staged_db_path).map_err(BackupError::Database)?;
-        conn.pragma_update(None, "foreign_keys", "ON").map_err(BackupError::Database)?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(BackupError::Database)?;
 
         let previous_schema_version: i32 = conn
             .query_row(
@@ -1066,10 +1130,14 @@ impl RestoreService {
         if previous_schema_version == CURRENT_APP_SCHEMA_VERSION {
             // Already at latest schema version
             let note_count: usize = conn
-                .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get::<_, i64>(0))
+                .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .unwrap_or(0) as usize;
             let trash_count: usize = conn
-                .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| r.get::<_, i64>(0))
+                .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .unwrap_or(0) as usize;
             let notebook_count: usize = conn
                 .query_row("SELECT COUNT(1) FROM notebooks", [], |r| r.get::<_, i64>(0))
@@ -1078,7 +1146,9 @@ impl RestoreService {
                 .query_row("SELECT COUNT(1) FROM tags", [], |r| r.get::<_, i64>(0))
                 .unwrap_or(0) as usize;
             let attachment_count: usize = conn
-                .query_row("SELECT COUNT(1) FROM attachments", [], |r| r.get::<_, i64>(0))
+                .query_row("SELECT COUNT(1) FROM attachments", [], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .unwrap_or(0) as usize;
 
             let staging_id = dir_name.trim_start_matches(".restore_staging_").to_string();
@@ -1136,7 +1206,9 @@ impl RestoreService {
         }
 
         {
-            let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check;").map_err(BackupError::Database)?;
+            let mut fk_stmt = conn
+                .prepare("PRAGMA foreign_key_check;")
+                .map_err(BackupError::Database)?;
             let mut fk_rows = fk_stmt.query([]).map_err(BackupError::Database)?;
             if fk_rows.next().map_err(BackupError::Database)?.is_some() {
                 drop(fk_rows);
@@ -1150,10 +1222,14 @@ impl RestoreService {
         }
 
         let note_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let trash_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let notebook_count: usize = conn
             .query_row("SELECT COUNT(1) FROM notebooks", [], |r| r.get::<_, i64>(0))
@@ -1162,7 +1238,9 @@ impl RestoreService {
             .query_row("SELECT COUNT(1) FROM tags", [], |r| r.get::<_, i64>(0))
             .unwrap_or(0) as usize;
         let attachment_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM attachments", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM attachments", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
 
         let migrations_applied = (migrated_schema_version - previous_schema_version) as usize;
@@ -1189,8 +1267,9 @@ impl RestoreService {
         paths: &StoragePaths,
     ) -> Result<(), BackupError> {
         let marker_path = paths.restore_marker_file();
-        let json_bytes = serde_json::to_vec_pretty(marker)
-            .map_err(|e| BackupError::RestoreFailed(format!("Failed to serialize restore marker: {e}")))?;
+        let json_bytes = serde_json::to_vec_pretty(marker).map_err(|e| {
+            BackupError::RestoreFailed(format!("Failed to serialize restore marker: {e}"))
+        })?;
         fs::write(&marker_path, json_bytes).map_err(BackupError::Io)?;
         Ok(())
     }
@@ -1204,8 +1283,9 @@ impl RestoreService {
             return Ok(None);
         }
         let bytes = fs::read(&marker_path).map_err(BackupError::Io)?;
-        let marker = serde_json::from_slice(&bytes)
-            .map_err(|e| BackupError::RestoreFailed(format!("Failed to parse restore marker: {e}")))?;
+        let marker = serde_json::from_slice(&bytes).map_err(|e| {
+            BackupError::RestoreFailed(format!("Failed to parse restore marker: {e}"))
+        })?;
         Ok(Some(marker))
     }
 
@@ -1329,7 +1409,9 @@ impl RestoreService {
 
         // 2. PRAGMA foreign_key_check
         {
-            let mut fk_stmt = conn.prepare("PRAGMA foreign_key_check;").map_err(BackupError::Database)?;
+            let mut fk_stmt = conn
+                .prepare("PRAGMA foreign_key_check;")
+                .map_err(BackupError::Database)?;
             let mut fk_rows = fk_stmt.query([]).map_err(BackupError::Database)?;
             if fk_rows.next().map_err(BackupError::Database)?.is_some() {
                 return Err(BackupError::PostRestoreValidationFailed(
@@ -1339,7 +1421,15 @@ impl RestoreService {
         }
 
         // 3. Required tables
-        let required_tables = ["notes", "notebooks", "tags", "note_tags", "attachments", "settings", "_migrations"];
+        let required_tables = [
+            "notes",
+            "notebooks",
+            "tags",
+            "note_tags",
+            "attachments",
+            "settings",
+            "_migrations",
+        ];
         for table in required_tables {
             let count: i64 = conn
                 .query_row(
@@ -1371,10 +1461,14 @@ impl RestoreService {
 
         // 5. Query counts & verify records can be read
         let note_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 0", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let trash_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
         let notebook_count: usize = conn
             .query_row("SELECT COUNT(1) FROM notebooks", [], |r| r.get::<_, i64>(0))
@@ -1383,7 +1477,9 @@ impl RestoreService {
             .query_row("SELECT COUNT(1) FROM tags", [], |r| r.get::<_, i64>(0))
             .unwrap_or(0) as usize;
         let attachment_count: usize = conn
-            .query_row("SELECT COUNT(1) FROM attachments", [], |r| r.get::<_, i64>(0))
+            .query_row("SELECT COUNT(1) FROM attachments", [], |r| {
+                r.get::<_, i64>(0)
+            })
             .unwrap_or(0) as usize;
 
         // Verify notes and trash records can be read
@@ -1407,7 +1503,13 @@ impl RestoreService {
                 .prepare("SELECT note_id, file_name, relative_path FROM attachments")
                 .map_err(BackupError::Database)?;
             let att_rows = att_stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
                 .map_err(BackupError::Database)?;
             for item in att_rows {
                 let (note_id, file_name, relative_path) = item.map_err(BackupError::Database)?;
@@ -1431,9 +1533,9 @@ impl RestoreService {
 
         // 7. Verify internal-link source content remains intact
         {
-            let mut link_stmt = conn.prepare(
-                "SELECT id, content FROM notes WHERE content LIKE '%notepad://note/%'"
-            ).map_err(BackupError::Database)?;
+            let mut link_stmt = conn
+                .prepare("SELECT id, content FROM notes WHERE content LIKE '%notepad://note/%'")
+                .map_err(BackupError::Database)?;
             let mut link_rows = link_stmt.query([]).map_err(BackupError::Database)?;
             while let Some(row) = link_rows.next().map_err(BackupError::Database)? {
                 let note_id: String = row.get(0).map_err(BackupError::Database)?;
@@ -1453,7 +1555,9 @@ impl RestoreService {
 
         // 8. Verify application settings table can be read
         {
-            let mut settings_stmt = conn.prepare("SELECT key, value FROM settings").map_err(BackupError::Database)?;
+            let mut settings_stmt = conn
+                .prepare("SELECT key, value FROM settings")
+                .map_err(BackupError::Database)?;
             let mut settings_rows = settings_stmt.query([]).map_err(BackupError::Database)?;
             while let Some(_row) = settings_rows.next().map_err(BackupError::Database)? {
                 // Settings rows read cleanly
@@ -1465,13 +1569,11 @@ impl RestoreService {
             BackupError::PostRestoreValidationFailed(format!("Failed to rebuild search index: {e}"))
         })?;
 
-        let is_encrypted = crate::storage::repositories::SearchRepository::is_encryption_enabled(conn);
+        let is_encrypted =
+            crate::storage::repositories::SearchRepository::is_encryption_enabled(conn);
         if !is_encrypted {
-            let fts_check: Result<i64, _> = conn.query_row(
-                "SELECT COUNT(1) FROM notes_fts",
-                [],
-                |r| r.get(0),
-            );
+            let fts_check: Result<i64, _> =
+                conn.query_row("SELECT COUNT(1) FROM notes_fts", [], |r| r.get(0));
             if let Err(e) = fts_check {
                 return Err(BackupError::PostRestoreValidationFailed(format!(
                     "FTS5 full-text index query check failed after rebuild: {e}"
@@ -1613,7 +1715,12 @@ impl RestoreService {
         // Validate candidate archive
         let val_res = BackupValidationService::validate_backup(candidate_path, paths)?;
         if !val_res.is_valid {
-            let issues_summary = val_res.issues.iter().map(|i| i.message.clone()).collect::<Vec<_>>().join("; ");
+            let issues_summary = val_res
+                .issues
+                .iter()
+                .map(|i| i.message.clone())
+                .collect::<Vec<_>>()
+                .join("; ");
             if let Some(ref mut cb) = progress_cb {
                 cb(BackupProgressEvent {
                     stage: BackupProgressStage::FailedWithRecoveryAvailable,
@@ -1695,7 +1802,8 @@ impl RestoreService {
         if let Some(ref mut cb) = progress_cb {
             cb(BackupProgressEvent {
                 stage: BackupProgressStage::CheckingDatabaseIntegrity,
-                message: "Checking database integrity and migrating schema if required...".to_string(),
+                message: "Checking database integrity and migrating schema if required..."
+                    .to_string(),
                 current_item: None,
                 total_items: None,
                 percentage: Some(40.0),
@@ -1704,7 +1812,8 @@ impl RestoreService {
             });
             cb(BackupProgressEvent {
                 stage: BackupProgressStage::ValidatingStagedData,
-                message: "Checking schema compatibility and migrating staged database...".to_string(),
+                message: "Checking schema compatibility and migrating staged database..."
+                    .to_string(),
                 current_item: None,
                 total_items: None,
                 percentage: Some(40.0),
@@ -1855,7 +1964,8 @@ impl RestoreService {
         if let Some(ref mut cb) = progress_cb {
             cb(BackupProgressEvent {
                 stage: BackupProgressStage::PreparingActivation,
-                message: "Preparing activation (cancellation locked to protect data integrity)...".to_string(),
+                message: "Preparing activation (cancellation locked to protect data integrity)..."
+                    .to_string(),
                 current_item: None,
                 total_items: None,
                 percentage: Some(70.0),
@@ -1865,8 +1975,12 @@ impl RestoreService {
         }
 
         let live_db_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite"));
-        let live_wal_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite-wal"));
-        let live_shm_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite-shm"));
+        let live_wal_backup = paths
+            .root
+            .join(format!(".db_pre_restore_{op_id}.sqlite-wal"));
+        let live_shm_backup = paths
+            .root
+            .join(format!(".db_pre_restore_{op_id}.sqlite-shm"));
         let live_att_backup = paths.root.join(format!(".att_pre_restore_{op_id}"));
 
         let mut marker = RestoreActivationMarker {
@@ -1917,7 +2031,9 @@ impl RestoreService {
 
             let staged_db = staging_dir.join("database.sqlite");
             if !staged_db.exists() {
-                return Err(BackupError::RestoreFailed("Staged database file missing before swap".to_string()));
+                return Err(BackupError::RestoreFailed(
+                    "Staged database file missing before swap".to_string(),
+                ));
             }
             fs::rename(&staged_db, &paths.database_file).map_err(BackupError::Io)?;
 
@@ -2035,7 +2151,8 @@ impl RestoreService {
         if let Some(ref mut cb) = progress_cb {
             cb(BackupProgressEvent {
                 stage: BackupProgressStage::VerifyingRestoredState,
-                message: "Verifying restored state and reinitializing search indexes...".to_string(),
+                message: "Verifying restored state and reinitializing search indexes..."
+                    .to_string(),
                 current_item: None,
                 total_items: None,
                 percentage: Some(85.0),
@@ -2171,7 +2288,10 @@ impl RestoreService {
             RestoreActivationPhase::Initiated | RestoreActivationPhase::CheckpointCreated => {
                 let _ = Self::cleanup_staged_restore(&PathBuf::from(&marker.staging_dir), paths);
                 let _ = fs::remove_file(&marker_path);
-                Ok(Some("Cleaned up interrupted restore initiated prior to file modification.".to_string()))
+                Ok(Some(
+                    "Cleaned up interrupted restore initiated prior to file modification."
+                        .to_string(),
+                ))
             }
             RestoreActivationPhase::FilesSwapped
             | RestoreActivationPhase::PostVerificationStarted
@@ -2210,7 +2330,8 @@ impl RestoreService {
                         let _ = fs::create_dir_all(&paths.attachments_dir);
                     }
 
-                    let _ = Self::cleanup_staged_restore(&PathBuf::from(&marker.staging_dir), paths);
+                    let _ =
+                        Self::cleanup_staged_restore(&PathBuf::from(&marker.staging_dir), paths);
                     let _ = fs::remove_file(&marker_path);
                     Ok(Some("Recovered application state from pre-restore backup files after interrupted restore.".to_string()))
                 } else {
@@ -2226,16 +2347,21 @@ impl RestoreService {
                         }
                         let staged_db = staged_dir.join("database.sqlite");
                         if staged_db.exists() {
-                            fs::rename(&staged_db, &paths.database_file).map_err(BackupError::Io)?;
+                            fs::rename(&staged_db, &paths.database_file)
+                                .map_err(BackupError::Io)?;
                         }
                         let staged_att = staged_dir.join("attachments");
                         if staged_att.exists() {
-                            fs::rename(&staged_att, &paths.attachments_dir).map_err(BackupError::Io)?;
+                            fs::rename(&staged_att, &paths.attachments_dir)
+                                .map_err(BackupError::Io)?;
                         } else {
                             let _ = fs::create_dir_all(&paths.attachments_dir);
                         }
                         let _ = Self::cleanup_staged_restore(&staged_dir, paths);
-                        let _ = Self::cleanup_staged_restore(&PathBuf::from(&marker.staging_dir), paths);
+                        let _ = Self::cleanup_staged_restore(
+                            &PathBuf::from(&marker.staging_dir),
+                            paths,
+                        );
                         let _ = Self::remove_activation_marker(paths);
                         Ok(Some("Recovered application state from recovery checkpoint archive after interrupted restore.".to_string()))
                     } else {
@@ -2253,7 +2379,6 @@ impl RestoreService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
     use crate::storage::models::{BackupCreateRequest, CreateNoteDto, CreateNotebookDto};
@@ -2261,6 +2386,7 @@ mod tests {
     use crate::storage::repositories::notes::NoteRepository;
     use crate::storage::repositories::tags::TagRepository;
     use crate::storage::services::backup::BackupService;
+    use uuid::Uuid;
 
     #[test]
     fn test_task_15_preview_restore_valid_archive() {
@@ -2282,7 +2408,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let _n2 = NoteRepository::create(
             &conn,
@@ -2294,7 +2421,8 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create backup
         let backup_res = BackupService::create_backup(
@@ -2306,7 +2434,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(_)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         let archive_path = Path::new(&backup_res.file_path);
 
@@ -2318,16 +2447,22 @@ mod tests {
         assert_eq!(preview.compatibility, BackupCompatibilityStatus::Compatible);
         assert_eq!(preview.file_name, backup_res.file_name);
         assert!(preview.file_size > 0);
-        assert!(preview.warnings.is_empty(), "Healthy backup should have no warnings");
+        assert!(
+            preview.warnings.is_empty(),
+            "Healthy backup should have no warnings"
+        );
 
         // Invariant: live database remains unchanged
-        let note_count_live: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+        let note_count_live: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(note_count_live, 2);
     }
 
     #[test]
     fn test_task_15_preview_restore_corrupted_archive_blocks_restore() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_prev_corrupt_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_prev_corrupt_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -2336,14 +2471,21 @@ mod tests {
 
         let preview = RestoreService::preview_restore(&corrupt_path, &paths).unwrap();
 
-        assert!(!preview.can_restore, "Corrupt backup must NOT be restorable");
+        assert!(
+            !preview.can_restore,
+            "Corrupt backup must NOT be restorable"
+        );
         assert_eq!(preview.compatibility, BackupCompatibilityStatus::Corrupted);
-        assert!(!preview.warnings.is_empty(), "Corrupt backup must list errors in warnings");
+        assert!(
+            !preview.warnings.is_empty(),
+            "Corrupt backup must list errors in warnings"
+        );
     }
 
     #[test]
     fn test_task_15_preview_restore_rejects_active_database() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_prev_activedb_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_prev_activedb_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -2374,7 +2516,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let _n2 = NoteRepository::create(
             &conn,
@@ -2386,7 +2529,8 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Create pre-restore recovery checkpoint
         let checkpoint = RestoreService::create_recovery_checkpoint(&conn, &paths).unwrap();
@@ -2395,17 +2539,30 @@ mod tests {
         assert_eq!(checkpoint.note_count, 2);
         assert_eq!(checkpoint.schema_version, 4);
         assert!(checkpoint.file_size > 0);
-        assert!(Path::new(&checkpoint.file_path).exists(), "Checkpoint file must exist on disk");
-        assert!(checkpoint.file_path.contains("checkpoints"), "Must be stored in checkpoints directory");
+        assert!(
+            Path::new(&checkpoint.file_path).exists(),
+            "Checkpoint file must exist on disk"
+        );
+        assert!(
+            checkpoint.file_path.contains("checkpoints"),
+            "Must be stored in checkpoints directory"
+        );
 
         // 3. Independently validate the checkpoint
-        let val = RestoreService::validate_recovery_checkpoint(Path::new(&checkpoint.file_path), &paths).unwrap();
+        let val =
+            RestoreService::validate_recovery_checkpoint(Path::new(&checkpoint.file_path), &paths)
+                .unwrap();
         assert!(val.is_valid, "Checkpoint must pass independent validation");
         assert_eq!(val.compatibility, BackupCompatibilityStatus::Compatible);
 
         // 4. Invariant: Live database was not modified or corrupted
-        let live_notes: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
-        assert_eq!(live_notes, 2, "Live database must remain completely unchanged");
+        let live_notes: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            live_notes, 2,
+            "Live database must remain completely unchanged"
+        );
 
         // 5. Check listing and latest
         let checkpoints_list = RestoreService::list_recovery_checkpoints(&paths).unwrap();
@@ -2436,7 +2593,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create first checkpoint
         let chk1 = RestoreService::create_recovery_checkpoint(&conn, &paths).unwrap();
@@ -2444,11 +2602,21 @@ mod tests {
         // Create a file with same name to force collision resolution
         let chk2 = RestoreService::create_recovery_checkpoint(&conn, &paths).unwrap();
 
-        assert!(Path::new(&chk1.file_path).exists(), "First checkpoint must still exist");
-        assert!(Path::new(&chk2.file_path).exists(), "Second checkpoint must exist");
+        assert!(
+            Path::new(&chk1.file_path).exists(),
+            "First checkpoint must still exist"
+        );
+        assert!(
+            Path::new(&chk2.file_path).exists(),
+            "Second checkpoint must exist"
+        );
 
         let list = RestoreService::list_recovery_checkpoints(&paths).unwrap();
-        assert_eq!(list.len(), 2, "Both checkpoints must exist without overwriting");
+        assert_eq!(
+            list.len(),
+            2,
+            "Both checkpoints must exist without overwriting"
+        );
     }
 
     #[test]
@@ -2467,7 +2635,11 @@ mod tests {
         }
 
         let deleted = RestoreService::prune_excess_checkpoints(&checkpoints_dir, 5).unwrap();
-        assert_eq!(deleted.len(), 3, "Must prune 3 oldest checkpoints to retain 5");
+        assert_eq!(
+            deleted.len(),
+            3,
+            "Must prune 3 oldest checkpoints to retain 5"
+        );
 
         let remaining = fs::read_dir(&checkpoints_dir)
             .unwrap()
@@ -2496,17 +2668,24 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(true),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Remove checkpoints_dir and replace with a regular file to cause checkpoint creation to fail safely
         let _ = fs::remove_dir_all(paths.checkpoints_dir());
-        fs::write(paths.checkpoints_dir(), b"blocking file preventing directory creation").unwrap();
+        fs::write(
+            paths.checkpoints_dir(),
+            b"blocking file preventing directory creation",
+        )
+        .unwrap();
 
         let res = RestoreService::create_recovery_checkpoint(&conn, &paths);
         assert!(res.is_err(), "Must fail when checkpoint creation fails");
 
         // Live data must remain 100% intact
-        let live_notes: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+        let live_notes: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(live_notes, 1, "Live database notes must remain unchanged");
     }
 
@@ -2561,7 +2740,8 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let backup_res = BackupService::create_backup(
             &conn,
@@ -2572,7 +2752,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(_)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         let archive_path = Path::new(&backup_res.file_path);
 
@@ -2583,17 +2764,28 @@ mod tests {
         assert!(staged.manifest_present);
         assert!(staged.total_extracted_files >= 2); // database.sqlite + manifest.json
         assert!(staged.total_extracted_bytes > 0);
-        assert!(Path::new(&staged.staging_dir).exists(), "Staging dir must exist");
-        assert!(Path::new(&staged.database_path).exists(), "Staged database must exist");
+        assert!(
+            Path::new(&staged.staging_dir).exists(),
+            "Staging dir must exist"
+        );
+        assert!(
+            Path::new(&staged.database_path).exists(),
+            "Staged database must exist"
+        );
 
         // 2. Cleanup staging directory
         let staging_path = Path::new(&staged.staging_dir);
         let cleaned = RestoreService::cleanup_staged_restore(staging_path, &paths).unwrap();
         assert!(cleaned);
-        assert!(!staging_path.exists(), "Staging directory must be removed after cleanup");
+        assert!(
+            !staging_path.exists(),
+            "Staging directory must be removed after cleanup"
+        );
 
         // Invariant: live database is untouched
-        let live_notes: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+        let live_notes: i64 = conn
+            .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(live_notes, 1);
     }
 
@@ -2618,15 +2810,25 @@ mod tests {
         zip.finish().unwrap();
 
         let res = RestoreService::stage_restore_archive(&archive_path, &paths);
-        assert!(res.is_err(), "Must reject archive containing duplicate entries");
+        assert!(
+            res.is_err(),
+            "Must reject archive containing duplicate entries"
+        );
 
         // No staging directory should remain
         let staging_dirs_left = fs::read_dir(&paths.backups_dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".restore_staging_"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".restore_staging_")
+            })
             .count();
-        assert_eq!(staging_dirs_left, 0, "Failed staging must leave no orphaned directories");
+        assert_eq!(
+            staging_dirs_left, 0,
+            "Failed staging must leave no orphaned directories"
+        );
     }
 
     #[test]
@@ -2652,7 +2854,10 @@ mod tests {
         fs::create_dir_all(&normal_folder).unwrap();
         let res = RestoreService::cleanup_staged_restore(&normal_folder, &paths);
         assert!(res.is_err());
-        assert!(normal_folder.exists(), "Protected folder must not be deleted");
+        assert!(
+            normal_folder.exists(),
+            "Protected folder must not be deleted"
+        );
     }
 
     #[test]
@@ -2671,20 +2876,25 @@ mod tests {
         crate::storage::migrations::run_migrations_custom(
             &mut v1_conn,
             &crate::storage::migrations::MIGRATIONS[..1],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify version is 1
-        let ver: i32 = v1_conn.query_row("SELECT MAX(version) FROM _migrations", [], |r| r.get(0)).unwrap();
+        let ver: i32 = v1_conn
+            .query_row("SELECT MAX(version) FROM _migrations", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(ver, 1);
 
         // Insert legacy note
         let note_id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
-        v1_conn.execute(
-            "INSERT INTO notes (id, title, content, format, created_at, modified_at)
+        v1_conn
+            .execute(
+                "INSERT INTO notes (id, title, content, format, created_at, modified_at)
              VALUES (?1, 'Legacy v1 Note', 'Content from ancient version 1', 'txt', ?2, ?2)",
-            [&note_id, &now],
-        ).unwrap();
+                [&note_id, &now],
+            )
+            .unwrap();
         drop(v1_conn);
 
         // Package into a zip archive
@@ -2700,22 +2910,33 @@ mod tests {
 
         // Stage the archive
         let staged = RestoreService::stage_restore_archive(&archive_path, &paths).unwrap();
-        assert_eq!(staged.initial_schema_version, 1, "Staged database must start at schema v1");
+        assert_eq!(
+            staged.initial_schema_version, 1,
+            "Staged database must start at schema v1"
+        );
 
         let staging_path = PathBuf::from(&staged.staging_dir);
 
         // 2. Run Task 18 staged migration
         let mig_result = RestoreService::migrate_staged_database(&staging_path, &paths).unwrap();
         assert_eq!(mig_result.previous_schema_version, 1);
-        assert_eq!(mig_result.migrated_schema_version, CURRENT_APP_SCHEMA_VERSION);
+        assert_eq!(
+            mig_result.migrated_schema_version,
+            CURRENT_APP_SCHEMA_VERSION
+        );
         assert_eq!(mig_result.migrations_applied, 3);
         assert!(mig_result.is_verified);
-        assert_eq!(mig_result.note_count, 1, "Legacy note must survive migration intact");
+        assert_eq!(
+            mig_result.note_count, 1,
+            "Legacy note must survive migration intact"
+        );
 
         // Verify migrated database directly
         let migrated_conn = init_connection(&staging_path.join("database.sqlite")).unwrap();
         let migrated_title: String = migrated_conn
-            .query_row("SELECT title FROM notes WHERE id = ?1", [&note_id], |r| r.get(0))
+            .query_row("SELECT title FROM notes WHERE id = ?1", [&note_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(migrated_title, "Legacy v1 Note");
         drop(migrated_conn);
@@ -2731,7 +2952,9 @@ mod tests {
         paths.ensure_directories().unwrap();
 
         // Build a simulated future database (v99)
-        let future_dir = paths.backups_dir.join(format!(".restore_staging_{}", Uuid::new_v4()));
+        let future_dir = paths
+            .backups_dir
+            .join(format!(".restore_staging_{}", Uuid::new_v4()));
         fs::create_dir_all(&future_dir).unwrap();
         let future_db = future_dir.join("database.sqlite");
 
@@ -2745,7 +2968,10 @@ mod tests {
         assert!(res.is_err(), "Must reject newer unsupported schema version");
 
         match res.unwrap_err() {
-            BackupError::IncompatibleSchema { backup_schema, current_schema } => {
+            BackupError::IncompatibleSchema {
+                backup_schema,
+                current_schema,
+            } => {
                 assert_eq!(backup_schema, 99);
                 assert_eq!(current_schema, CURRENT_APP_SCHEMA_VERSION);
             }
@@ -2753,7 +2979,10 @@ mod tests {
         }
 
         // Staging directory must be cleaned up on rejection
-        assert!(!future_dir.exists(), "Incompatible staging directory must be purged");
+        assert!(
+            !future_dir.exists(),
+            "Incompatible staging directory must be purged"
+        );
     }
 
     #[test]
@@ -2762,7 +2991,9 @@ mod tests {
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
-        let latest_staging = paths.backups_dir.join(format!(".restore_staging_{}", Uuid::new_v4()));
+        let latest_staging = paths
+            .backups_dir
+            .join(format!(".restore_staging_{}", Uuid::new_v4()));
         fs::create_dir_all(&latest_staging).unwrap();
         let latest_db = latest_staging.join("database.sqlite");
 
@@ -2773,7 +3004,10 @@ mod tests {
         let res = RestoreService::migrate_staged_database(&latest_staging, &paths).unwrap();
         assert_eq!(res.previous_schema_version, CURRENT_APP_SCHEMA_VERSION);
         assert_eq!(res.migrated_schema_version, CURRENT_APP_SCHEMA_VERSION);
-        assert_eq!(res.migrations_applied, 0, "No migrations should be run on already-latest database");
+        assert_eq!(
+            res.migrations_applied, 0,
+            "No migrations should be run on already-latest database"
+        );
         assert!(res.is_verified);
 
         let _ = RestoreService::cleanup_staged_restore(&latest_staging, &paths);
@@ -2798,7 +3032,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Build candidate backup archive in a separate location with "Restored Note B" and "Restored Note C"
         let candidate_root = temp_dir.join("candidate_builder");
@@ -2817,7 +3052,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
         NoteRepository::create(
             &candidate_conn,
             CreateNoteDto {
@@ -2828,7 +3064,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let candidate_archive = BackupService::create_backup(
             &candidate_conn,
@@ -2839,7 +3076,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
         drop(candidate_conn);
 
         // 3. Execute controlled restore on live_conn
@@ -2851,15 +3089,22 @@ mod tests {
                 operation_id: None,
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(restore_res.success);
-        assert_eq!(restore_res.note_count, 2, "Restored state must contain 2 notes");
+        assert_eq!(
+            restore_res.note_count, 2,
+            "Restored state must contain 2 notes"
+        );
         assert_eq!(restore_res.trash_count, 0);
 
         // Pre-restore checkpoint must exist on disk
         let chk_path = PathBuf::from(&restore_res.checkpoint_path);
-        assert!(chk_path.exists(), "Pre-restore checkpoint must be preserved on disk");
+        assert!(
+            chk_path.exists(),
+            "Pre-restore checkpoint must be preserved on disk"
+        );
 
         // Verify active database contains restored notes and NO longer Note A
         let titles: Vec<String> = live_conn
@@ -2873,22 +3118,38 @@ mod tests {
 
         // Verify pre-restore checkpoint contains Original Note A
         let chk_val = RestoreService::validate_recovery_checkpoint(&chk_path, &paths).unwrap();
-        assert_eq!(chk_val.manifest.unwrap().database.note_count, 1, "Checkpoint must have saved original 1 note");
+        assert_eq!(
+            chk_val.manifest.unwrap().database.note_count,
+            1,
+            "Checkpoint must have saved original 1 note"
+        );
 
         // Verify marker and staging directories are gone
-        assert!(!paths.restore_marker_file().exists(), "Restore marker file must be deleted on commit");
+        assert!(
+            !paths.restore_marker_file().exists(),
+            "Restore marker file must be deleted on commit"
+        );
 
         let staging_dirs_count = fs::read_dir(&paths.backups_dir)
             .unwrap()
             .flatten()
-            .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with(".restore_staging_"))
+            .filter(|e| {
+                e.path().is_dir()
+                    && e.file_name()
+                        .to_string_lossy()
+                        .starts_with(".restore_staging_")
+            })
             .count();
-        assert_eq!(staging_dirs_count, 0, "No staging directories should remain after successful restore");
+        assert_eq!(
+            staging_dirs_count, 0,
+            "No staging directories should remain after successful restore"
+        );
     }
 
     #[test]
     fn test_task_19_perform_rollback_restores_pre_restore_state() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_rest_rollback_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_rollback_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -2905,7 +3166,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Create pre-restore checkpoint
         let checkpoint = RestoreService::create_recovery_checkpoint(&live_conn, &paths).unwrap();
@@ -2913,8 +3175,12 @@ mod tests {
         // 3. Simulate file swap with a corrupted database
         let op_id = Uuid::new_v4().to_string();
         let live_db_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite"));
-        let live_wal_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite-wal"));
-        let live_shm_backup = paths.root.join(format!(".db_pre_restore_{op_id}.sqlite-shm"));
+        let live_wal_backup = paths
+            .root
+            .join(format!(".db_pre_restore_{op_id}.sqlite-wal"));
+        let live_shm_backup = paths
+            .root
+            .join(format!(".db_pre_restore_{op_id}.sqlite-shm"));
         let live_att_backup = paths.root.join(format!(".att_pre_restore_{op_id}"));
 
         // Flush and close file connection before moving files
@@ -2931,7 +3197,11 @@ mod tests {
             operation_id: op_id,
             started_at: chrono::Utc::now().to_rfc3339(),
             candidate_archive_path: "/dummy/candidate.pnbackup".to_string(),
-            staging_dir: paths.backups_dir.join(".restore_staging_dummy").to_string_lossy().to_string(),
+            staging_dir: paths
+                .backups_dir
+                .join(".restore_staging_dummy")
+                .to_string_lossy()
+                .to_string(),
             checkpoint_path: checkpoint.file_path.clone(),
             live_db_backup_path: live_db_backup.to_string_lossy().to_string(),
             live_attachments_backup_path: live_att_backup.to_string_lossy().to_string(),
@@ -2949,20 +3219,34 @@ mod tests {
             &live_att_backup,
             &checkpoint.file_path,
             &mut marker,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 5. Verify rollback restored live database cleanly
-        assert!(!paths.restore_marker_file().exists(), "Marker must be cleared after rollback");
-        assert!(!live_db_backup.exists(), "Pre-restore database swap backup must be moved back");
+        assert!(
+            !paths.restore_marker_file().exists(),
+            "Marker must be cleared after rollback"
+        );
+        assert!(
+            !live_db_backup.exists(),
+            "Pre-restore database swap backup must be moved back"
+        );
 
         let title: String = live_conn
             .query_row("SELECT title FROM notes LIMIT 1", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(title, "Original Preserved Note", "Rollback must restore original live note intact");
+        assert_eq!(
+            title, "Original Preserved Note",
+            "Rollback must restore original live note intact"
+        );
 
         // Pre-restore checkpoint must still exist for manual recovery option
         let checkpoints = RestoreService::list_recovery_checkpoints(&paths).unwrap();
-        assert_eq!(checkpoints.len(), 1, "Recovery checkpoint created before swap must remain safe and accessible");
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "Recovery checkpoint created before swap must remain safe and accessible"
+        );
     }
 
     #[test]
@@ -2984,7 +3268,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
         drop(live_conn);
 
         // 2. Simulate crash midway through restore:
@@ -3003,7 +3288,11 @@ mod tests {
             operation_id: op_id,
             started_at: chrono::Utc::now().to_rfc3339(),
             candidate_archive_path: "/dummy/candidate.pnbackup".to_string(),
-            staging_dir: paths.backups_dir.join(".restore_staging_dummy").to_string_lossy().to_string(),
+            staging_dir: paths
+                .backups_dir
+                .join(".restore_staging_dummy")
+                .to_string_lossy()
+                .to_string(),
             checkpoint_path: "/dummy/chk.pnbackup".to_string(),
             live_db_backup_path: live_db_backup.to_string_lossy().to_string(),
             live_attachments_backup_path: live_att_backup.to_string_lossy().to_string(),
@@ -3014,15 +3303,29 @@ mod tests {
 
         // 3. Trigger crash recovery
         let recovery_res = RestoreService::recover_if_interrupted(&paths).unwrap();
-        assert!(recovery_res.is_some(), "Recovery must report successful action");
+        assert!(
+            recovery_res.is_some(),
+            "Recovery must report successful action"
+        );
 
         // 4. Verify live database is restored and operational
-        assert!(!paths.restore_marker_file().exists(), "Marker must be cleared after crash recovery");
-        assert!(!live_db_backup.exists(), "Temporary pre-restore backup must be moved back");
+        assert!(
+            !paths.restore_marker_file().exists(),
+            "Marker must be cleared after crash recovery"
+        );
+        assert!(
+            !live_db_backup.exists(),
+            "Temporary pre-restore backup must be moved back"
+        );
 
         let conn = init_connection(&paths.database_file).unwrap();
-        let title: String = conn.query_row("SELECT title FROM notes LIMIT 1", [], |r| r.get(0)).unwrap();
-        assert_eq!(title, "Survivor Note X", "Live data must be fully restored from crash");
+        let title: String = conn
+            .query_row("SELECT title FROM notes LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            title, "Survivor Note X",
+            "Live data must be fully restored from crash"
+        );
     }
 
     #[test]
@@ -3044,14 +3347,18 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Pass nonexistent path
         let err1 = RestoreService::execute_restore(
             &mut live_conn,
             &paths,
             BackupRestoreRequest {
-                file_path: temp_dir.join("nonexistent.pnbackup").to_string_lossy().to_string(),
+                file_path: temp_dir
+                    .join("nonexistent.pnbackup")
+                    .to_string_lossy()
+                    .to_string(),
                 operation_id: None,
             },
             None::<fn(BackupProgressEvent)>,
@@ -3082,7 +3389,8 @@ mod tests {
 
     #[test]
     fn test_task_20_verify_and_reinitialize_activated_state_success() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_rest_t20_val_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_t20_val_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -3096,7 +3404,8 @@ mod tests {
                 name: "Science Notes".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let note = NoteRepository::create(
             &conn,
@@ -3108,7 +3417,8 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let tag = TagRepository::create(&conn, "physics-tag").unwrap();
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
@@ -3134,7 +3444,8 @@ mod tests {
         ).unwrap();
 
         // Run post-restore validation
-        let report = RestoreService::verify_and_reinitialize_activated_state(&conn, &paths).unwrap();
+        let report =
+            RestoreService::verify_and_reinitialize_activated_state(&conn, &paths).unwrap();
         assert!(report.is_valid);
         assert!(report.integrity_check_passed);
         assert!(report.foreign_key_check_passed);
@@ -3151,7 +3462,8 @@ mod tests {
 
     #[test]
     fn test_task_20_verify_and_reinitialize_fails_on_missing_attachment_file() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_rest_t20_fail_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_t20_fail_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -3168,7 +3480,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert attachment record pointing to file that does NOT exist on disk
         let now_str = chrono::Utc::now().to_rfc3339();
@@ -3187,7 +3500,8 @@ mod tests {
             ],
         ).unwrap();
 
-        let val_err = RestoreService::verify_and_reinitialize_activated_state(&conn, &paths).unwrap_err();
+        let val_err =
+            RestoreService::verify_and_reinitialize_activated_state(&conn, &paths).unwrap_err();
         match val_err {
             BackupError::PostRestoreValidationFailed(msg) => {
                 assert!(msg.contains("Restored attachment file is missing on disk"));
@@ -3198,7 +3512,8 @@ mod tests {
 
     #[test]
     fn test_task_20_restored_database_survives_controlled_restart() {
-        let live_dir = std::env::temp_dir().join(format!("pn_test_rest_t20_restart_live_{}", Uuid::new_v4()));
+        let live_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_t20_restart_live_{}", Uuid::new_v4()));
         let live_paths = StoragePaths::from_root(live_dir.clone());
         live_paths.ensure_directories().unwrap();
 
@@ -3214,10 +3529,12 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create candidate backup environment
-        let cand_dir = std::env::temp_dir().join(format!("pn_test_rest_t20_restart_cand_{}", Uuid::new_v4()));
+        let cand_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_t20_restart_cand_{}", Uuid::new_v4()));
         let cand_paths = StoragePaths::from_root(cand_dir.clone());
         cand_paths.ensure_directories().unwrap();
 
@@ -3228,17 +3545,24 @@ mod tests {
             &cand_conn,
             CreateNoteDto {
                 title: Some("Restored Durable Note".to_string()),
-                content: Some("Persists across full application restarts with keyword supernova".to_string()),
+                content: Some(
+                    "Persists across full application restarts with keyword supernova".to_string(),
+                ),
                 format: Some("txt".to_string()),
                 notebook_id: None,
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let cand_att_dir = cand_paths.get_note_attachments_dir(&cand_note.id).unwrap();
         let cand_att_file = format!("{}.txt", Uuid::new_v4());
-        fs::write(cand_att_dir.join(&cand_att_file), b"supernova durable attachment content").unwrap();
+        fs::write(
+            cand_att_dir.join(&cand_att_file),
+            b"supernova durable attachment content",
+        )
+        .unwrap();
 
         let cand_now = chrono::Utc::now().to_rfc3339();
         cand_conn.execute(
@@ -3265,7 +3589,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
         drop(cand_conn);
 
         // 1. Execute restore
@@ -3277,10 +3602,13 @@ mod tests {
                 operation_id: None,
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(restore_res.success);
-        let report = restore_res.validation_report.expect("Validation report must be present");
+        let report = restore_res
+            .validation_report
+            .expect("Validation report must be present");
         assert!(report.is_valid);
         assert!(report.attachments_verified_on_disk);
         assert!(report.fts_rebuilt_and_queryable);
@@ -3290,7 +3618,10 @@ mod tests {
 
         // 3. Simulate application startup lifecycle (setup in lib.rs)
         let recovered = RestoreService::recover_if_interrupted(&live_paths).unwrap();
-        assert!(recovered.is_none(), "Normal shutdown after completed restore must have no marker to recover");
+        assert!(
+            recovered.is_none(),
+            "Normal shutdown after completed restore must have no marker to recover"
+        );
 
         let mut restarted_conn = init_connection(&live_paths.database_file).unwrap();
         run_migrations(&mut restarted_conn).unwrap();
@@ -3306,17 +3637,32 @@ mod tests {
         assert_eq!(titles, vec!["Restored Durable Note"]);
 
         let fts_count: i64 = restarted_conn
-            .query_row("SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'supernova*'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(1) FROM notes_fts WHERE notes_fts MATCH 'supernova*'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(fts_count, 1, "FTS5 search index must function immediately after restart");
+        assert_eq!(
+            fts_count, 1,
+            "FTS5 search index must function immediately after restart"
+        );
 
-        let att_disk_path = live_paths.attachments_dir.join(&cand_note.id).join(&cand_att_file);
-        assert!(att_disk_path.exists(), "Restored attachment file must exist on disk across restarts");
+        let att_disk_path = live_paths
+            .attachments_dir
+            .join(&cand_note.id)
+            .join(&cand_att_file);
+        assert!(
+            att_disk_path.exists(),
+            "Restored attachment file must exist on disk across restarts"
+        );
     }
 
     #[test]
-    fn test_task_21_restore_cancellation_during_preparation_purges_staging_and_preserves_live_data() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_rest_cancel_prep_{}", Uuid::new_v4()));
+    fn test_task_21_restore_cancellation_during_preparation_purges_staging_and_preserves_live_data()
+    {
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_cancel_prep_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -3335,7 +3681,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         let cand_backup = BackupService::create_backup(
             &cand_conn,
             &cand_paths,
@@ -3345,7 +3692,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Setup live database with current working note
         let mut live_conn = init_connection(&paths.database_file).unwrap();
@@ -3359,7 +3707,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Register cancellation for op_id before restore runs
         let op_id = format!("op-cancel-test-{}", Uuid::new_v4());
@@ -3384,16 +3733,25 @@ mod tests {
         }
 
         // Live data must remain 100% intact
-        let retrieved = NoteRepository::get_by_id(&live_conn, &live_note.id).unwrap().unwrap();
+        let retrieved = NoteRepository::get_by_id(&live_conn, &live_note.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(retrieved.title, "Live Working Note Must Survive");
 
         // Staging folders must be completely cleaned up
         let staging_entries = fs::read_dir(&paths.backups_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".restore_staging_"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".restore_staging_")
+            })
             .count();
-        assert_eq!(staging_entries, 0, "All staging directories must be purged on cancellation");
+        assert_eq!(
+            staging_entries, 0,
+            "All staging directories must be purged on cancellation"
+        );
 
         // Final event must report Cancelled and safe live data status
         let last_evt = events.last().expect("Events must have been emitted");
@@ -3403,7 +3761,8 @@ mod tests {
 
     #[test]
     fn test_task_21_cancellation_after_checkpoint_preserves_checkpoint_and_locks_activation() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_rest_cancel_chk_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_rest_cancel_chk_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -3422,7 +3781,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         let cand_backup = BackupService::create_backup(
             &cand_conn,
             &cand_paths,
@@ -3432,7 +3792,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Setup live database with current working note
         let mut live_conn = init_connection(&paths.database_file).unwrap();
@@ -3446,7 +3807,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let op_id = format!("op-chk-cancel-{}", Uuid::new_v4());
         let op_id_clone = op_id.clone();
@@ -3475,32 +3837,50 @@ mod tests {
         }
 
         // Live data must remain 100% intact
-        let retrieved = NoteRepository::get_by_id(&live_conn, &live_note.id).unwrap().unwrap();
+        let retrieved = NoteRepository::get_by_id(&live_conn, &live_note.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(retrieved.title, "Live Note Before Checkpoint");
 
         // The pre-restore recovery checkpoint must be safely preserved!
         let checkpoints = RestoreService::list_recovery_checkpoints(&paths).unwrap();
-        assert_eq!(checkpoints.len(), 1, "Pre-restore checkpoint created before cancellation must be preserved");
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "Pre-restore checkpoint created before cancellation must be preserved"
+        );
 
         // Checkpoint file must exist on disk and be verified
         assert!(Path::new(&checkpoints[0].file_path).exists());
         assert!(checkpoints[0].is_verified);
 
         // Events emitted during preparation must have had cancellable: true
-        let prep_events: Vec<_> = events.iter().filter(|e| {
-            e.stage == BackupProgressStage::Starting
-                || e.stage == BackupProgressStage::ValidatingBackup
-                || e.stage == BackupProgressStage::PreparingStagingData
-                || e.stage == BackupProgressStage::CheckingDatabaseIntegrity
-                || e.stage == BackupProgressStage::CreatingCheckpoint
-        }).collect();
+        let prep_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.stage == BackupProgressStage::Starting
+                    || e.stage == BackupProgressStage::ValidatingBackup
+                    || e.stage == BackupProgressStage::PreparingStagingData
+                    || e.stage == BackupProgressStage::CheckingDatabaseIntegrity
+                    || e.stage == BackupProgressStage::CreatingCheckpoint
+            })
+            .collect();
         assert!(!prep_events.is_empty());
         for e in prep_events {
-            assert!(e.cancellable, "Preparation stage {:?} must be marked cancellable", e.stage);
+            assert!(
+                e.cancellable,
+                "Preparation stage {:?} must be marked cancellable",
+                e.stage
+            );
         }
 
         // Cancellation event must confirm checkpoint preservation in message
-        let cancel_event = events.iter().find(|e| e.stage == BackupProgressStage::Cancelled).unwrap();
-        assert!(cancel_event.message.contains("checkpoint was safely preserved"));
+        let cancel_event = events
+            .iter()
+            .find(|e| e.stage == BackupProgressStage::Cancelled)
+            .unwrap();
+        assert!(cancel_event
+            .message
+            .contains("checkpoint was safely preserved"));
     }
 }

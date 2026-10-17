@@ -1,12 +1,12 @@
-use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use std::fs::{self, File};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
 use crate::storage::crypto::metadata::{AEAD_TAG_LEN_BYTES, DEK_LEN_BYTES, NONCE_LEN_BYTES};
 use crate::storage::crypto::secret::SecretBytes;
@@ -41,9 +41,9 @@ pub fn encrypt_payload(
         aad: associated_data,
     };
 
-    let ciphertext_with_tag = cipher
-        .encrypt(nonce, payload)
-        .map_err(|e| CryptoError::EncryptionFailed(format!("AES-256-GCM encryption failed: {e}")))?;
+    let ciphertext_with_tag = cipher.encrypt(nonce, payload).map_err(|e| {
+        CryptoError::EncryptionFailed(format!("AES-256-GCM encryption failed: {e}"))
+    })?;
 
     let mut envelope = Vec::with_capacity(1 + NONCE_LEN_BYTES + ciphertext_with_tag.len());
     envelope.push(ENVELOPE_VERSION_V1);
@@ -134,7 +134,11 @@ pub fn encrypt_string(
     associated_data: &[u8],
 ) -> Result<String, CryptoError> {
     let envelope = encrypt_payload(plaintext.as_bytes(), dek, associated_data)?;
-    Ok(format!("{}{}", ENCRYPTED_PREFIX_V1, BASE64_STANDARD.encode(envelope)))
+    Ok(format!(
+        "{}{}",
+        ENCRYPTED_PREFIX_V1,
+        BASE64_STANDARD.encode(envelope)
+    ))
 }
 
 /// Decrypts a base64-encoded authenticated ciphertext envelope (with or without prefix) into a validated UTF-8 string.
@@ -149,9 +153,9 @@ pub fn decrypt_string(
     } else {
         trimmed
     };
-    let envelope = BASE64_STANDARD.decode(raw_b64).map_err(|e| {
-        CryptoError::TamperedOrCorrupted(format!("Invalid base64 ciphertext: {e}"))
-    })?;
+    let envelope = BASE64_STANDARD
+        .decode(raw_b64)
+        .map_err(|e| CryptoError::TamperedOrCorrupted(format!("Invalid base64 ciphertext: {e}")))?;
     let decrypted_bytes = decrypt_payload(&envelope, dek, associated_data)?;
     String::from_utf8(decrypted_bytes).map_err(|e| {
         CryptoError::TamperedOrCorrupted(format!("Decrypted plaintext is not valid UTF-8: {e}"))
@@ -183,36 +187,48 @@ pub fn encrypt_file_to_file(
     }
 
     let mut plaintext = Vec::with_capacity(file_len as usize);
-    file.read_to_end(&mut plaintext).map_err(|e| {
-        CryptoError::EncryptionFailed(format!("Failed to read source file: {e}"))
-    })?;
+    file.read_to_end(&mut plaintext)
+        .map_err(|e| CryptoError::EncryptionFailed(format!("Failed to read source file: {e}")))?;
 
     let envelope = encrypt_payload(&plaintext, dek, associated_data)?;
 
     let write_res = (|| -> Result<(), CryptoError> {
         let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
             if e.raw_os_error() == Some(28) {
-                CryptoError::EncryptionFailed("Insufficient disk space while creating encrypted file".to_string())
+                CryptoError::EncryptionFailed(
+                    "Insufficient disk space while creating encrypted file".to_string(),
+                )
             } else {
-                CryptoError::EncryptionFailed(format!("Failed to create destination file for encryption: {e}"))
+                CryptoError::EncryptionFailed(format!(
+                    "Failed to create destination file for encryption: {e}"
+                ))
             }
         })?);
 
         for chunk in envelope.chunks(64 * 1024) {
             out_file.write_all(chunk).map_err(|e| {
                 if e.raw_os_error() == Some(28) {
-                    CryptoError::EncryptionFailed("Insufficient disk space while writing encrypted payload to disk".to_string())
+                    CryptoError::EncryptionFailed(
+                        "Insufficient disk space while writing encrypted payload to disk"
+                            .to_string(),
+                    )
                 } else {
-                    CryptoError::EncryptionFailed(format!("Failed to write encrypted payload to disk: {e}"))
+                    CryptoError::EncryptionFailed(format!(
+                        "Failed to write encrypted payload to disk: {e}"
+                    ))
                 }
             })?;
         }
 
         out_file.flush().map_err(|e| {
             if e.raw_os_error() == Some(28) {
-                CryptoError::EncryptionFailed("Insufficient disk space while flushing encrypted payload to disk".to_string())
+                CryptoError::EncryptionFailed(
+                    "Insufficient disk space while flushing encrypted payload to disk".to_string(),
+                )
             } else {
-                CryptoError::EncryptionFailed(format!("Failed to flush encrypted payload to disk: {e}"))
+                CryptoError::EncryptionFailed(format!(
+                    "Failed to flush encrypted payload to disk: {e}"
+                ))
             }
         })?;
 
@@ -259,16 +275,22 @@ pub fn decrypt_file_to_file(
     let write_res = (|| -> Result<(), CryptoError> {
         let mut out_file = BufWriter::new(File::create(dst_path).map_err(|e| {
             if e.raw_os_error() == Some(28) {
-                CryptoError::DecryptionFailed("Insufficient disk space while creating decrypted file".to_string())
+                CryptoError::DecryptionFailed(
+                    "Insufficient disk space while creating decrypted file".to_string(),
+                )
             } else {
-                CryptoError::DecryptionFailed(format!("Failed to create destination file for decryption: {e}"))
+                CryptoError::DecryptionFailed(format!(
+                    "Failed to create destination file for decryption: {e}"
+                ))
             }
         })?);
 
         for chunk in plaintext.chunks(64 * 1024) {
             out_file.write_all(chunk).map_err(|e| {
                 if e.raw_os_error() == Some(28) {
-                    CryptoError::DecryptionFailed("Insufficient disk space while writing decrypted payload".to_string())
+                    CryptoError::DecryptionFailed(
+                        "Insufficient disk space while writing decrypted payload".to_string(),
+                    )
                 } else {
                     CryptoError::DecryptionFailed(format!("Failed to write decrypted payload: {e}"))
                 }
@@ -277,7 +299,9 @@ pub fn decrypt_file_to_file(
 
         out_file.flush().map_err(|e| {
             if e.raw_os_error() == Some(28) {
-                CryptoError::DecryptionFailed("Insufficient disk space while flushing decrypted payload".to_string())
+                CryptoError::DecryptionFailed(
+                    "Insufficient disk space while flushing decrypted payload".to_string(),
+                )
             } else {
                 CryptoError::DecryptionFailed(format!("Failed to flush decrypted payload: {e}"))
             }
@@ -336,10 +360,12 @@ mod tests {
         let text = "आज की मीटिंग के नोट्स 📝 Hello World!";
         let ad = b"note:abc:title";
 
-        let encrypted_b64 = encrypt_string(text, &dek, ad).expect("String encryption should succeed");
+        let encrypted_b64 =
+            encrypt_string(text, &dek, ad).expect("String encryption should succeed");
         assert_ne!(text, encrypted_b64);
 
-        let decrypted = decrypt_string(&encrypted_b64, &dek, ad).expect("String decryption should succeed");
+        let decrypted =
+            decrypt_string(&encrypted_b64, &dek, ad).expect("String decryption should succeed");
         assert_eq!(text, decrypted);
     }
 }

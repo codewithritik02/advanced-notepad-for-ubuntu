@@ -1,33 +1,26 @@
-use std::fs;
-use std::path::PathBuf;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
+use std::fs;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use personal_notepad_lib::storage::{
     attachment_storage::AttachmentStorage,
-    init_connection, run_migrations,
-    models::{
-        BackupCreateRequest, BackupRestoreRequest, BackupType, CreateNoteDto,
-        UpdateNoteDto,
-    },
-    repositories::{
-        NoteRepository, SearchRepository, SettingsRepository,
-    },
-    services::{
-        AttachmentService, BackupService, BackupValidationService, RestoreService,
-    },
     crypto::{
-        decrypt_payload, decrypt_string, derive_kek, encrypt_payload, encrypt_string,
-        generate_dek, generate_salt, is_encrypted_string, unwrap_dek, wrap_dek,
-        ChangePasswordDto, CryptoSession, EncryptionMetadata, EncryptionTransitionMarker,
-        KdfConfig, MigrationService, MigrationStatus, SetupEncryptionDto,
-        StartupRecoveryDecision, UnlockDto, WrappedKey, DEK_LEN_BYTES,
-        ENCRYPTION_METADATA_KEY, ENVELOPE_VERSION_V1, MAX_KDF_ITERATIONS, MAX_KDF_MEMORY_KIB,
-        MAX_KDF_PARALLELISM, MIN_KDF_ITERATIONS, MIN_KDF_MEMORY_KIB, MIN_KDF_PARALLELISM,
-        REQUIRED_SALT_LEN_BYTES,
+        decrypt_payload, decrypt_string, derive_kek, encrypt_payload, encrypt_string, generate_dek,
+        generate_salt, is_encrypted_string, unwrap_dek, wrap_dek, ChangePasswordDto, CryptoSession,
+        EncryptionMetadata, EncryptionTransitionMarker, KdfConfig, MigrationService,
+        MigrationStatus, SetupEncryptionDto, StartupRecoveryDecision, UnlockDto, WrappedKey,
+        DEK_LEN_BYTES, ENCRYPTION_METADATA_KEY, ENVELOPE_VERSION_V1, MAX_KDF_ITERATIONS,
+        MAX_KDF_MEMORY_KIB, MAX_KDF_PARALLELISM, MIN_KDF_ITERATIONS, MIN_KDF_MEMORY_KIB,
+        MIN_KDF_PARALLELISM, REQUIRED_SALT_LEN_BYTES,
     },
     errors::{AttachmentError, CryptoError, StorageError},
+    init_connection,
+    models::{BackupCreateRequest, BackupRestoreRequest, BackupType, CreateNoteDto, UpdateNoteDto},
+    repositories::{NoteRepository, SearchRepository, SettingsRepository},
+    run_migrations,
+    services::{AttachmentService, BackupService, BackupValidationService, RestoreService},
     StoragePaths,
 };
 
@@ -41,7 +34,9 @@ impl TestEnv {
     fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("pn_task23_sec_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(dir.clone());
-        paths.ensure_directories().expect("Failed to create test directories");
+        paths
+            .ensure_directories()
+            .expect("Failed to create test directories");
         Self { dir, paths }
     }
 }
@@ -66,50 +61,84 @@ fn test_cryptographic_key_generation_and_entropy() {
     assert_eq!(key2.len(), DEK_LEN_BYTES, "Key 2 must be 32 bytes");
 
     // Verify keys are non-trivial (not all zero)
-    assert!(!key1.as_slice().iter().all(|&b| b == 0), "Key 1 must not be all zeros");
-    assert!(!key2.as_slice().iter().all(|&b| b == 0), "Key 2 must not be all zeros");
+    assert!(
+        !key1.as_slice().iter().all(|&b| b == 0),
+        "Key 1 must not be all zeros"
+    );
+    assert!(
+        !key2.as_slice().iter().all(|&b| b == 0),
+        "Key 2 must not be all zeros"
+    );
 
     // Verify consecutive keys are distinct (CSPRNG non-repetition)
-    assert_ne!(key1.as_slice(), key2.as_slice(), "Consecutive keys must be distinct");
+    assert_ne!(
+        key1.as_slice(),
+        key2.as_slice(),
+        "Consecutive keys must be distinct"
+    );
 }
 
 #[test]
 fn test_cryptographic_kdf_configuration_bounds_validation() {
     // 1. Valid configuration
     let valid_cfg = KdfConfig::default_profile(generate_salt());
-    assert!(valid_cfg.validate().is_ok(), "Valid KDF config must pass validation");
+    assert!(
+        valid_cfg.validate().is_ok(),
+        "Valid KDF config must pass validation"
+    );
 
     // 2. Memory bounds
     let mut mem_low = valid_cfg.clone();
     mem_low.memory_kib = MIN_KDF_MEMORY_KIB - 1;
-    assert!(mem_low.validate().is_err(), "Memory below min must be rejected");
+    assert!(
+        mem_low.validate().is_err(),
+        "Memory below min must be rejected"
+    );
 
     let mut mem_high = valid_cfg.clone();
     mem_high.memory_kib = MAX_KDF_MEMORY_KIB + 1;
-    assert!(mem_high.validate().is_err(), "Memory above max must be rejected");
+    assert!(
+        mem_high.validate().is_err(),
+        "Memory above max must be rejected"
+    );
 
     // 3. Iteration bounds
     let mut iter_low = valid_cfg.clone();
     iter_low.iterations = MIN_KDF_ITERATIONS - 1;
-    assert!(iter_low.validate().is_err(), "Iterations below min must be rejected");
+    assert!(
+        iter_low.validate().is_err(),
+        "Iterations below min must be rejected"
+    );
 
     let mut iter_high = valid_cfg.clone();
     iter_high.iterations = MAX_KDF_ITERATIONS + 1;
-    assert!(iter_high.validate().is_err(), "Iterations above max must be rejected");
+    assert!(
+        iter_high.validate().is_err(),
+        "Iterations above max must be rejected"
+    );
 
     // 4. Parallelism bounds
     let mut par_low = valid_cfg.clone();
     par_low.parallelism = MIN_KDF_PARALLELISM - 1;
-    assert!(par_low.validate().is_err(), "Parallelism below min must be rejected");
+    assert!(
+        par_low.validate().is_err(),
+        "Parallelism below min must be rejected"
+    );
 
     let mut par_high = valid_cfg.clone();
     par_high.parallelism = MAX_KDF_PARALLELISM + 1;
-    assert!(par_high.validate().is_err(), "Parallelism above max must be rejected");
+    assert!(
+        par_high.validate().is_err(),
+        "Parallelism above max must be rejected"
+    );
 
     // 5. Salt length validation
     let mut invalid_salt = valid_cfg.clone();
     invalid_salt.salt_base64 = BASE64_STANDARD.encode([0u8; 8]); // 8 bytes instead of 16
-    assert!(invalid_salt.validate().is_err(), "Salt length != 16 bytes must be rejected");
+    assert!(
+        invalid_salt.validate().is_err(),
+        "Salt length != 16 bytes must be rejected"
+    );
 }
 
 #[test]
@@ -143,7 +172,10 @@ fn test_cryptographic_authenticated_decryption_and_tamper_detection() {
 
     // Encrypt
     let ciphertext = encrypt_string(plaintext, &dek, b"notes_test").expect("Encrypt failed");
-    assert!(ciphertext.starts_with("ENC$v1$"), "Ciphertext must be prefixed with ENC$v1$");
+    assert!(
+        ciphertext.starts_with("ENC$v1$"),
+        "Ciphertext must be prefixed with ENC$v1$"
+    );
 
     // Invariant check: Ciphertext differs from plaintext is necessary but NOT sufficient
     assert_ne!(ciphertext, plaintext);
@@ -232,7 +264,10 @@ fn test_cryptographic_metadata_version_validation_and_unsupported_rejection() {
     envelope[0] = 0x02; // Simulate future version 2
     let err = decrypt_payload(&envelope, &dek, b"test").expect_err("Version 2 must be rejected");
     match err {
-        CryptoError::UnsupportedFormatVersion { version, max_supported } => {
+        CryptoError::UnsupportedFormatVersion {
+            version,
+            max_supported,
+        } => {
             assert_eq!(version, 2);
             assert_eq!(max_supported, 1);
         }
@@ -246,30 +281,42 @@ fn test_cryptographic_metadata_version_validation_and_unsupported_rejection() {
 
     let mut invalid_format_meta = EncryptionMetadata::new(kdf_config.clone(), wrapped.clone());
     invalid_format_meta.format_identifier = "UNSUPPORTED_CRYPTO_FORMAT_V9".to_string();
-    assert!(invalid_format_meta.validate().is_err(), "Invalid format identifier must be rejected");
+    assert!(
+        invalid_format_meta.validate().is_err(),
+        "Invalid format identifier must be rejected"
+    );
 
     // 3. Unsupported algorithm check
     let mut invalid_algo_meta = EncryptionMetadata::new(kdf_config, wrapped);
     invalid_algo_meta.cipher_algorithm = "des-ede3-cbc".to_string();
-    assert!(invalid_algo_meta.validate().is_err(), "Unsupported cipher algorithm must be rejected");
+    assert!(
+        invalid_algo_meta.validate().is_err(),
+        "Unsupported cipher algorithm must be rejected"
+    );
 }
 
 #[test]
 fn test_cryptographic_key_wrapping_and_tamper_detection() {
     let dek = generate_dek();
-    let kek = derive_kek("WrapPassword123!", &KdfConfig::default_profile(generate_salt()))
-        .expect("Derive KEK failed");
+    let kek = derive_kek(
+        "WrapPassword123!",
+        &KdfConfig::default_profile(generate_salt()),
+    )
+    .expect("Derive KEK failed");
 
     let wrapped = wrap_dek(&dek, &kek).expect("Wrap failed");
     assert!(wrapped.validate().is_ok());
 
     // Tamper with wrapped ciphertext
     let mut tampered_wrapped = wrapped.clone();
-    let mut ct_bytes = BASE64_STANDARD.decode(&tampered_wrapped.ciphertext_base64).unwrap();
+    let mut ct_bytes = BASE64_STANDARD
+        .decode(&tampered_wrapped.ciphertext_base64)
+        .unwrap();
     ct_bytes[0] ^= 0xFF;
     tampered_wrapped.ciphertext_base64 = BASE64_STANDARD.encode(&ct_bytes);
 
-    let err = unwrap_dek(&tampered_wrapped, &kek).expect_err("Tampered wrapped key must fail unwrap");
+    let err =
+        unwrap_dek(&tampered_wrapped, &kek).expect_err("Tampered wrapped key must fail unwrap");
     assert_eq!(err, CryptoError::AuthenticationFailed);
 }
 
@@ -283,7 +330,10 @@ fn test_cryptographic_password_change_re_wraps_dek_without_data_reencryption() {
     let old_kdf = KdfConfig::default_profile(old_salt);
     let old_kek = derive_kek(old_pwd, &old_kdf).expect("Old KEK failed");
     let old_wrapped = wrap_dek(&dek, &old_kek).expect("Old wrap failed");
-    assert_eq!(unwrap_dek(&old_wrapped, &old_kek).unwrap().as_slice(), dek.as_slice());
+    assert_eq!(
+        unwrap_dek(&old_wrapped, &old_kek).unwrap().as_slice(),
+        dek.as_slice()
+    );
 
     // Encrypt sample note content with DEK
     let note_content = "This note was encrypted under the original master password";
@@ -298,15 +348,26 @@ fn test_cryptographic_password_change_re_wraps_dek_without_data_reencryption() {
 
     // Verify old password cannot unwrap new wrapped DEK
     let old_kek_on_new = derive_kek(old_pwd, &new_kdf).expect("Derive failed");
-    assert!(unwrap_dek(&new_wrapped, &old_kek_on_new).is_err(), "Old password must be rejected");
+    assert!(
+        unwrap_dek(&new_wrapped, &old_kek_on_new).is_err(),
+        "Old password must be rejected"
+    );
 
     // Verify new password unwraps DEK
     let recovered_dek = unwrap_dek(&new_wrapped, &new_kek).expect("New unwrap failed");
-    assert_eq!(dek.as_slice(), recovered_dek.as_slice(), "DEK must be preserved");
+    assert_eq!(
+        dek.as_slice(),
+        recovered_dek.as_slice(),
+        "DEK must be preserved"
+    );
 
     // Verify pre-existing ciphertext is still decrypted by the recovered DEK without re-encryption
-    let decrypted = decrypt_string(&ciphertext, &recovered_dek, b"notes_test").expect("Decrypt failed");
-    assert_eq!(decrypted, note_content, "Content must remain decryptable without re-encryption");
+    let decrypted =
+        decrypt_string(&ciphertext, &recovered_dek, b"notes_test").expect("Decrypt failed");
+    assert_eq!(
+        decrypted, note_content,
+        "Content must remain decryptable without re-encryption"
+    );
 }
 
 #[test]
@@ -314,7 +375,8 @@ fn test_cryptographic_zero_knowledge_and_foreign_key_rejection() {
     let dek = generate_dek();
     let foreign_dek = generate_dek();
 
-    let ciphertext = encrypt_string("Top secret personal ledger", &dek, b"notes_test").expect("Encrypt failed");
+    let ciphertext =
+        encrypt_string("Top secret personal ledger", &dek, b"notes_test").expect("Encrypt failed");
 
     // Attempt decryption with foreign DEK
     let err = decrypt_string(&ciphertext, &foreign_dek, b"notes_test")
@@ -344,7 +406,9 @@ fn test_storage_protected_note_lifecycle_and_locked_rejection() {
         password: master_password.to_string(),
         confirm_password: master_password.to_string(),
     };
-    session.setup_encryption(&conn, &env.paths, setup_dto).expect("Setup failed");
+    session
+        .setup_encryption(&conn, &env.paths, setup_dto)
+        .expect("Setup failed");
     assert!(!session.is_locked());
 
     let dek = session.get_active_dek().expect("Active DEK failed");
@@ -358,7 +422,8 @@ fn test_storage_protected_note_lifecycle_and_locked_rejection() {
         is_favorite: None,
         is_pinned: None,
     };
-    let note = NoteRepository::create_with_key(&conn, create_dto, Some(&dek)).expect("Create note failed");
+    let note =
+        NoteRepository::create_with_key(&conn, create_dto, Some(&dek)).expect("Create note failed");
 
     // 2. Inspect raw SQLite row: assert title and content start with ENC$v1$
     let (raw_title, raw_content): (String, String) = conn
@@ -369,17 +434,32 @@ fn test_storage_protected_note_lifecycle_and_locked_rejection() {
         )
         .expect("Query raw note failed");
 
-    assert!(is_encrypted_string(&raw_title), "Raw title in SQLite must be encrypted");
-    assert!(is_encrypted_string(&raw_content), "Raw content in SQLite must be encrypted");
-    assert!(!raw_title.contains("Confidential Project"), "Raw title must not leak plaintext");
-    assert!(!raw_content.contains("technical specifications"), "Raw content must not leak plaintext");
+    assert!(
+        is_encrypted_string(&raw_title),
+        "Raw title in SQLite must be encrypted"
+    );
+    assert!(
+        is_encrypted_string(&raw_content),
+        "Raw content in SQLite must be encrypted"
+    );
+    assert!(
+        !raw_title.contains("Confidential Project"),
+        "Raw title must not leak plaintext"
+    );
+    assert!(
+        !raw_content.contains("technical specifications"),
+        "Raw content must not leak plaintext"
+    );
 
     // 3. Read note with active DEK
     let retrieved = NoteRepository::get_by_id_with_key(&conn, &note.id, Some(&dek))
         .expect("Get note with key failed")
         .expect("Note must exist");
     assert_eq!(retrieved.title, "Confidential Project Blueprint");
-    assert_eq!(retrieved.content, "Detailed technical specifications and confidential milestones.");
+    assert_eq!(
+        retrieved.content,
+        "Detailed technical specifications and confidential milestones."
+    );
 
     // 4. Lock session and assert access rejection
     session.lock();
@@ -431,7 +511,9 @@ fn test_storage_protected_note_updates_produce_fresh_nonces() {
     .expect("Create failed");
 
     let raw_enc_1: String = conn
-        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| r.get(0))
+        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| {
+            r.get(0)
+        })
         .expect("Query 1 failed");
 
     // Update note with the EXACT same content
@@ -444,10 +526,13 @@ fn test_storage_protected_note_updates_produce_fresh_nonces() {
         is_pinned: None,
         is_deleted: None,
     };
-    NoteRepository::update_with_key(&conn, &note.id, update_dto, Some(&dek)).expect("Update failed");
+    NoteRepository::update_with_key(&conn, &note.id, update_dto, Some(&dek))
+        .expect("Update failed");
 
     let raw_enc_2: String = conn
-        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| r.get(0))
+        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| {
+            r.get(0)
+        })
         .expect("Query 2 failed");
 
     // Fresh 12-byte random nonce guarantees raw_enc_1 != raw_enc_2
@@ -517,14 +602,25 @@ fn test_storage_protected_attachment_storage_and_verification() {
         )
         .expect("Query attachment DB row failed");
 
-    assert!(is_encrypted_string(&db_filename), "Attachment file_name in SQLite must be encrypted");
-    assert!(!db_filename.contains("diagram.jpg"), "Raw file_name in SQLite must not leak plaintext");
+    assert!(
+        is_encrypted_string(&db_filename),
+        "Attachment file_name in SQLite must be encrypted"
+    );
+    assert!(
+        !db_filename.contains("diagram.jpg"),
+        "Raw file_name in SQLite must not leak plaintext"
+    );
 
     // 2. Filesystem check: disk payload must start with 0x01 version byte and NOT contain plaintext
-    let disk_path = storage.resolve_safe_path(&att.relative_path).expect("Resolve path failed");
+    let disk_path = storage
+        .resolve_safe_path(&att.relative_path)
+        .expect("Resolve path failed");
     assert!(disk_path.exists(), "Attachment file must exist on disk");
     let disk_bytes = fs::read(&disk_path).expect("Read attachment from disk failed");
-    assert_eq!(disk_bytes[0], 0x01, "Disk file must start with version byte 0x01");
+    assert_eq!(
+        disk_bytes[0], 0x01,
+        "Disk file must start with version byte 0x01"
+    );
     let disk_str = String::from_utf8_lossy(&disk_bytes);
     assert!(
         !disk_str.contains("CONFIDENTIAL DIAGRAMS"),
@@ -532,14 +628,19 @@ fn test_storage_protected_attachment_storage_and_verification() {
     );
 
     // 3. Open attachment with active DEK returns decrypted path matching original bytes
-    let open_path = AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek))
-        .expect("Read attachment failed");
+    let open_path =
+        AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek))
+            .expect("Read attachment failed");
     let read_bytes = fs::read(&open_path).expect("Read decrypted temp file failed");
-    assert_eq!(read_bytes, attachment_bytes, "Decrypted attachment bytes must match original");
+    assert_eq!(
+        read_bytes, attachment_bytes,
+        "Decrypted attachment bytes must match original"
+    );
 
     // 4. Read attachment when locked rejects
-    let locked_err = AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, None)
-        .expect_err("Locked attachment read must fail");
+    let locked_err =
+        AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, None)
+            .expect_err("Locked attachment read must fail");
     match locked_err {
         AttachmentError::FileOperationFailed(msg) | AttachmentError::InvalidRequest(msg) => {
             assert!(msg.contains("locked") || msg.contains("Cannot"));
@@ -591,9 +692,18 @@ fn test_storage_database_reopen_persists_encryption_and_locks() {
         let session2 = CryptoSession::init_from_database(&conn2).expect("Session2 init failed");
 
         // Must detect encryption is enabled and session starts LOCKED
-        assert!(session2.is_encryption_enabled(), "Encryption must remain enabled on reopen");
-        assert!(session2.is_locked(), "Session must start in Locked state on cold boot");
-        assert!(session2.get_active_dek().is_err(), "No active DEK before unlock");
+        assert!(
+            session2.is_encryption_enabled(),
+            "Encryption must remain enabled on reopen"
+        );
+        assert!(
+            session2.is_locked(),
+            "Session must start in Locked state on cold boot"
+        );
+        assert!(
+            session2.get_active_dek().is_err(),
+            "No active DEK before unlock"
+        );
 
         // Unlock with correct password
         session2
@@ -604,8 +714,8 @@ fn test_storage_database_reopen_persists_encryption_and_locks() {
         assert!(!session2.is_locked(), "Session must be unlocked");
 
         let dek2 = session2.get_active_dek().expect("DEK2 failed");
-        let notes = NoteRepository::list_active_with_key(&conn2, Some(&dek2))
-            .expect("List notes failed");
+        let notes =
+            NoteRepository::list_active_with_key(&conn2, Some(&dek2)).expect("List notes failed");
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "Persistent Secret Note");
         assert_eq!(notes[0].content, "Secret content that survives restart.");
@@ -636,7 +746,9 @@ fn test_storage_search_behavior_under_encryption_and_lock() {
         &conn,
         CreateNoteDto {
             title: Some("Project Alpha Operations".to_string()),
-            content: Some("Mission targets include satellite uplink and radar calibration.".to_string()),
+            content: Some(
+                "Mission targets include satellite uplink and radar calibration.".to_string(),
+            ),
             format: None,
             notebook_id: None,
             is_favorite: None,
@@ -649,7 +761,11 @@ fn test_storage_search_behavior_under_encryption_and_lock() {
     // 1. Search when unlocked matches decrypted content
     let results = SearchRepository::search_with_key(&conn, "satellite", None, Some(&dek))
         .expect("Search when unlocked failed");
-    assert_eq!(results.len(), 1, "Search when unlocked must return matching note");
+    assert_eq!(
+        results.len(),
+        1,
+        "Search when unlocked must return matching note"
+    );
 
     // 2. Lock session: search rejected or yields zero plaintext matches
     session.lock();
@@ -696,7 +812,9 @@ fn test_storage_tampered_ciphertext_classification_and_user_messaging() {
 
     // Read valid ciphertext from SQLite
     let valid_enc: String = conn
-        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| r.get(0))
+        .query_row("SELECT content FROM notes WHERE id = ?1", [&note.id], |r| {
+            r.get(0)
+        })
         .unwrap();
 
     // Tamper with payload (preserving ENC$v1$ and version byte)
@@ -706,8 +824,11 @@ fn test_storage_tampered_ciphertext_classification_and_user_messaging() {
     b64.push(last);
     let tampered_enc = format!("ENC$v1${b64}");
 
-    conn.execute("UPDATE notes SET content = ?1 WHERE id = ?2", [&tampered_enc, &note.id])
-        .expect("Update failed");
+    conn.execute(
+        "UPDATE notes SET content = ?1 WHERE id = ?2",
+        [&tampered_enc, &note.id],
+    )
+    .expect("Update failed");
 
     let err = NoteRepository::get_by_id_with_key(&conn, &note.id, Some(&dek))
         .expect_err("Reading tampered note must fail");
@@ -715,10 +836,15 @@ fn test_storage_tampered_ciphertext_classification_and_user_messaging() {
     // Invariant: User message must report data damage and NOT blame the password
     let user_msg = err.user_friendly_message();
     assert!(
-        user_msg.contains("Security check failed: the encrypted data appears to be modified or damaged"),
+        user_msg.contains(
+            "Security check failed: the encrypted data appears to be modified or damaged"
+        ),
         "User message must accurately report corruption: {user_msg}"
     );
-    assert!(!user_msg.contains("password"), "Message must not blame password");
+    assert!(
+        !user_msg.contains("password"),
+        "Message must not blame password"
+    );
 }
 
 #[test]
@@ -728,8 +854,12 @@ fn test_storage_invalid_metadata_corruption_handling() {
     run_migrations(&mut conn).expect("Migration failed");
 
     // Insert corrupt JSON metadata into settings
-    SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, "{ invalid_json_syntax: true }")
-        .expect("Set corrupt metadata failed");
+    SettingsRepository::set(
+        &conn,
+        ENCRYPTION_METADATA_KEY,
+        "{ invalid_json_syntax: true }",
+    )
+    .expect("Set corrupt metadata failed");
 
     let init_res = CryptoSession::init_from_database(&conn);
     assert!(init_res.is_err(), "Init from corrupt metadata must fail");
@@ -781,14 +911,8 @@ fn test_storage_temporary_staging_file_cleanup_guarantee() {
     let source_file = env.dir.join("sample.txt");
     fs::write(&source_file, b"temporary cleanup test bytes").expect("Write sample failed");
 
-    AttachmentService::add_attachment_with_key(
-        &conn,
-        &storage,
-        &note.id,
-        &source_file,
-        Some(&dek),
-    )
-    .expect("Save attachment failed");
+    AttachmentService::add_attachment_with_key(&conn, &storage, &note.id, &source_file, Some(&dek))
+        .expect("Save attachment failed");
 
     // Verify no temporary files remain in attachments dir
     let att_dir = env.paths.attachments_dir.join(&note.id);
@@ -843,13 +967,8 @@ fn test_migration_successful_from_unencrypted_installation() {
     let source_file = env.dir.join("plain.txt");
     fs::write(&source_file, b"plaintext attachment content").expect("Write plain failed");
 
-    let att = AttachmentService::add_attachment(
-        &conn,
-        &storage,
-        &note1.id,
-        &source_file,
-    )
-    .expect("Save plain attachment failed");
+    let att = AttachmentService::add_attachment(&conn, &storage, &note1.id, &source_file)
+        .expect("Save plain attachment failed");
 
     // Verify unencrypted state before migration
     assert!(!is_encrypted_string(&note1.title));
@@ -877,10 +996,18 @@ fn test_migration_successful_from_unencrypted_installation() {
 
     // 3. Verify SQLite records are now encrypted
     let (t1, c1): (String, String) = conn
-        .query_row("SELECT title, content FROM notes WHERE id = ?1", [&note1.id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(
+            "SELECT title, content FROM notes WHERE id = ?1",
+            [&note1.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
     let (t2, c2): (String, String) = conn
-        .query_row("SELECT title, content FROM notes WHERE id = ?1", [&note2.id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_row(
+            "SELECT title, content FROM notes WHERE id = ?1",
+            [&note2.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
 
     assert!(is_encrypted_string(&t1));
@@ -894,14 +1021,20 @@ fn test_migration_successful_from_unencrypted_installation() {
     assert_eq!(att_bytes[0], 0x01);
 
     // 5. Verify reading with active DEK recovers exact original content
-    let n1_dec = NoteRepository::get_by_id_with_key(&conn, &note1.id, Some(&dek)).unwrap().unwrap();
-    let n2_dec = NoteRepository::get_by_id_with_key(&conn, &note2.id, Some(&dek)).unwrap().unwrap();
+    let n1_dec = NoteRepository::get_by_id_with_key(&conn, &note1.id, Some(&dek))
+        .unwrap()
+        .unwrap();
+    let n2_dec = NoteRepository::get_by_id_with_key(&conn, &note2.id, Some(&dek))
+        .unwrap()
+        .unwrap();
     assert_eq!(n1_dec.title, "Plaintext Note 1");
     assert_eq!(n1_dec.content, "Plaintext body 1");
     assert_eq!(n2_dec.title, "Plaintext Note 2");
     assert_eq!(n2_dec.content, "Plaintext body 2");
 
-    let open_path = AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek)).unwrap();
+    let open_path =
+        AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek))
+            .unwrap();
     let att_dec = fs::read(&open_path).unwrap();
     assert_eq!(att_dec, b"plaintext attachment content");
 }
@@ -973,7 +1106,10 @@ fn test_migration_large_note_preservation() {
         .expect("Note missing");
 
     assert_eq!(retrieved.content.len(), large_content.len());
-    assert_eq!(retrieved.content, large_content, "Large note content must match byte-for-byte");
+    assert_eq!(
+        retrieved.content, large_content,
+        "Large note content must match byte-for-byte"
+    );
 }
 
 #[test]
@@ -1016,8 +1152,14 @@ fn test_migration_unicode_multilingual_and_emoji_preservation() {
         .expect("Get note failed")
         .expect("Note missing");
 
-    assert_eq!(retrieved.title, unicode_title, "Unicode title must be preserved");
-    assert_eq!(retrieved.content, unicode_content, "Unicode content must be preserved");
+    assert_eq!(
+        retrieved.title, unicode_title,
+        "Unicode title must be preserved"
+    );
+    assert_eq!(
+        retrieved.content, unicode_content,
+        "Unicode content must be preserved"
+    );
 }
 
 #[test]
@@ -1049,13 +1191,8 @@ fn test_migration_attachment_binary_preservation() {
     let source_file = env.dir.join("graphic.png");
     fs::write(&source_file, &binary_data).expect("Write graphic failed");
 
-    let att = AttachmentService::add_attachment(
-        &conn,
-        &storage,
-        &note.id,
-        &source_file,
-    )
-    .expect("Save failed");
+    let att = AttachmentService::add_attachment(&conn, &storage, &note.id, &source_file)
+        .expect("Save failed");
 
     let session = CryptoSession::init_from_database(&conn).expect("Session init failed");
     let password = "BinaryAttachmentPassword!";
@@ -1071,11 +1208,15 @@ fn test_migration_attachment_binary_preservation() {
         .expect("Migration failed");
 
     let dek = session.get_active_dek().expect("DEK failed");
-    let open_path = AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek))
-        .expect("Read decrypted attachment failed");
+    let open_path =
+        AttachmentService::get_attachment_for_open_with_key(&conn, &storage, &att.id, Some(&dek))
+            .expect("Read decrypted attachment failed");
     let decrypted = fs::read(&open_path).unwrap();
 
-    assert_eq!(decrypted, binary_data, "Binary payload must be preserved byte-for-byte");
+    assert_eq!(
+        decrypted, binary_data,
+        "Binary payload must be preserved byte-for-byte"
+    );
 }
 
 #[test]
@@ -1089,7 +1230,12 @@ fn test_migration_interrupted_state_and_startup_recovery_decision() {
         operation_id: "op-test-interrupted-01".to_string(),
         operation_type: "setup".to_string(),
         stage: MigrationStatus::MigrationInProgress,
-        checkpoint_path: env.paths.checkpoints_dir().join("cp-01.pnbackup").to_string_lossy().to_string(),
+        checkpoint_path: env
+            .paths
+            .checkpoints_dir()
+            .join("cp-01.pnbackup")
+            .to_string_lossy()
+            .to_string(),
         started_at: chrono::Utc::now().to_rfc3339(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
@@ -1100,16 +1246,24 @@ fn test_migration_interrupted_state_and_startup_recovery_decision() {
         .expect("Detect at startup failed");
 
     match decision {
-        StartupRecoveryDecision::RestrictedRecoveryRequired { stage, checkpoint_path } => {
+        StartupRecoveryDecision::RestrictedRecoveryRequired {
+            stage,
+            checkpoint_path,
+        } => {
             assert_eq!(stage, MigrationStatus::MigrationInProgress);
             assert!(checkpoint_path.is_some());
         }
-        other => panic!("Expected RestrictedRecoveryRequired startup decision, got {:?}", other),
+        other => panic!(
+            "Expected RestrictedRecoveryRequired startup decision, got {:?}",
+            other
+        ),
     }
 
     // Clean up marker
     MigrationService::remove_transition_marker(&env.paths);
-    assert!(MigrationService::read_transition_marker(&env.paths).unwrap().is_none());
+    assert!(MigrationService::read_transition_marker(&env.paths)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -1170,7 +1324,9 @@ fn test_migration_rollback_interrupted_migration_restores_authoritative_state() 
     assert_eq!(restored_note.content, "Original Plaintext Content");
 
     // Verify marker removed
-    assert!(MigrationService::read_transition_marker(&env.paths).unwrap().is_none());
+    assert!(MigrationService::read_transition_marker(&env.paths)
+        .unwrap()
+        .is_none());
 }
 
 #[test]
@@ -1184,8 +1340,8 @@ fn test_migration_recovery_checkpoint_validation_and_tamper_detection() {
     assert!(cp_path.exists());
 
     // Checkpoint validation
-    let val_res = BackupValidationService::validate_backup(&cp_path, &env.paths)
-        .expect("Validation failed");
+    let val_res =
+        BackupValidationService::validate_backup(&cp_path, &env.paths).expect("Validation failed");
     assert!(val_res.is_valid, "Pre-migration checkpoint must be valid");
 
     // Tamper with checkpoint archive (truncate 100 bytes from end)
@@ -1225,7 +1381,9 @@ fn test_migration_password_change_interruption_atomicity() {
         new_password: "NewPassword456!".to_string(),
         confirm_new_password: "DifferentPassword789!".to_string(),
     };
-    let change_err = session.change_password(&conn, bad_change_dto).expect_err("Must fail");
+    let change_err = session
+        .change_password(&conn, bad_change_dto)
+        .expect_err("Must fail");
     match change_err {
         CryptoError::InvalidMetadata(msg) => {
             assert!(msg.contains("confirmation does not match"));
@@ -1293,7 +1451,8 @@ fn test_migration_restore_of_compatible_encrypted_backup() {
 
     // Restore into a completely clean target environment
     let env_target = TestEnv::new();
-    let mut conn_target = init_connection(&env_target.paths.database_file).expect("Target DB init failed");
+    let mut conn_target =
+        init_connection(&env_target.paths.database_file).expect("Target DB init failed");
     run_migrations(&mut conn_target).expect("Target migration failed");
 
     let restore_res = RestoreService::execute_restore(
@@ -1310,8 +1469,10 @@ fn test_migration_restore_of_compatible_encrypted_backup() {
     assert!(restore_res.success);
 
     // Check session on restored database: must be encrypted and locked
-    let conn_after_restore = init_connection(&env_target.paths.database_file).expect("Reconnect failed");
-    let session_target = CryptoSession::init_from_database(&conn_after_restore).expect("Session init failed");
+    let conn_after_restore =
+        init_connection(&env_target.paths.database_file).expect("Reconnect failed");
+    let session_target =
+        CryptoSession::init_from_database(&conn_after_restore).expect("Session init failed");
     assert!(session_target.is_encryption_enabled());
     assert!(session_target.is_locked());
 
@@ -1392,5 +1553,8 @@ fn test_phase12_task23_security_audit_matrix_all_verified() {
     assert_eq!(verified_migration_recovery_tests.len(), 12);
     // Explicit assertion: zero unexecuted/unverified security tests
     let unverified_count = 0;
-    assert_eq!(unverified_count, 0, "No tests should be reported as NOT VERIFIED");
+    assert_eq!(
+        unverified_count, 0,
+        "No tests should be reported as NOT VERIFIED"
+    );
 }

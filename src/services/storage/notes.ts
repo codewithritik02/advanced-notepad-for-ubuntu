@@ -105,6 +105,20 @@ export const notesStorage = {
   },
 
   /**
+   * Sets or unsets pinned status for a note in SQLite.
+   */
+  async setPinned(id: string, isPinned: boolean): Promise<Note> {
+    return await invoke<Note>("set_note_pinned", { id, isPinned });
+  },
+
+  /**
+   * Toggles pinned status for a note in SQLite.
+   */
+  async togglePinned(id: string): Promise<Note> {
+    return await invoke<Note>("toggle_note_pinned", { id });
+  },
+
+  /**
    * Lists all favorite, non-deleted notes ordered by modified date.
    */
   async listFavorites(contentLimit: number = 300): Promise<Note[]> {

@@ -8,8 +8,19 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint-frontend.mjs",
+    "lint:frontend": "node scripts/lint-frontend.mjs",
     "test": "node --experimental-strip-types tests/frontend.test.mjs",
-    "test:frontend": "node --experimental-strip-types tests/frontend.test.mjs"
+    "test:frontend": "node --experimental-strip-types tests/frontend.test.mjs",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --all",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:db": "cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test",
+    "test:e2e": "cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test",
+    "test:regression": "cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test",
+    "build:desktop": "tauri build --debug --no-bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

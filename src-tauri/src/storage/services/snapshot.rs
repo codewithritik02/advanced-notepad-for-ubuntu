@@ -1,9 +1,9 @@
-use std::fs::{self, File};
-use std::io::{BufReader, Read};
-use std::path::Path;
 use rusqlite::backup::Backup;
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
+use std::path::Path;
 use uuid::Uuid;
 
 use crate::storage::errors::BackupError;
@@ -118,27 +118,25 @@ impl SnapshotManager {
             Ok(_) => {
                 guard.committed = true;
             }
-            Err(rename_err) => {
-                match fs::copy(&temp_path, dest_path) {
-                    Ok(_) => {
-                        let _ = fs::remove_file(&temp_path);
-                        guard.committed = true;
+            Err(rename_err) => match fs::copy(&temp_path, dest_path) {
+                Ok(_) => {
+                    let _ = fs::remove_file(&temp_path);
+                    guard.committed = true;
+                }
+                Err(copy_err) => {
+                    if dest_path.exists() {
+                        let _ = fs::remove_file(dest_path);
                     }
-                    Err(copy_err) => {
-                        if dest_path.exists() {
-                            let _ = fs::remove_file(dest_path);
-                        }
-                        if let Some(28) = copy_err.raw_os_error() {
-                            return Err(BackupError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "Insufficient disk space to complete database snapshot.",
-                            )));
-                        } else {
-                            return Err(BackupError::Io(rename_err));
-                        }
+                    if let Some(28) = copy_err.raw_os_error() {
+                        return Err(BackupError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Insufficient disk space to complete database snapshot.",
+                        )));
+                    } else {
+                        return Err(BackupError::Io(rename_err));
                     }
                 }
-            }
+            },
         }
 
         // 4. Validate the newly created snapshot independently
@@ -147,7 +145,9 @@ impl SnapshotManager {
 
     /// Independently opens a snapshot database, runs integrity checks, verifies schema version,
     /// counts notes/trash/notebooks/tags, and computes its SHA-256 hash.
-    pub fn verify_snapshot_database(snapshot_path: &Path) -> Result<BackupDatabaseInfo, BackupError> {
+    pub fn verify_snapshot_database(
+        snapshot_path: &Path,
+    ) -> Result<BackupDatabaseInfo, BackupError> {
         if !snapshot_path.is_file() {
             return Err(BackupError::ValidationFailed(format!(
                 "Snapshot file does not exist at '{}'",
@@ -211,19 +211,15 @@ impl SnapshotManager {
             .unwrap_or(0);
 
         let notebook_count: usize = conn
-            .query_row(
-                "SELECT COUNT(1) FROM notebooks",
-                [],
-                |row| row.get::<_, i64>(0).map(|c| c as usize),
-            )
+            .query_row("SELECT COUNT(1) FROM notebooks", [], |row| {
+                row.get::<_, i64>(0).map(|c| c as usize)
+            })
             .unwrap_or(0);
 
         let tag_count: usize = conn
-            .query_row(
-                "SELECT COUNT(1) FROM tags",
-                [],
-                |row| row.get::<_, i64>(0).map(|c| c as usize),
-            )
+            .query_row("SELECT COUNT(1) FROM tags", [], |row| {
+                row.get::<_, i64>(0).map(|c| c as usize)
+            })
             .unwrap_or(0);
 
         // Drop connection before hashing to ensure no active SQLite reader handles
@@ -315,7 +311,10 @@ mod tests {
         assert_eq!(info.trash_count, 1, "Must contain 1 trashed note");
         assert_eq!(info.notebook_count, 1, "Must contain 1 notebook");
         assert_eq!(info.tag_count, 1, "Must contain 1 tag");
-        assert_eq!(info.schema_version, 4, "Must match current schema version 4");
+        assert_eq!(
+            info.schema_version, 4,
+            "Must match current schema version 4"
+        );
         assert!(info.file_size > 0, "File size must be positive");
         assert!(!info.sha256.is_empty(), "SHA-256 hash must not be empty");
 

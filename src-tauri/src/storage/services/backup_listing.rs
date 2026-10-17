@@ -1,12 +1,12 @@
+use chrono::{DateTime, Utc};
+use rusqlite::Connection;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use chrono::{DateTime, Utc};
-use rusqlite::Connection;
 
 use crate::storage::errors::BackupError;
 use crate::storage::models::{
-    BackupListItem, BackupType, PRIMARY_BACKUP_EXTENSION, BACKUP_FORMAT_IDENTIFIER,
+    BackupListItem, BackupType, BACKUP_FORMAT_IDENTIFIER, PRIMARY_BACKUP_EXTENSION,
 };
 use crate::storage::paths::StoragePaths;
 use crate::storage::services::backup_scheduler::BackupSchedulerService;
@@ -59,7 +59,10 @@ impl BackupListService {
             let entries = match fs::read_dir(&dir) {
                 Ok(rd) => rd,
                 Err(e) => {
-                    eprintln!("Warning: Failed to read backup directory '{}': {e}", dir.display());
+                    eprintln!(
+                        "Warning: Failed to read backup directory '{}': {e}",
+                        dir.display()
+                    );
                     continue;
                 }
             };
@@ -128,7 +131,10 @@ impl BackupListService {
                                 attachment_count: None,
                                 is_verified: false,
                                 is_valid: false,
-                                issue_summary: Some("Archive format identifier does not match Personal Notepad.".to_string()),
+                                issue_summary: Some(
+                                    "Archive format identifier does not match Personal Notepad."
+                                        .to_string(),
+                                ),
                                 is_encrypted: false,
                             });
                         } else {
@@ -140,7 +146,9 @@ impl BackupListService {
                                 backup_type: manifest.backup_type,
                                 format_version: Some(manifest.format_version),
                                 schema_version: Some(manifest.database.schema_version),
-                                note_count: Some(manifest.database.note_count + manifest.database.trash_count),
+                                note_count: Some(
+                                    manifest.database.note_count + manifest.database.trash_count,
+                                ),
                                 notebook_count: Some(manifest.database.notebook_count),
                                 attachment_count: Some(manifest.attachments_summary.total_files),
                                 is_verified: false, // Discovered archive is unverified until deep validation
@@ -201,7 +209,8 @@ impl BackupListService {
     ) -> Result<bool, BackupError> {
         if BackupSchedulerService::is_restore_in_progress() {
             return Err(BackupError::ConcurrentOperation(
-                "Cannot delete backups while a database restore operation is in progress.".to_string(),
+                "Cannot delete backups while a database restore operation is in progress."
+                    .to_string(),
             ));
         }
 
@@ -240,12 +249,16 @@ impl BackupListService {
 
         if !in_default_dir && !in_custom_dir {
             return Err(BackupError::PermissionDenied(
-                "Only backup archives located within designated backup directories can be removed.".to_string(),
+                "Only backup archives located within designated backup directories can be removed."
+                    .to_string(),
             ));
         }
 
         // Validate extension
-        let ext = target_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let ext = target_path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
         if ext != PRIMARY_BACKUP_EXTENSION && ext != "zip" {
             return Err(BackupError::InvalidRequest(
                 "Only files with backup extensions (.pnbackup or .zip) can be removed.".to_string(),
@@ -277,17 +290,17 @@ fn infer_backup_type_from_filename(path: &Path) -> BackupType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use chrono::Duration;
-    use uuid::Uuid;
-    use zip::write::SimpleFileOptions;
-    use zip::ZipWriter;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
     use crate::storage::models::{
         BackupAttachmentsSummary, BackupDatabaseInfo, BackupManifest, BackupScopeDeclaration,
         CURRENT_BACKUP_FORMAT_VERSION,
     };
+    use chrono::Duration;
+    use std::io::Write;
+    use uuid::Uuid;
+    use zip::write::SimpleFileOptions;
+    use zip::ZipWriter;
 
     fn create_test_archive(
         path: &Path,
@@ -330,7 +343,8 @@ mod tests {
         };
 
         let json = serde_json::to_vec_pretty(&manifest).unwrap();
-        zip.start_file("manifest.json", SimpleFileOptions::default()).unwrap();
+        zip.start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(&json).unwrap();
         zip.finish().unwrap();
     }
@@ -353,7 +367,9 @@ mod tests {
         let file1 = paths.backups_dir.join("personal-notepad-backup-1.pnbackup");
         create_test_archive(&file1, BackupType::Manual, now - Duration::hours(1), 5);
 
-        let file2 = paths.backups_dir.join("personal-notepad-auto-backup-2.pnbackup");
+        let file2 = paths
+            .backups_dir
+            .join("personal-notepad-auto-backup-2.pnbackup");
         create_test_archive(&file2, BackupType::Automatic, now + Duration::hours(1), 10);
 
         // Corrupt archive (non-zip text file)
@@ -365,25 +381,36 @@ mod tests {
         assert_eq!(list.len(), 3);
 
         // Verify valid automatic item
-        let auto_item = list.iter().find(|i| i.file_name == "personal-notepad-auto-backup-2.pnbackup").unwrap();
+        let auto_item = list
+            .iter()
+            .find(|i| i.file_name == "personal-notepad-auto-backup-2.pnbackup")
+            .unwrap();
         assert_eq!(auto_item.backup_type, BackupType::Automatic);
         assert_eq!(auto_item.note_count, Some(10));
         assert!(auto_item.is_valid);
         assert!(!auto_item.is_verified); // Unverified initially
 
         // Verify valid manual item
-        let manual_item = list.iter().find(|i| i.file_name == "personal-notepad-backup-1.pnbackup").unwrap();
+        let manual_item = list
+            .iter()
+            .find(|i| i.file_name == "personal-notepad-backup-1.pnbackup")
+            .unwrap();
         assert_eq!(manual_item.backup_type, BackupType::Manual);
         assert_eq!(manual_item.note_count, Some(5));
         assert!(manual_item.is_valid);
 
         // Corrupt entry is handled gracefully with is_valid: false and issue_summary
-        let corrupt_item = list.iter().find(|i| i.file_name == "corrupt_backup.pnbackup").unwrap();
+        let corrupt_item = list
+            .iter()
+            .find(|i| i.file_name == "corrupt_backup.pnbackup")
+            .unwrap();
         assert!(!corrupt_item.is_valid);
         assert!(corrupt_item.issue_summary.is_some());
 
         // 4. Safe deletion of managed backup
-        let delete_res = BackupListService::delete_managed_backup(&conn, &paths, &file1.to_string_lossy()).unwrap();
+        let delete_res =
+            BackupListService::delete_managed_backup(&conn, &paths, &file1.to_string_lossy())
+                .unwrap();
         assert!(delete_res);
         assert!(!file1.exists());
 
@@ -396,7 +423,8 @@ mod tests {
 
     #[test]
     fn test_delete_managed_backup_safety_guards() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_bk_del_guards_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_bk_del_guards_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -408,7 +436,8 @@ mod tests {
             &conn,
             &paths,
             &paths.database_file.to_string_lossy(),
-        ).unwrap_err();
+        )
+        .unwrap_err();
         match db_err {
             BackupError::PermissionDenied(msg) => assert!(msg.contains("active database")),
             _ => panic!("Expected PermissionDenied on active database"),
@@ -417,11 +446,9 @@ mod tests {
         // 2. Attempting to delete from attachments must be rejected
         let dummy_att = paths.attachments_dir.join("sample.pdf");
         fs::write(&dummy_att, b"pdf data").unwrap();
-        let att_err = BackupListService::delete_managed_backup(
-            &conn,
-            &paths,
-            &dummy_att.to_string_lossy(),
-        ).unwrap_err();
+        let att_err =
+            BackupListService::delete_managed_backup(&conn, &paths, &dummy_att.to_string_lossy())
+                .unwrap_err();
         match att_err {
             BackupError::PermissionDenied(msg) => assert!(msg.contains("attachments")),
             _ => panic!("Expected PermissionDenied on attachments"),
@@ -434,9 +461,12 @@ mod tests {
             &conn,
             &paths,
             &outside_file.to_string_lossy(),
-        ).unwrap_err();
+        )
+        .unwrap_err();
         match outside_err {
-            BackupError::PermissionDenied(msg) => assert!(msg.contains("designated backup directories")),
+            BackupError::PermissionDenied(msg) => {
+                assert!(msg.contains("designated backup directories"))
+            }
             _ => panic!("Expected PermissionDenied on outside file"),
         }
 

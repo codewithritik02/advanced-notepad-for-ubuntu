@@ -1,5 +1,5 @@
-use rusqlite::{params, Connection};
 use crate::storage::errors::StorageError;
+use rusqlite::{params, Connection};
 
 pub struct SettingsRepository;
 
@@ -38,7 +38,8 @@ mod tests {
 
     #[test]
     fn test_settings_upsert_and_retrieval() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_settings_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_settings_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection failed");
         run_migrations(&mut conn).expect("Migrations failed");

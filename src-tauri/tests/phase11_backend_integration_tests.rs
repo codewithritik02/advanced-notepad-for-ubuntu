@@ -1,27 +1,26 @@
+use rusqlite::Connection;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use rusqlite::Connection;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use personal_notepad_lib::storage::{
     errors::BackupError,
-    init_connection, run_migrations,
+    init_connection,
     models::{
-        BackupCompatibilityStatus, BackupCreateRequest, BackupRestoreRequest,
-        BackupType, CreateAttachmentDto, CreateNoteDto, CreateNotebookDto,
-        BACKUP_FORMAT_IDENTIFIER,
+        BackupCompatibilityStatus, BackupCreateRequest, BackupRestoreRequest, BackupType,
+        CreateAttachmentDto, CreateNoteDto, CreateNotebookDto, BACKUP_FORMAT_IDENTIFIER,
     },
     paths::StoragePaths,
     repositories::{
-        AttachmentRepository, NotebookRepository, NoteRepository, SettingsRepository,
-        TagRepository,
+        AttachmentRepository, NoteRepository, NotebookRepository, SettingsRepository, TagRepository,
     },
+    run_migrations,
     services::{
-        compute_file_sha256, BackupRetentionManager, BackupService,
-        BackupValidationService, RestoreService, SearchService,
+        compute_file_sha256, BackupRetentionManager, BackupService, BackupValidationService,
+        RestoreService, SearchService,
     },
 };
 
@@ -35,7 +34,9 @@ impl TestEnv {
     fn new(prefix: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("{}_{}", prefix, Uuid::new_v4()));
         let paths = StoragePaths::from_root(dir.clone());
-        paths.ensure_directories().expect("Failed to create test directories");
+        paths
+            .ensure_directories()
+            .expect("Failed to create test directories");
         Self { dir, paths }
     }
 }
@@ -62,7 +63,8 @@ fn test_integ_01_create_backup_from_populated_db() {
             name: "Project Alpha".to_string(),
             parent_id: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let tag = TagRepository::create(&conn, "Urgent").unwrap();
 
@@ -76,7 +78,8 @@ fn test_integ_01_create_backup_from_populated_db() {
             is_favorite: Some(true),
             is_pinned: Some(true),
         },
-    ).unwrap();
+    )
+    .unwrap();
     TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).unwrap();
 
     // Attachment
@@ -95,7 +98,8 @@ fn test_integ_01_create_backup_from_populated_db() {
             mime_type: Some("image/png".to_string()),
             file_size: att_content.len() as i64,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Trashed note
     let trashed_note = NoteRepository::create(
@@ -105,7 +109,8 @@ fn test_integ_01_create_backup_from_populated_db() {
             content: Some("Obsolete notes.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     NoteRepository::soft_delete(&conn, &trashed_note.id).unwrap();
 
     // Settings
@@ -122,7 +127,8 @@ fn test_integ_01_create_backup_from_populated_db() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).expect("Backup creation must succeed");
+    )
+    .expect("Backup creation must succeed");
 
     assert!(result.success);
     assert_eq!(result.note_count, 2);
@@ -147,7 +153,8 @@ fn test_integ_02_verify_backup_database_integrity() {
             content: Some("Data for SQLite PRAGMA integrity check.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let backup_dest = env.paths.backups_dir.join("integrity_test.pnbackup");
     BackupService::create_backup(
@@ -159,7 +166,8 @@ fn test_integ_02_verify_backup_database_integrity() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Extract database.sqlite to a verification directory
     let extract_dir = env.dir.join("extracted_db");
@@ -179,12 +187,20 @@ fn test_integ_02_verify_backup_database_integrity() {
     let integrity_status: String = extracted_conn
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(integrity_status, "ok", "Database snapshot must pass PRAGMA integrity_check");
+    assert_eq!(
+        integrity_status, "ok",
+        "Database snapshot must pass PRAGMA integrity_check"
+    );
 
     let fk_violations: i64 = extracted_conn
-        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0))
+        .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
-    assert_eq!(fk_violations, 0, "Database snapshot must have 0 foreign key violations");
+    assert_eq!(
+        fk_violations, 0,
+        "Database snapshot must have 0 foreign key violations"
+    );
 
     // Verify notes table contains our record
     let note_count: i64 = extracted_conn
@@ -209,7 +225,8 @@ fn test_integ_03_verify_required_attachments_are_included() {
             content: Some("Testing attachment archive inclusion.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let att_dir = env.paths.get_note_attachments_dir(&note.id).unwrap();
     fs::create_dir_all(&att_dir).unwrap();
@@ -226,7 +243,8 @@ fn test_integ_03_verify_required_attachments_are_included() {
             mime_type: Some("application/pdf".to_string()),
             file_size: file_bytes.len() as i64,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let backup_dest = env.paths.backups_dir.join("att_test.pnbackup");
     BackupService::create_backup(
@@ -238,18 +256,24 @@ fn test_integ_03_verify_required_attachments_are_included() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Inspect archive contents
     let file = File::open(&backup_dest).unwrap();
     let mut zip = ZipArchive::new(file).unwrap();
 
     let entry_name = format!("attachments/{}/{}", note.id, file_name);
-    let mut entry = zip.by_name(&entry_name).expect("Archive must contain attachment entry");
+    let mut entry = zip
+        .by_name(&entry_name)
+        .expect("Archive must contain attachment entry");
 
     let mut extracted_bytes = Vec::new();
     entry.read_to_end(&mut extracted_bytes).unwrap();
-    assert_eq!(extracted_bytes, file_bytes, "Extracted attachment bytes must match exactly");
+    assert_eq!(
+        extracted_bytes, file_bytes,
+        "Extracted attachment bytes must match exactly"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -267,7 +291,8 @@ fn test_integ_04_detect_missing_attachment() {
             title: Some("Missing Attachment Test".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Register attachment in DB, but manifest says it exists while archive omits it
     AttachmentRepository::create(
@@ -279,7 +304,8 @@ fn test_integ_04_detect_missing_attachment() {
             mime_type: Some("image/png".to_string()),
             file_size: 100,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create a backup archive that contains the DB referencing ghost.png, but omits the attachment entry
     let corrupt_archive = env.paths.backups_dir.join("missing_att.pnbackup");
@@ -329,16 +355,23 @@ fn test_integ_04_detect_missing_attachment() {
         zip.write_all(manifest.as_bytes()).unwrap();
 
         zip.start_file("database.sqlite", opts).unwrap();
-        zip.write_all(&fs::read(&env.paths.database_file).unwrap()).unwrap();
+        zip.write_all(&fs::read(&env.paths.database_file).unwrap())
+            .unwrap();
 
         // Intentionally DO NOT write attachments/{note.id}/ghost.png
         zip.finish().unwrap();
     }
 
     let val = BackupValidationService::validate_backup(&corrupt_archive, &env.paths).unwrap();
-    assert!(!val.is_valid, "Archive with missing attachment entry must be marked invalid");
     assert!(
-        val.issues.iter().any(|i| i.code == "ATTACHMENT_ENTRY_MISSING" || i.code == "ATTACHMENT_MISSING_FROM_ARCHIVE"),
+        !val.is_valid,
+        "Archive with missing attachment entry must be marked invalid"
+    );
+    assert!(
+        val.issues
+            .iter()
+            .any(|i| i.code == "ATTACHMENT_ENTRY_MISSING"
+                || i.code == "ATTACHMENT_MISSING_FROM_ARCHIVE"),
         "Must report missing attachment issue"
     );
 }
@@ -362,7 +395,8 @@ fn test_integ_05_detect_modified_archive_entry() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create tampered copy: altered database bytes
     let tampered_dest = env.paths.backups_dir.join("tampered.pnbackup");
@@ -371,7 +405,11 @@ fn test_integ_05_detect_modified_archive_entry() {
         let mut orig_zip = ZipArchive::new(orig_file).unwrap();
 
         let mut manifest_bytes = Vec::new();
-        orig_zip.by_name("manifest.json").unwrap().read_to_end(&mut manifest_bytes).unwrap();
+        orig_zip
+            .by_name("manifest.json")
+            .unwrap()
+            .read_to_end(&mut manifest_bytes)
+            .unwrap();
 
         let tamp_file = File::create(&tampered_dest).unwrap();
         let mut tamp_zip = ZipWriter::new(tamp_file);
@@ -390,7 +428,9 @@ fn test_integ_05_detect_modified_archive_entry() {
     assert!(!val.is_valid, "Tampered archive entry must fail validation");
     assert_eq!(val.compatibility, BackupCompatibilityStatus::Corrupted);
     assert!(
-        val.issues.iter().any(|i| i.code == "DATABASE_CHECKSUM_MISMATCH"),
+        val.issues
+            .iter()
+            .any(|i| i.code == "DATABASE_CHECKSUM_MISMATCH"),
         "Must flag DATABASE_CHECKSUM_MISMATCH"
     );
 }
@@ -410,12 +450,16 @@ fn test_integ_06_detect_corrupted_manifest() {
 
         // Truncated, invalid JSON
         zip.start_file("manifest.json", opts).unwrap();
-        zip.write_all(b"{\"format_identifier\": \"personal-notepad-backup\", \"format_version\": ").unwrap();
+        zip.write_all(b"{\"format_identifier\": \"personal-notepad-backup\", \"format_version\": ")
+            .unwrap();
         zip.finish().unwrap();
     }
 
     let val = BackupValidationService::validate_backup(&corrupt_archive, &env.paths).unwrap();
-    assert!(!val.is_valid, "Archive with corrupted manifest must fail validation");
+    assert!(
+        !val.is_valid,
+        "Archive with corrupted manifest must fail validation"
+    );
     assert_eq!(val.compatibility, BackupCompatibilityStatus::Corrupted);
     assert!(val.issues.iter().any(|i| i.code == "MANIFEST_PARSE_ERROR"));
 }
@@ -430,7 +474,8 @@ fn test_integ_07_reject_unsupported_format_version() {
 
     let mut conn = init_connection(&env.paths.database_file).unwrap();
     run_migrations(&mut conn).unwrap();
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
     drop(conn);
 
     let (hash, file_size) = compute_file_sha256(&env.paths.database_file).unwrap();
@@ -474,8 +519,14 @@ fn test_integ_07_reject_unsupported_format_version() {
 
     let val = BackupValidationService::validate_backup(&unsupp_archive, &env.paths).unwrap();
     assert!(!val.is_valid);
-    assert_eq!(val.compatibility, BackupCompatibilityStatus::IncompatibleVersion);
-    assert!(val.issues.iter().any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
+    assert_eq!(
+        val.compatibility,
+        BackupCompatibilityStatus::IncompatibleVersion
+    );
+    assert!(val
+        .issues
+        .iter()
+        .any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
 }
 
 // -----------------------------------------------------------------------------
@@ -505,7 +556,8 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
             name: "Research Notebook".to_string(),
             parent_id: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let tag = TagRepository::create(&conn, "Important").unwrap();
 
@@ -513,13 +565,16 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
         &conn,
         CreateNoteDto {
             title: Some("Quantum Algorithms".to_string()),
-            content: Some("Shor's and Grover's algorithms provide asymptotic speedups.".to_string()),
+            content: Some(
+                "Shor's and Grover's algorithms provide asymptotic speedups.".to_string(),
+            ),
             format: Some("md".to_string()),
             notebook_id: Some(nb.id.clone()),
             is_favorite: Some(true),
             is_pinned: Some(true),
         },
-    ).unwrap();
+    )
+    .unwrap();
     TagRepository::add_tag_to_note(&conn, &active_note.id, &tag.id).unwrap();
 
     // Attachment
@@ -538,7 +593,8 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
             mime_type: Some("image/svg+xml".to_string()),
             file_size: att_bytes.len() as i64,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Trashed note
     let trashed_note = NoteRepository::create(
@@ -548,7 +604,8 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
             content: Some("Discarded draft content.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     NoteRepository::soft_delete(&conn, &trashed_note.id).unwrap();
 
     // Create Backup of State A
@@ -562,7 +619,8 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Mutate live database into State B (Simulate data mutation / deletion)
     NoteRepository::delete(&conn, &active_note.id, false).unwrap();
@@ -578,7 +636,8 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
             operation_id: Some(format!("op-integ-{prefix}")),
         },
         None::<fn(_)>,
-    ).expect("Restore execution must succeed");
+    )
+    .expect("Restore execution must succeed");
 
     RestoredFixture {
         env,
@@ -600,7 +659,10 @@ fn setup_and_restore_fixture(prefix: &str) -> RestoredFixture {
 fn test_integ_08_restore_valid_backup_into_isolated_env() {
     let fix = setup_and_restore_fixture("integ_08");
     assert!(fix.restore_success, "Restore must report success = true");
-    assert!(PathBuf::from(&fix.checkpoint_path).exists(), "Safety checkpoint must exist");
+    assert!(
+        PathBuf::from(&fix.checkpoint_path).exists(),
+        "Safety checkpoint must exist"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -615,7 +677,10 @@ fn test_integ_09_confirm_notes_and_metadata_are_restored() {
         .unwrap()
         .expect("Note must be restored");
     assert_eq!(note.title, "Quantum Algorithms");
-    assert_eq!(note.content, "Shor's and Grover's algorithms provide asymptotic speedups.");
+    assert_eq!(
+        note.content,
+        "Shor's and Grover's algorithms provide asymptotic speedups."
+    );
     assert_eq!(note.format, "md");
     assert_eq!(note.notebook_id, Some(fix.notebook_id.clone()));
     assert_eq!(note.is_favorite, true);
@@ -642,7 +707,10 @@ fn test_integ_10_confirm_trash_state_is_restored() {
     let trashed = NoteRepository::get_by_id(&conn, &fix.trashed_note_id)
         .unwrap()
         .expect("Trashed note must be restored");
-    assert!(trashed.deleted_at.is_some(), "Deleted note must retain deleted_at timestamp");
+    assert!(
+        trashed.deleted_at.is_some(),
+        "Deleted note must retain deleted_at timestamp"
+    );
 
     let trashed_list = NoteRepository::list_trashed(&conn).unwrap();
     assert_eq!(trashed_list.len(), 1);
@@ -659,13 +727,22 @@ fn test_integ_10_confirm_trash_state_is_restored() {
 #[test]
 fn test_integ_11_confirm_attachments_are_readable_after_restoration() {
     let fix = setup_and_restore_fixture("integ_11");
-    let att_path = fix.env.paths.get_note_attachments_dir(&fix.active_note_id)
+    let att_path = fix
+        .env
+        .paths
+        .get_note_attachments_dir(&fix.active_note_id)
         .unwrap()
         .join(&fix.att_name);
 
-    assert!(att_path.exists(), "Attachment file must exist on disk after restore");
+    assert!(
+        att_path.exists(),
+        "Attachment file must exist on disk after restore"
+    );
     let bytes = fs::read(&att_path).unwrap();
-    assert_eq!(bytes, fix.att_bytes, "Restored attachment bytes must be identical");
+    assert_eq!(
+        bytes, fix.att_bytes,
+        "Restored attachment bytes must be identical"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -678,7 +755,11 @@ fn test_integ_12_confirm_derived_search_data_rebuilt() {
 
     // Query search index
     let results = SearchService::search(&conn, "asymptotic", None).unwrap();
-    assert_eq!(results.len(), 1, "FTS search index must match restored note");
+    assert_eq!(
+        results.len(),
+        1,
+        "FTS search index must match restored note"
+    );
     assert_eq!(results[0].note_id, fix.active_note_id);
 
     // Rebuild index and confirm it remains fully functional
@@ -704,7 +785,8 @@ fn test_integ_13_simulate_failure_during_backup_creation() {
             content: Some("Live data that must not be corrupted by failed backup.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Set destination to an impossible, unwritable path (e.g. inside a regular file)
     let blocking_file = env.dir.join("blocker.txt");
@@ -720,10 +802,13 @@ fn test_integ_13_simulate_failure_during_backup_creation() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap_err();
+    )
+    .unwrap_err();
 
     match err {
-        BackupError::DestinationUnavailable(_) | BackupError::PermissionDenied(_) | BackupError::Io(_) => {}
+        BackupError::DestinationUnavailable(_)
+        | BackupError::PermissionDenied(_)
+        | BackupError::Io(_) => {}
         other => panic!("Expected destination or IO failure, got {other:?}"),
     }
 
@@ -749,7 +834,8 @@ fn test_integ_14_simulate_failure_during_archive_extraction() {
             content: Some("Live data before failed extraction.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create an invalid truncated archive
     let broken_archive = env.paths.backups_dir.join("truncated.pnbackup");
@@ -763,10 +849,13 @@ fn test_integ_14_simulate_failure_during_archive_extraction() {
             operation_id: Some("op-bad-extraction".to_string()),
         },
         None::<fn(_)>,
-    ).unwrap_err();
+    )
+    .unwrap_err();
 
     match err {
-        BackupError::ValidationFailed(_) | BackupError::ArchiveReadFailed(_) | BackupError::Io(_) => {}
+        BackupError::ValidationFailed(_)
+        | BackupError::ArchiveReadFailed(_)
+        | BackupError::Io(_) => {}
         other => panic!("Expected validation or extraction error, got {other:?}"),
     }
 
@@ -792,7 +881,8 @@ fn test_integ_15_simulate_staged_database_validation_failure() {
             content: Some("Live note data.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create an archive with corrupted SQLite database bytes
     let bad_db_archive = env.paths.backups_dir.join("corrupt_db.pnbackup");
@@ -847,10 +937,14 @@ fn test_integ_15_simulate_staged_database_validation_failure() {
             operation_id: Some("op-corrupt-db".to_string()),
         },
         None::<fn(_)>,
-    ).unwrap_err();
+    )
+    .unwrap_err();
 
     assert!(
-        matches!(err, BackupError::ValidationFailed(_) | BackupError::ChecksumMismatch { .. }),
+        matches!(
+            err,
+            BackupError::ValidationFailed(_) | BackupError::ChecksumMismatch { .. }
+        ),
         "Expected validation failure due to corrupt database, got {err:?}"
     );
 
@@ -876,7 +970,8 @@ fn test_integ_16_simulate_schema_migration_failure() {
             content: Some("Must survive migration failure.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create archive with schema_version: 99 (newer than application supports)
     let newer_schema_archive = env.paths.backups_dir.join("future_schema.pnbackup");
@@ -914,7 +1009,8 @@ fn test_integ_16_simulate_schema_migration_failure() {
         zip.write_all(manifest.as_bytes()).unwrap();
 
         zip.start_file("database.sqlite", opts).unwrap();
-        zip.write_all(&fs::read(&env.paths.database_file).unwrap()).unwrap();
+        zip.write_all(&fs::read(&env.paths.database_file).unwrap())
+            .unwrap();
         zip.finish().unwrap();
     }
 
@@ -926,10 +1022,14 @@ fn test_integ_16_simulate_schema_migration_failure() {
             operation_id: Some("op-future-schema".to_string()),
         },
         None::<fn(_)>,
-    ).unwrap_err();
+    )
+    .unwrap_err();
 
     assert!(
-        matches!(err, BackupError::ValidationFailed(_) | BackupError::IncompatibleSchema { .. }),
+        matches!(
+            err,
+            BackupError::ValidationFailed(_) | BackupError::IncompatibleSchema { .. }
+        ),
         "Must abort before activation due to incompatible schema"
     );
 
@@ -955,7 +1055,8 @@ fn test_integ_17_verify_failed_restoration_leaves_original_state_recoverable() {
             content: Some("Critical content before restore attempt.".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Prepare a valid backup
     let valid_backup = env.paths.backups_dir.join("valid.pnbackup");
@@ -968,7 +1069,8 @@ fn test_integ_17_verify_failed_restoration_leaves_original_state_recoverable() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Verify recovery checkpoint directory exists and can record safety checkpoints
     let checkpoints_dir = env.paths.backups_dir.join("checkpoints");
@@ -1004,9 +1106,18 @@ fn test_integ_18_verify_retention_does_not_remove_unrelated_files() {
     assert_eq!(result.deleted_paths.len(), 0);
 
     // Every unrelated file must be completely intact
-    assert!(user_pdf.exists(), "User PDF must NEVER be touched by retention");
-    assert!(user_txt.exists(), "User TXT must NEVER be touched by retention");
-    assert!(user_db.exists(), "User DB must NEVER be touched by retention");
+    assert!(
+        user_pdf.exists(),
+        "User PDF must NEVER be touched by retention"
+    );
+    assert!(
+        user_txt.exists(),
+        "User TXT must NEVER be touched by retention"
+    );
+    assert!(
+        user_db.exists(),
+        "User DB must NEVER be touched by retention"
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -1020,7 +1131,9 @@ fn test_integ_19_repeated_backups_bounded_and_no_tmp_leakage() {
 
     // Create 5 automatic backups with distinct timestamps
     for i in 0..5 {
-        let dest = env.paths.backups_dir.join(format!("personal-notepad-auto-backup-20261014-12000{i}.pnbackup"));
+        let dest = env.paths.backups_dir.join(format!(
+            "personal-notepad-auto-backup-20261014-12000{i}.pnbackup"
+        ));
         let res = BackupService::create_backup(
             &conn,
             &env.paths,
@@ -1030,7 +1143,8 @@ fn test_integ_19_repeated_backups_bounded_and_no_tmp_leakage() {
                 allow_overwrite: Some(true),
             },
             None::<fn(_)>,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(res.success);
     }
 
@@ -1066,7 +1180,8 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             name: nb_name.to_string(),
             parent_id: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // 2. Unicode Tag
     let tag_name = "🏷️ 重要・Важно・महत्वपूर्ण";
@@ -1082,11 +1197,13 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             notebook_id: Some(nb.id.clone()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // 4. Unicode note with emojis, CJK, Cyrillic, Arabic, Hindi
     let unicode_title = "🌐 Unicode & Emoji: 🚀 📝 ✨ 💡 🎯";
-    let unicode_content = "日本語の本文。\nمرحبا بالعالم!\nПривет мир!\nनमस्ते दुनिया!\nComplex Symbols: ∑ ∏ ∫ ≈ ≠ ≤ ≥";
+    let unicode_content =
+        "日本語の本文。\nمرحبا بالعالم!\nПривет мир!\nनमस्ते दुनिया!\nComplex Symbols: ∑ ∏ ∫ ≈ ≠ ≤ ≥";
     let unicode_note = NoteRepository::create(
         &conn,
         CreateNoteDto {
@@ -1097,11 +1214,15 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             is_favorite: Some(true),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     TagRepository::add_tag_to_note(&conn, &unicode_note.id, &tag.id).unwrap();
 
     // 5. Attachment with Unicode filename
-    let att_dir = env.paths.get_note_attachments_dir(&unicode_note.id).unwrap();
+    let att_dir = env
+        .paths
+        .get_note_attachments_dir(&unicode_note.id)
+        .unwrap();
     fs::create_dir_all(&att_dir).unwrap();
     let att_file_name = "写真_2026_скриншот.png";
     let att_bytes = b"UNICODE_FILENAME_ATTACHMENT_BYTES_12345";
@@ -1116,7 +1237,8 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             mime_type: Some("image/png".to_string()),
             file_size: att_bytes.len() as i64,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create Backup
     let backup_path = env.paths.backups_dir.join("unicode_backup.pnbackup");
@@ -1129,7 +1251,8 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             allow_overwrite: Some(true),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Clear live database to prepare for restore test
     NoteRepository::delete(&conn, &empty_note.id, false).unwrap();
@@ -1146,7 +1269,8 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
             operation_id: Some("op-unicode-restore".to_string()),
         },
         None::<fn(_)>,
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(restore_res.success);
 
@@ -1154,16 +1278,22 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
     let restored_conn = init_connection(&env.paths.database_file).unwrap();
 
     // Verify Notebook
-    let restored_nb = NotebookRepository::get_by_id(&restored_conn, &nb.id).unwrap().unwrap();
+    let restored_nb = NotebookRepository::get_by_id(&restored_conn, &nb.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(restored_nb.name, nb_name);
 
     // Verify Empty Note
-    let restored_empty = NoteRepository::get_by_id(&restored_conn, &empty_note.id).unwrap().unwrap();
+    let restored_empty = NoteRepository::get_by_id(&restored_conn, &empty_note.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(restored_empty.title, "Empty Note Title");
     assert_eq!(restored_empty.content, "");
 
     // Verify Unicode Note
-    let restored_unicode = NoteRepository::get_by_id(&restored_conn, &unicode_note.id).unwrap().unwrap();
+    let restored_unicode = NoteRepository::get_by_id(&restored_conn, &unicode_note.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(restored_unicode.title, unicode_title);
     assert_eq!(restored_unicode.content, unicode_content);
 
@@ -1173,7 +1303,11 @@ fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
     assert_eq!(restored_tags[0].name, tag_name);
 
     // Verify Unicode Attachment
-    let restored_att_path = env.paths.get_note_attachments_dir(&unicode_note.id).unwrap().join(att_file_name);
+    let restored_att_path = env
+        .paths
+        .get_note_attachments_dir(&unicode_note.id)
+        .unwrap()
+        .join(att_file_name);
     assert!(restored_att_path.exists());
     assert_eq!(fs::read(restored_att_path).unwrap(), att_bytes);
 }

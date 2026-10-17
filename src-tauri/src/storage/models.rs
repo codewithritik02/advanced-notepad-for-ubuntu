@@ -462,9 +462,18 @@ pub enum DuplicatePolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DuplicateMatch {
-    ExactMatch { existing_id: String, existing_title: String },
-    ContentMatch { existing_id: String, existing_title: String },
-    TitleCollisionOnly { existing_id: String, existing_title: String },
+    ExactMatch {
+        existing_id: String,
+        existing_title: String,
+    },
+    ContentMatch {
+        existing_id: String,
+        existing_title: String,
+    },
+    TitleCollisionOnly {
+        existing_id: String,
+        existing_title: String,
+    },
     None,
 }
 
@@ -645,9 +654,16 @@ pub struct ExportSingleNoteRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExportScope {
-    SingleNote { note_id: String },
-    SelectedNotes { note_ids: Vec<String> },
-    Notebook { notebook_id: String, include_nested: bool },
+    SingleNote {
+        note_id: String,
+    },
+    SelectedNotes {
+        note_ids: Vec<String>,
+    },
+    Notebook {
+        notebook_id: String,
+        include_nested: bool,
+    },
     AllNotes,
 }
 
@@ -1275,7 +1291,8 @@ mod tests {
         att_no_mime.mime_type = None;
         let json_no_mime = serde_json::to_string(&att_no_mime).expect("Serialize null mime");
         assert!(json_no_mime.contains("\"mime_type\":null"));
-        let deserialized_no_mime: Attachment = serde_json::from_str(&json_no_mime).expect("Deserialize null mime");
+        let deserialized_no_mime: Attachment =
+            serde_json::from_str(&json_no_mime).expect("Deserialize null mime");
         assert_eq!(deserialized_no_mime.mime_type, None);
 
         // Test negative size validation rejection
@@ -1396,9 +1413,18 @@ mod tests {
         assert!(LinkTargetLifecycle::Missing.is_missing());
         assert!(!LinkTargetLifecycle::Missing.is_active());
 
-        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Active).unwrap(), "\"active\"");
-        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Trashed).unwrap(), "\"trashed\"");
-        assert_eq!(serde_json::to_string(&LinkTargetLifecycle::Missing).unwrap(), "\"missing\"");
+        assert_eq!(
+            serde_json::to_string(&LinkTargetLifecycle::Active).unwrap(),
+            "\"active\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LinkTargetLifecycle::Trashed).unwrap(),
+            "\"trashed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&LinkTargetLifecycle::Missing).unwrap(),
+            "\"missing\""
+        );
 
         // Test ParsedInternalLink camelCase serialization
         let parsed = ParsedInternalLink {
@@ -1456,21 +1482,51 @@ mod tests {
     #[test]
     fn test_import_export_models_serde() {
         // Test ImportFormat, ExportFormat, DuplicatePolicy, ValidationStatus
-        assert_eq!(serde_json::to_string(&ImportFormat::Txt).unwrap(), "\"txt\"");
+        assert_eq!(
+            serde_json::to_string(&ImportFormat::Txt).unwrap(),
+            "\"txt\""
+        );
         assert_eq!(serde_json::to_string(&ImportFormat::Md).unwrap(), "\"md\"");
-        assert_eq!(serde_json::to_string(&ImportFormat::Json).unwrap(), "\"json\"");
+        assert_eq!(
+            serde_json::to_string(&ImportFormat::Json).unwrap(),
+            "\"json\""
+        );
 
-        assert_eq!(serde_json::to_string(&ExportFormat::Txt).unwrap(), "\"txt\"");
+        assert_eq!(
+            serde_json::to_string(&ExportFormat::Txt).unwrap(),
+            "\"txt\""
+        );
         assert_eq!(serde_json::to_string(&ExportFormat::Md).unwrap(), "\"md\"");
-        assert_eq!(serde_json::to_string(&ExportFormat::Json).unwrap(), "\"json\"");
+        assert_eq!(
+            serde_json::to_string(&ExportFormat::Json).unwrap(),
+            "\"json\""
+        );
 
-        assert_eq!(serde_json::to_string(&DuplicatePolicy::ImportAsNew).unwrap(), "\"import_as_new\"");
-        assert_eq!(serde_json::to_string(&DuplicatePolicy::SkipExact).unwrap(), "\"skip_exact\"");
-        assert_eq!(serde_json::to_string(&DuplicatePolicy::Ask).unwrap(), "\"ask\"");
+        assert_eq!(
+            serde_json::to_string(&DuplicatePolicy::ImportAsNew).unwrap(),
+            "\"import_as_new\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DuplicatePolicy::SkipExact).unwrap(),
+            "\"skip_exact\""
+        );
+        assert_eq!(
+            serde_json::to_string(&DuplicatePolicy::Ask).unwrap(),
+            "\"ask\""
+        );
 
-        assert_eq!(serde_json::to_string(&ValidationStatus::Valid).unwrap(), "\"valid\"");
-        assert_eq!(serde_json::to_string(&ValidationStatus::Warning).unwrap(), "\"warning\"");
-        assert_eq!(serde_json::to_string(&ValidationStatus::Invalid).unwrap(), "\"invalid\"");
+        assert_eq!(
+            serde_json::to_string(&ValidationStatus::Valid).unwrap(),
+            "\"valid\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ValidationStatus::Warning).unwrap(),
+            "\"warning\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ValidationStatus::Invalid).unwrap(),
+            "\"invalid\""
+        );
 
         // Test ImportCandidate camelCase serialization
         let candidate = ImportCandidate {
@@ -1559,8 +1615,12 @@ mod tests {
             version: "1.0".to_string(),
             exported_at: "2026-10-10T10:00:00Z".to_string(),
             note_count: 1,
-            internal_link_policy: Some("Package-scoped internal links map export_id to new local IDs.".to_string()),
-            attachment_policy: Some("Attachments omitted from portable JSON interchange.".to_string()),
+            internal_link_policy: Some(
+                "Package-scoped internal links map export_id to new local IDs.".to_string(),
+            ),
+            attachment_policy: Some(
+                "Attachments omitted from portable JSON interchange.".to_string(),
+            ),
             notes: vec![InterchangeNote {
                 export_id: "exp-1".to_string(),
                 title: "Doc Note".to_string(),
@@ -1602,14 +1662,26 @@ mod tests {
     #[test]
     fn test_backup_domain_models_and_dtos() {
         // 1. Test BackupType serialization
-        assert_eq!(serde_json::to_string(&BackupType::Manual).unwrap(), "\"manual\"");
-        assert_eq!(serde_json::to_string(&BackupType::Automatic).unwrap(), "\"automatic\"");
-        assert_eq!(serde_json::to_string(&BackupType::Checkpoint).unwrap(), "\"checkpoint\"");
+        assert_eq!(
+            serde_json::to_string(&BackupType::Manual).unwrap(),
+            "\"manual\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupType::Automatic).unwrap(),
+            "\"automatic\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BackupType::Checkpoint).unwrap(),
+            "\"checkpoint\""
+        );
 
         // 2. Test BackupManifest round-trip
         let mut checksums = std::collections::HashMap::new();
         checksums.insert("database.sqlite".to_string(), "abc123sha256".to_string());
-        checksums.insert("attachments/note-1/doc.pdf".to_string(), "def456sha256".to_string());
+        checksums.insert(
+            "attachments/note-1/doc.pdf".to_string(),
+            "def456sha256".to_string(),
+        );
 
         let manifest = BackupManifest {
             format_identifier: BACKUP_FORMAT_IDENTIFIER.to_string(),
@@ -1657,7 +1729,8 @@ mod tests {
         assert!(manifest_json.contains("\"note_count\":42"));
         assert!(manifest_json.contains("\"trash_count\":3"));
 
-        let deserialized_manifest: BackupManifest = serde_json::from_str(&manifest_json).expect("Deserialize manifest");
+        let deserialized_manifest: BackupManifest =
+            serde_json::from_str(&manifest_json).expect("Deserialize manifest");
         assert_eq!(manifest, deserialized_manifest);
 
         // 3. Test BackupCreateResult camelCase serialization
@@ -1756,7 +1829,9 @@ mod tests {
         // 8. Test RecoveryCheckpoint serialization & round-trip (Phase 11, Task 16)
         let checkpoint = RecoveryCheckpoint {
             checkpoint_id: "chk-uuid-1".to_string(),
-            file_path: "/data/backups/checkpoints/personal-notepad-checkpoint-20261013-120000.pnbackup".to_string(),
+            file_path:
+                "/data/backups/checkpoints/personal-notepad-checkpoint-20261013-120000.pnbackup"
+                    .to_string(),
             file_name: "personal-notepad-checkpoint-20261013-120000.pnbackup".to_string(),
             file_size: 409600,
             created_at: "2026-10-13T12:00:00Z".to_string(),
@@ -1863,6 +1938,3 @@ mod tests {
         assert_eq!(report, de_report);
     }
 }
-
-
-

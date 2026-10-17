@@ -1,7 +1,7 @@
+use rusqlite::Connection;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
-use rusqlite::Connection;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
@@ -61,7 +61,11 @@ impl BackupService {
     {
         let backup_type = request.backup_type.unwrap_or(BackupType::Manual);
 
-        let mut report_progress = |stage: BackupProgressStage, msg: &str, current: Option<usize>, total: Option<usize>, pct: Option<f32>| {
+        let mut report_progress = |stage: BackupProgressStage,
+                                   msg: &str,
+                                   current: Option<usize>,
+                                   total: Option<usize>,
+                                   pct: Option<f32>| {
             if let Some(ref mut cb) = progress_cb {
                 cb(BackupProgressEvent {
                     stage,
@@ -75,7 +79,13 @@ impl BackupService {
             }
         };
 
-        report_progress(BackupProgressStage::Starting, "Initializing backup process...", None, None, Some(5.0));
+        report_progress(
+            BackupProgressStage::Starting,
+            "Initializing backup process...",
+            None,
+            None,
+            Some(5.0),
+        );
 
         // 1. Resolve final destination path safely (Task 9)
         let allow_overwrite = request.allow_overwrite.unwrap_or(false);
@@ -101,7 +111,9 @@ impl BackupService {
         ));
 
         // Staging directory for temporary database snapshot
-        let temp_staging_dir = paths.backups_dir.join(format!(".staging_{}", Uuid::new_v4()));
+        let temp_staging_dir = paths
+            .backups_dir
+            .join(format!(".staging_{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_staging_dir).map_err(BackupError::Io)?;
         let temp_db_snapshot_path = temp_staging_dir.join("database.sqlite");
 
@@ -138,7 +150,13 @@ impl BackupService {
         };
 
         // 2. Consistent SQLite database snapshot (Task 5)
-        report_progress(BackupProgressStage::SnapshottingDatabase, "Creating consistent database snapshot...", None, None, Some(15.0));
+        report_progress(
+            BackupProgressStage::SnapshottingDatabase,
+            "Creating consistent database snapshot...",
+            None,
+            None,
+            Some(15.0),
+        );
 
         let db_info = match SnapshotManager::create_snapshot(conn, &temp_db_snapshot_path) {
             Ok(info) => info,
@@ -149,18 +167,31 @@ impl BackupService {
         };
 
         // 3. Capture attachments and cross-check with database (Task 6)
-        report_progress(BackupProgressStage::CollectingAttachments, "Collecting and cross-checking attachments...", None, None, Some(35.0));
+        report_progress(
+            BackupProgressStage::CollectingAttachments,
+            "Collecting and cross-checking attachments...",
+            None,
+            None,
+            Some(35.0),
+        );
 
-        let (captured_attachments, attachments_summary) = match AttachmentCaptureManager::capture_attachments(conn, paths) {
-            Ok(res) => res,
-            Err(e) => {
-                cleanup_temp_files();
-                return Err(e);
-            }
-        };
+        let (captured_attachments, attachments_summary) =
+            match AttachmentCaptureManager::capture_attachments(conn, paths) {
+                Ok(res) => res,
+                Err(e) => {
+                    cleanup_temp_files();
+                    return Err(e);
+                }
+            };
 
         // 4. Build Authoritative Backup Manifest (Task 7 & Task 19)
-        report_progress(BackupProgressStage::GeneratingManifest, "Generating backup manifest and cryptographic integrity inventory...", None, None, Some(50.0));
+        report_progress(
+            BackupProgressStage::GeneratingManifest,
+            "Generating backup manifest and cryptographic integrity inventory...",
+            None,
+            None,
+            Some(50.0),
+        );
 
         let (is_encrypted, encryption_algorithm) = ManifestManager::detect_encryption_from_db(conn);
 
@@ -174,24 +205,39 @@ impl BackupService {
         );
 
         // 5. Stream and write ZIP archive
-        report_progress(BackupProgressStage::WritingArchive, "Writing and compressing backup archive...", None, None, Some(60.0));
+        report_progress(
+            BackupProgressStage::WritingArchive,
+            "Writing and compressing backup archive...",
+            None,
+            None,
+            Some(60.0),
+        );
 
         let write_archive = || -> Result<(), BackupError> {
             let archive_file = File::create(&temp_archive_path).map_err(BackupError::Io)?;
             let mut zip = ZipWriter::new(BufWriter::new(archive_file));
-            let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
             // Add manifest.json
-            zip.start_file("manifest.json", options)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to start manifest.json in archive: {e}")))?;
-            let manifest_json = serde_json::to_vec_pretty(&manifest)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to serialize manifest: {e}")))?;
+            zip.start_file("manifest.json", options).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!(
+                    "Failed to start manifest.json in archive: {e}"
+                ))
+            })?;
+            let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to serialize manifest: {e}"))
+            })?;
             zip.write_all(&manifest_json).map_err(BackupError::Io)?;
 
             // Add database.sqlite snapshot
-            zip.start_file("database.sqlite", options)
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to start database.sqlite in archive: {e}")))?;
-            let mut db_file = BufReader::new(File::open(&temp_db_snapshot_path).map_err(BackupError::Io)?);
+            zip.start_file("database.sqlite", options).map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!(
+                    "Failed to start database.sqlite in archive: {e}"
+                ))
+            })?;
+            let mut db_file =
+                BufReader::new(File::open(&temp_db_snapshot_path).map_err(BackupError::Io)?);
             let mut buffer = [0u8; 65536];
             loop {
                 let n = db_file.read(&mut buffer).map_err(BackupError::Io)?;
@@ -204,9 +250,15 @@ impl BackupService {
             // Add attachment files
             for captured in &captured_attachments {
                 zip.start_file(&captured.archive_entry_path, options)
-                    .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to add '{}': {e}", captured.archive_entry_path)))?;
+                    .map_err(|e| {
+                        BackupError::ArchiveWriteFailed(format!(
+                            "Failed to add '{}': {e}",
+                            captured.archive_entry_path
+                        ))
+                    })?;
 
-                let mut att_file = BufReader::new(File::open(&captured.source_path).map_err(BackupError::Io)?);
+                let mut att_file =
+                    BufReader::new(File::open(&captured.source_path).map_err(BackupError::Io)?);
                 loop {
                     let n = att_file.read(&mut buffer).map_err(BackupError::Io)?;
                     if n == 0 {
@@ -216,8 +268,9 @@ impl BackupService {
                 }
             }
 
-            zip.finish()
-                .map_err(|e| BackupError::ArchiveWriteFailed(format!("Failed to finalize archive: {e}")))?;
+            zip.finish().map_err(|e| {
+                BackupError::ArchiveWriteFailed(format!("Failed to finalize archive: {e}"))
+            })?;
 
             Ok(())
         };
@@ -228,7 +281,13 @@ impl BackupService {
         }
 
         // 6. Post-write read-back verification (Task 7)
-        report_progress(BackupProgressStage::VerifyingArchive, "Performing post-write read-back verification...", None, None, Some(85.0));
+        report_progress(
+            BackupProgressStage::VerifyingArchive,
+            "Performing post-write read-back verification...",
+            None,
+            None,
+            Some(85.0),
+        );
 
         let validation_res = match ManifestManager::validate_archive(&temp_archive_path) {
             Ok(res) => res,
@@ -259,28 +318,26 @@ impl BackupService {
             Ok(_) => {
                 temp_guard.committed = true;
             }
-            Err(rename_err) => {
-                match fs::copy(&temp_archive_path, &target_file_path) {
-                    Ok(_) => {
-                        let _ = fs::remove_file(&temp_archive_path);
-                        temp_guard.committed = true;
+            Err(rename_err) => match fs::copy(&temp_archive_path, &target_file_path) {
+                Ok(_) => {
+                    let _ = fs::remove_file(&temp_archive_path);
+                    temp_guard.committed = true;
+                }
+                Err(copy_err) => {
+                    if target_file_path.exists() {
+                        let _ = fs::remove_file(&target_file_path);
                     }
-                    Err(copy_err) => {
-                        if target_file_path.exists() {
-                            let _ = fs::remove_file(&target_file_path);
-                        }
-                        cleanup_temp_files();
-                        if let Some(28) = copy_err.raw_os_error() {
-                            return Err(BackupError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                "Insufficient disk space to complete backup.",
-                            )));
-                        } else {
-                            return Err(BackupError::Io(rename_err));
-                        }
+                    cleanup_temp_files();
+                    if let Some(28) = copy_err.raw_os_error() {
+                        return Err(BackupError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "Insufficient disk space to complete backup.",
+                        )));
+                    } else {
+                        return Err(BackupError::Io(rename_err));
                     }
                 }
-            }
+            },
         }
 
         // Clean up temporary staging directory
@@ -318,7 +375,13 @@ impl BackupService {
             }
         }
 
-        report_progress(BackupProgressStage::Completed, "Backup created and verified successfully.", None, None, Some(100.0));
+        report_progress(
+            BackupProgressStage::Completed,
+            "Backup created and verified successfully.",
+            None,
+            None,
+            Some(100.0),
+        );
 
         Ok(BackupCreateResult {
             success: true,
@@ -339,10 +402,10 @@ impl BackupService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::path::Path;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
+    use std::io::Write;
+    use std::path::Path;
 
     #[test]
     fn test_task_8_manual_backup_creation_end_to_end() {
@@ -362,11 +425,14 @@ mod tests {
             rusqlite::params![note_id, now],
         ).expect("Insert note");
 
-        let note_att_dir = paths.get_note_attachments_dir(&note_id).expect("Get note att dir");
+        let note_att_dir = paths
+            .get_note_attachments_dir(&note_id)
+            .expect("Get note att dir");
         let stored_name = format!("{}.txt", Uuid::new_v4());
         let att_file_path = note_att_dir.join(&stored_name);
         let mut f = File::create(&att_file_path).expect("Create attachment file");
-        f.write_all(b"Attachment raw data content").expect("Write attachment bytes");
+        f.write_all(b"Attachment raw data content")
+            .expect("Write attachment bytes");
         drop(f);
 
         let att_id = Uuid::new_v4().to_string();
@@ -411,11 +477,13 @@ mod tests {
         assert_eq!(val.manifest.as_ref().unwrap().database.note_count, 1);
 
         // 4. Verify live database is still active and unmodified
-        let live_check: String = conn.query_row(
-            "SELECT title FROM notes WHERE id = ?1",
-            rusqlite::params![note_id],
-            |r| r.get(0),
-        ).expect("Query live db");
+        let live_check: String = conn
+            .query_row(
+                "SELECT title FROM notes WHERE id = ?1",
+                rusqlite::params![note_id],
+                |r| r.get(0),
+            )
+            .expect("Query live db");
         assert_eq!(live_check, "Test Note for Backup");
 
         // Clean up

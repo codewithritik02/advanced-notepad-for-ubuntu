@@ -1,7 +1,7 @@
+use crate::storage::errors::CryptoError;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use serde::{Deserialize, Serialize};
-use crate::storage::errors::CryptoError;
 
 pub const MIN_PASSWORD_LENGTH: usize = 8;
 pub const MAX_PASSWORD_LENGTH: usize = 1024;
@@ -157,20 +157,38 @@ mod tests {
 
     #[test]
     fn test_validate_password_bounds() {
-        assert!(validate_password("short").is_err(), "Password < 8 chars must be rejected");
-        assert!(validate_password("        ").is_err(), "Whitespace-only password must be rejected");
-        assert!(validate_password("correct-horse-battery-staple").is_ok(), "Legitimate long password must be accepted");
-        assert!(validate_password("12345678").is_ok(), "8 chars boundary password must be accepted");
+        assert!(
+            validate_password("short").is_err(),
+            "Password < 8 chars must be rejected"
+        );
+        assert!(
+            validate_password("        ").is_err(),
+            "Whitespace-only password must be rejected"
+        );
+        assert!(
+            validate_password("correct-horse-battery-staple").is_ok(),
+            "Legitimate long password must be accepted"
+        );
+        assert!(
+            validate_password("12345678").is_ok(),
+            "8 chars boundary password must be accepted"
+        );
 
         let huge_pwd = "a".repeat(1025);
-        assert!(validate_password(&huge_pwd).is_err(), "Password > 1024 chars must be rejected");
+        assert!(
+            validate_password(&huge_pwd).is_err(),
+            "Password > 1024 chars must be rejected"
+        );
     }
 
     #[test]
     fn test_secret_string_redacted_debug() {
         let sec = SecretString::new("SuperSecret123!".to_string());
         let debug_str = format!("{sec:?}");
-        assert!(!debug_str.contains("SuperSecret123!"), "Secret must never appear in Debug output");
+        assert!(
+            !debug_str.contains("SuperSecret123!"),
+            "Secret must never appear in Debug output"
+        );
         assert!(debug_str.contains("[REDACTED SECRET STRING]"));
     }
 
@@ -189,7 +207,10 @@ mod tests {
             confirm_password: "MySecretPassword".to_string(),
         };
         let debug_str = format!("{setup:?}");
-        assert!(!debug_str.contains("MySecretPassword"), "DTO Debug must not leak passwords");
+        assert!(
+            !debug_str.contains("MySecretPassword"),
+            "DTO Debug must not leak passwords"
+        );
         assert!(debug_str.contains("[REDACTED]"));
     }
 }

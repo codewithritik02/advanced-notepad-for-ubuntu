@@ -39,5 +39,3 @@ pub use restore::RestoreService;
 pub use search::SearchService;
 pub use snapshot::{compute_file_sha256, SnapshotManager};
 pub use trash::TrashService;
-
-

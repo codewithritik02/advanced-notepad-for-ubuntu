@@ -17,7 +17,7 @@ mod tests {
     use super::*;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
-    use crate::storage::models::{CreateNotebookDto, CreateNoteDto, UpdateNoteDto};
+    use crate::storage::models::{CreateNoteDto, CreateNotebookDto, UpdateNoteDto};
 
     #[test]
     fn test_repositories_crud_and_persistence() {
@@ -33,7 +33,8 @@ mod tests {
                 name: "Work Projects".to_string(),
                 parent_id: None,
             },
-        ).expect("Create parent notebook failed");
+        )
+        .expect("Create parent notebook failed");
 
         let child_nb = NotebookRepository::create(
             &conn,
@@ -41,7 +42,8 @@ mod tests {
                 name: "Personal Notepad".to_string(),
                 parent_id: Some(parent_nb.id.clone()),
             },
-        ).expect("Create child notebook failed");
+        )
+        .expect("Create child notebook failed");
 
         let nbs = NotebookRepository::list(&conn).expect("List notebooks failed");
         assert_eq!(nbs.len(), 2);
@@ -58,7 +60,8 @@ mod tests {
                 is_favorite: Some(true),
                 is_pinned: Some(true),
             },
-        ).expect("Create note failed");
+        )
+        .expect("Create note failed");
 
         assert_eq!(note.title, "Architecture Design");
         assert_eq!(note.format, "md");
@@ -84,7 +87,8 @@ mod tests {
                 is_pinned: None,
                 is_deleted: None,
             },
-        ).expect("Update note failed");
+        )
+        .expect("Update note failed");
         assert_eq!(updated.title, "Updated Title 🚀");
         assert_eq!(updated.content, "New content with emojis");
         assert!(!updated.is_favorite);
@@ -96,7 +100,8 @@ mod tests {
         TagRepository::add_tag_to_note(&conn, &note.id, &tag.id).expect("Link tag 1 failed");
         TagRepository::add_tag_to_note(&conn, &note.id, &tag2.id).expect("Link tag 2 failed");
 
-        let note_tags = TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags failed");
+        let note_tags =
+            TagRepository::get_tags_for_note(&conn, &note.id).expect("Get note tags failed");
         assert_eq!(note_tags.len(), 2);
 
         // 4. Settings

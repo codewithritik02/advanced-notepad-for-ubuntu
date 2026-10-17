@@ -1,5 +1,3 @@
-use std::path::Path;
-use tauri::{AppHandle, Emitter, State};
 use crate::storage::{
     models::{
         BackupCreateRequest, BackupCreateResult, BackupHealthStatus, BackupListItem,
@@ -13,6 +11,8 @@ use crate::storage::{
     },
     Database, StoragePaths,
 };
+use std::path::Path;
+use tauri::{AppHandle, Emitter, State};
 
 /// Creates a consistent, verified manual or automatic backup of Personal Notepad data.
 #[tauri::command]
@@ -133,8 +133,7 @@ pub fn preview_restore(
     file_path: String,
 ) -> Result<RestorePreviewResult, String> {
     let archive_path = Path::new(file_path.trim());
-    RestoreService::preview_restore(archive_path, &paths)
-        .map_err(|e| e.user_friendly_message())
+    RestoreService::preview_restore(archive_path, &paths).map_err(|e| e.user_friendly_message())
 }
 
 /// Creates an immediate, verified pre-restore recovery checkpoint of current working data (Phase 11, Task 16).
@@ -144,8 +143,7 @@ pub fn create_recovery_checkpoint(
     paths: State<'_, StoragePaths>,
 ) -> Result<RecoveryCheckpoint, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    RestoreService::create_recovery_checkpoint(&conn, &paths)
-        .map_err(|e| e.user_friendly_message())
+    RestoreService::create_recovery_checkpoint(&conn, &paths).map_err(|e| e.user_friendly_message())
 }
 
 /// Lists all available pre-restore recovery checkpoints in descending chronological order (Phase 11, Task 16).
@@ -153,8 +151,7 @@ pub fn create_recovery_checkpoint(
 pub fn list_recovery_checkpoints(
     paths: State<'_, StoragePaths>,
 ) -> Result<Vec<RecoveryCheckpoint>, String> {
-    RestoreService::list_recovery_checkpoints(&paths)
-        .map_err(|e| e.user_friendly_message())
+    RestoreService::list_recovery_checkpoints(&paths).map_err(|e| e.user_friendly_message())
 }
 
 /// Retrieves the most recent verified recovery checkpoint, if any (Phase 11, Task 16).
@@ -162,8 +159,7 @@ pub fn list_recovery_checkpoints(
 pub fn get_latest_recovery_checkpoint(
     paths: State<'_, StoragePaths>,
 ) -> Result<Option<RecoveryCheckpoint>, String> {
-    RestoreService::get_latest_recovery_checkpoint(&paths)
-        .map_err(|e| e.user_friendly_message())
+    RestoreService::get_latest_recovery_checkpoint(&paths).map_err(|e| e.user_friendly_message())
 }
 
 /// Safely extracts candidate backup archive into an isolated staging location and verifies contents (Phase 11, Task 17).
@@ -232,7 +228,8 @@ pub fn check_and_recover_interrupted_restore(
     paths: State<'_, StoragePaths>,
     session: State<'_, crate::storage::crypto::CryptoSession>,
 ) -> Result<Option<String>, String> {
-    let msg = RestoreService::recover_if_interrupted(&paths).map_err(|e| e.user_friendly_message())?;
+    let msg =
+        RestoreService::recover_if_interrupted(&paths).map_err(|e| e.user_friendly_message())?;
     if msg.is_some() {
         if let Ok(conn) = state.conn.lock() {
             let _ = session.refresh_from_database(&conn, &paths);
@@ -254,9 +251,7 @@ pub fn validate_post_restore_state(
 
 /// Cancels an in-flight restore operation during its cancellable preparation phase (Phase 11, Task 21).
 #[tauri::command]
-pub fn cancel_restore_operation(
-    operation_id: String,
-) -> Result<bool, String> {
+pub fn cancel_restore_operation(operation_id: String) -> Result<bool, String> {
     Ok(RestoreService::request_cancellation(&operation_id))
 }
 
@@ -269,9 +264,3 @@ pub fn get_backup_health_status(
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     BackupHealthService::get_health_status(&conn, &paths).map_err(|e| e.user_friendly_message())
 }
-
-
-
-
-
-

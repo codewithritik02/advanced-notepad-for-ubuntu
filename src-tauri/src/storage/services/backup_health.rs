@@ -1,12 +1,10 @@
+use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
-use rusqlite::Connection;
 use uuid::Uuid;
 
 use crate::storage::errors::BackupError;
-use crate::storage::models::{
-    BackupHealthLevel, BackupHealthStatus, BackupHealthWarning,
-};
+use crate::storage::models::{BackupHealthLevel, BackupHealthStatus, BackupHealthWarning};
 use crate::storage::paths::StoragePaths;
 use crate::storage::services::backup_listing::BackupListService;
 use crate::storage::services::backup_scheduler::BackupSchedulerService;
@@ -49,13 +47,18 @@ impl BackupHealthService {
             let dest_probe = if dest.exists() {
                 dest.to_path_buf()
             } else {
-                dest.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+                dest.parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
             };
 
             let db_probe = if db_file.exists() {
                 db_file.to_path_buf()
             } else {
-                db_file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+                db_file
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."))
             };
 
             if let (Ok(m1), Ok(m2)) = (fs::metadata(&dest_probe), fs::metadata(&db_probe)) {
@@ -157,7 +160,8 @@ impl BackupHealthService {
             warnings.push(BackupHealthWarning {
                 code: "LATEST_BACKUP_UNVERIFIED".to_string(),
                 level: "warning".to_string(),
-                message: "The most recent backup file failed verification or is corrupted.".to_string(),
+                message: "The most recent backup file failed verification or is corrupted."
+                    .to_string(),
                 detail: latest_backup_name.clone(),
             });
         }
@@ -195,7 +199,10 @@ impl BackupHealthService {
             BackupHealthLevel::Critical
         } else if !settings.auto_backup_enabled {
             BackupHealthLevel::Disabled
-        } else if warnings.iter().any(|w| w.level == "warning" || w.level == "critical") {
+        } else if warnings
+            .iter()
+            .any(|w| w.level == "warning" || w.level == "critical")
+        {
             BackupHealthLevel::Warning
         } else {
             BackupHealthLevel::Healthy
@@ -227,9 +234,9 @@ mod tests {
     use super::*;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
+    use crate::storage::models::BackupCreateRequest;
     use crate::storage::models::{BackupSettings, BackupType};
     use crate::storage::services::backup::BackupService;
-    use crate::storage::models::BackupCreateRequest;
 
     #[test]
     fn test_backup_health_status_on_fresh_database() {
@@ -249,7 +256,10 @@ mod tests {
         assert_eq!(health.health_level, BackupHealthLevel::Warning);
 
         // Contains NO_VERIFIED_BACKUP warning
-        assert!(health.warnings.iter().any(|w| w.code == "NO_VERIFIED_BACKUP"));
+        assert!(health
+            .warnings
+            .iter()
+            .any(|w| w.code == "NO_VERIFIED_BACKUP"));
 
         // Clean up
         drop(conn);
@@ -271,7 +281,13 @@ mod tests {
             backup_type: Some(BackupType::Automatic),
             allow_overwrite: Some(false),
         };
-        let res = BackupService::create_backup(&conn, &paths, req, None::<fn(crate::storage::models::BackupProgressEvent)>).unwrap();
+        let res = BackupService::create_backup(
+            &conn,
+            &paths,
+            req,
+            None::<fn(crate::storage::models::BackupProgressEvent)>,
+        )
+        .unwrap();
         assert!(res.verified);
 
         // Update scheduler state to reflect success
@@ -312,7 +328,10 @@ mod tests {
         let health = BackupHealthService::get_health_status(&conn, &paths).unwrap();
         assert!(!health.auto_backup_enabled);
         assert_eq!(health.health_level, BackupHealthLevel::Disabled);
-        assert!(health.warnings.iter().any(|w| w.code == "AUTO_BACKUP_DISABLED"));
+        assert!(health
+            .warnings
+            .iter()
+            .any(|w| w.code == "AUTO_BACKUP_DISABLED"));
 
         // Clean up
         drop(conn);
@@ -337,8 +356,14 @@ mod tests {
 
         let health = BackupHealthService::get_health_status(&conn, &paths).unwrap();
         assert_eq!(health.health_level, BackupHealthLevel::Critical);
-        assert_eq!(health.last_failure_category, Some("InsufficientDiskSpace".to_string()));
-        assert!(health.warnings.iter().any(|w| w.code == "LAST_BACKUP_FAILED"));
+        assert_eq!(
+            health.last_failure_category,
+            Some("InsufficientDiskSpace".to_string())
+        );
+        assert!(health
+            .warnings
+            .iter()
+            .any(|w| w.code == "LAST_BACKUP_FAILED"));
 
         // Clean up
         drop(conn);

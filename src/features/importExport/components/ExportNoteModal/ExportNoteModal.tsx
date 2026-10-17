@@ -18,25 +18,8 @@ export interface ExportNoteModalProps {
   onSuccess?: (filePath: string) => void;
 }
 
-export function sanitizeExportFilename(title: string): string {
-  const illegal = /[/\\:*?"<>|]/g;
-  let cleaned = (title || "").replace(illegal, "").trim();
-  // Strip leading dots to prevent creating hidden files
-  cleaned = cleaned.replace(/^\.+/, "");
-  // Strip trailing dots and spaces
-  cleaned = cleaned.replace(/[. ]+$/, "");
-  if (!cleaned) {
-    return "Untitled Note";
-  }
-  const upper = cleaned.toUpperCase();
-  const isReserved = [
-    "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-  ].includes(upper);
-  const safeName = isReserved ? `_${cleaned}` : cleaned;
-  return safeName.length > 180 ? safeName.slice(0, 180) : safeName;
-}
+import { sanitizeExportFilename } from "../../utils";
+export { sanitizeExportFilename };
 
 export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
   isOpen,

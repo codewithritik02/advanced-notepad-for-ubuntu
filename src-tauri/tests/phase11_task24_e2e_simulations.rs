@@ -3,14 +3,15 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use personal_notepad_lib::storage::{
-    init_connection, run_migrations,
+    init_connection,
     models::{
         BackupCompatibilityStatus, BackupCreateRequest, BackupHealthLevel, BackupProgressEvent,
         BackupRestoreRequest, BackupType, CreateNoteDto, CreateNotebookDto,
         RestoreActivationMarker, RestoreActivationPhase,
     },
     paths::StoragePaths,
-    repositories::{NotebookRepository, NoteRepository, TagRepository},
+    repositories::{NoteRepository, NotebookRepository, TagRepository},
+    run_migrations,
     services::{
         BackupHealthService, BackupRetentionManager, BackupSchedulerService, BackupService,
         BackupSettingsService, BackupValidationService, RestoreService,
@@ -27,7 +28,9 @@ impl TestEnv {
     fn new(prefix: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("{}_{}", prefix, Uuid::new_v4()));
         let paths = StoragePaths::from_root(dir.clone());
-        paths.ensure_directories().expect("Failed to create test directories");
+        paths
+            .ensure_directories()
+            .expect("Failed to create test directories");
         Self { dir, paths }
     }
 }
@@ -64,7 +67,8 @@ fn test_scenario_a_normal_recovery_lifecycle() {
             name: "Theoretical Astrophysics".to_string(),
             parent_id: None,
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let note_active_1 = NoteRepository::create(
         &conn,
@@ -75,7 +79,8 @@ fn test_scenario_a_normal_recovery_lifecycle() {
             is_favorite: Some(true),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let _note_active_2 = NoteRepository::create(
         &conn,
@@ -86,13 +91,17 @@ fn test_scenario_a_normal_recovery_lifecycle() {
             is_favorite: Some(false),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let tag_grav = TagRepository::create(&conn, "relativity").unwrap();
     TagRepository::add_tag_to_note(&conn, &note_active_1.id, &tag_grav.id).unwrap();
 
     // 4. Attach a file
-    let att_dir = env.paths.get_note_attachments_dir(&note_active_1.id).unwrap();
+    let att_dir = env
+        .paths
+        .get_note_attachments_dir(&note_active_1.id)
+        .unwrap();
     let att_filename = format!("{}.pdf", Uuid::new_v4());
     let att_bytes = b"%PDF-1.4 Chirp Strain Data Amplitude FFT";
     fs::write(att_dir.join(&att_filename), att_bytes).unwrap();
@@ -121,11 +130,13 @@ fn test_scenario_a_normal_recovery_lifecycle() {
             content: Some("Old draft moved to trash".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
     NoteRepository::soft_delete(&conn, &note_trashed.id).unwrap();
 
     // Flush WAL writes to SQLite disk file
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+        .unwrap();
 
     // 6. Create and validate a backup
     let backup_req = BackupCreateRequest {
@@ -138,7 +149,8 @@ fn test_scenario_a_normal_recovery_lifecycle() {
         &env.paths,
         backup_req,
         None::<fn(BackupProgressEvent)>,
-    ).expect("Backup creation failed");
+    )
+    .expect("Backup creation failed");
 
     assert!(backup_res.verified);
     assert_eq!(backup_res.note_count, 3); // 2 active + 1 trash
@@ -159,22 +171,27 @@ fn test_scenario_a_normal_recovery_lifecycle() {
             content: Some("Intervening draft that should be replaced by restore".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "UPDATE notes SET content = 'Corrupted intervening edit' WHERE id = ?1",
         rusqlite::params![note_active_1.id],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Delete attachment from live database and disk
     conn.execute(
         "DELETE FROM attachments WHERE note_id = ?1",
         rusqlite::params![note_active_1.id],
-    ).unwrap();
+    )
+    .unwrap();
     let _ = fs::remove_file(att_dir.join(&att_filename));
 
     // Confirm state before restore
-    let total_notes_before: i64 = conn.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    let total_notes_before: i64 = conn
+        .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(total_notes_before, 4);
 
     // 8. Restore the backup in controlled environment
@@ -187,7 +204,8 @@ fn test_scenario_a_normal_recovery_lifecycle() {
         &env.paths,
         restore_req,
         None::<fn(BackupProgressEvent)>,
-    ).expect("Restore execution failed");
+    )
+    .expect("Restore execution failed");
 
     assert!(restore_res.success);
     assert_eq!(restore_res.note_count, 2);
@@ -195,22 +213,34 @@ fn test_scenario_a_normal_recovery_lifecycle() {
     assert_eq!(restore_res.attachment_count, 1);
 
     // 9. Verify restored state matches the backup exactly
-    let note1_restored = NoteRepository::get_by_id(&conn, &note_active_1.id).unwrap().unwrap();
+    let note1_restored = NoteRepository::get_by_id(&conn, &note_active_1.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(note1_restored.title, "Gravitational Wave Interferometry");
-    assert_eq!(note1_restored.content, "Chirp signals and black hole merger dynamics");
+    assert_eq!(
+        note1_restored.content,
+        "Chirp signals and black hole merger dynamics"
+    );
     assert!(note1_restored.is_favorite);
     assert!(note1_restored.deleted_at.is_none());
 
-    let trashed_restored = NoteRepository::get_by_id(&conn, &note_trashed.id).unwrap().unwrap();
+    let trashed_restored = NoteRepository::get_by_id(&conn, &note_trashed.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(trashed_restored.title, "Superseded Numerical Simulation");
-    assert!(trashed_restored.deleted_at.is_some(), "Trash status must be preserved");
+    assert!(
+        trashed_restored.deleted_at.is_some(),
+        "Trash status must be preserved"
+    );
 
     // Intervening draft must be removed
-    let post_backup_check: i64 = conn.query_row(
-        "SELECT COUNT(1) FROM notes WHERE title = 'Ephemeral Work Post-Backup'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let post_backup_check: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM notes WHERE title = 'Ephemeral Work Post-Backup'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(post_backup_check, 0);
 
     // Restored attachment bytes on disk
@@ -222,7 +252,8 @@ fn test_scenario_a_normal_recovery_lifecycle() {
     // Pre-restore checkpoint preserved
     let checkpoint_path = Path::new(&restore_res.checkpoint_path);
     assert!(checkpoint_path.exists());
-    let chk_val = RestoreService::validate_recovery_checkpoint(checkpoint_path, &env.paths).unwrap();
+    let chk_val =
+        RestoreService::validate_recovery_checkpoint(checkpoint_path, &env.paths).unwrap();
     assert!(chk_val.is_valid);
     let chk_manifest = chk_val.manifest.unwrap();
     assert_eq!(chk_manifest.database.note_count, 3);
@@ -231,7 +262,9 @@ fn test_scenario_a_normal_recovery_lifecycle() {
     // 10. Restart application (cold connection reopening)
     drop(conn);
     let conn_restarted = init_connection(&env.paths.database_file).expect("Reopen failed");
-    let total_restarted: i64 = conn_restarted.query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0)).unwrap();
+    let total_restarted: i64 = conn_restarted
+        .query_row("SELECT COUNT(1) FROM notes", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(total_restarted, 3);
 }
 
@@ -256,7 +289,8 @@ fn test_scenario_b_corrupt_backup_detection_and_defense() {
             content: Some("Live data that must be defended against corrupt archives".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // 1-2. Corrupted archive file
     let corrupt_archive = env.paths.backups_dir.join("corrupted_payload.pnbackup");
@@ -266,7 +300,10 @@ fn test_scenario_b_corrupt_backup_detection_and_defense() {
     let val = BackupValidationService::validate_backup(&corrupt_archive, &env.paths).unwrap();
 
     // 4. Confirm restoration is blocked
-    assert!(!val.is_valid, "Corrupt backup validation must report invalid");
+    assert!(
+        !val.is_valid,
+        "Corrupt backup validation must report invalid"
+    );
     assert_eq!(val.compatibility, BackupCompatibilityStatus::Corrupted);
 
     let restore_req = BackupRestoreRequest {
@@ -279,12 +316,20 @@ fn test_scenario_b_corrupt_backup_detection_and_defense() {
         restore_req,
         None::<fn(BackupProgressEvent)>,
     );
-    assert!(restore_res.is_err(), "Restoration must fail fast on corrupt archive");
+    assert!(
+        restore_res.is_err(),
+        "Restoration must fail fast on corrupt archive"
+    );
 
     // 5. Confirm current application data remains unchanged
-    let note_after = NoteRepository::get_by_id(&conn, &live_note.id).unwrap().unwrap();
+    let note_after = NoteRepository::get_by_id(&conn, &live_note.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(note_after.title, "Critical Inviolable Note");
-    assert_eq!(note_after.content, "Live data that must be defended against corrupt archives");
+    assert_eq!(
+        note_after.content,
+        "Live data that must be defended against corrupt archives"
+    );
 }
 
 // =============================================================================
@@ -308,11 +353,15 @@ fn test_scenario_c_interrupted_restore_and_rollback_recovery() {
             content: Some("Must survive crash recovery".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // 2. Simulate failure during activation: seed active marker and pre-restore swap files
     let op_id = Uuid::new_v4().to_string();
-    let sim_db_bak = env.paths.root.join(format!(".db_pre_restore_{op_id}.sqlite"));
+    let sim_db_bak = env
+        .paths
+        .root
+        .join(format!(".db_pre_restore_{op_id}.sqlite"));
     let sim_att_bak = env.paths.root.join(format!(".att_pre_restore_{op_id}"));
 
     fs::copy(&env.paths.database_file, &sim_db_bak).unwrap();
@@ -322,8 +371,18 @@ fn test_scenario_c_interrupted_restore_and_rollback_recovery() {
         operation_id: op_id,
         started_at: chrono::Utc::now().to_rfc3339(),
         candidate_archive_path: "candidate.pnbackup".to_string(),
-        staging_dir: env.paths.backups_dir.join(".staged_sim_c").to_string_lossy().to_string(),
-        checkpoint_path: env.paths.checkpoints_dir().join("checkpoint_sim_c.pnbackup").to_string_lossy().to_string(),
+        staging_dir: env
+            .paths
+            .backups_dir
+            .join(".staged_sim_c")
+            .to_string_lossy()
+            .to_string(),
+        checkpoint_path: env
+            .paths
+            .checkpoints_dir()
+            .join("checkpoint_sim_c.pnbackup")
+            .to_string_lossy()
+            .to_string(),
         live_db_backup_path: sim_db_bak.to_string_lossy().to_string(),
         live_attachments_backup_path: sim_att_bak.to_string_lossy().to_string(),
         phase: RestoreActivationPhase::FilesSwapped,
@@ -333,11 +392,19 @@ fn test_scenario_c_interrupted_restore_and_rollback_recovery() {
 
     // 3. Run documented crash recovery procedure
     let recovered = RestoreService::recover_if_interrupted(&env.paths).unwrap();
-    assert!(recovered.is_some(), "Crash recovery must detect active marker");
+    assert!(
+        recovered.is_some(),
+        "Crash recovery must detect active marker"
+    );
 
     // 4-5. Confirm consistency, clean marker clearance, and intact data
-    assert!(!env.paths.restore_marker_file().exists(), "Marker must be cleared");
-    let verified_note = NoteRepository::get_by_id(&conn, &live_note.id).unwrap().unwrap();
+    assert!(
+        !env.paths.restore_marker_file().exists(),
+        "Marker must be cleared"
+    );
+    let verified_note = NoteRepository::get_by_id(&conn, &live_note.id)
+        .unwrap()
+        .unwrap();
     assert_eq!(verified_note.title, "Important Active Draft");
 }
 
@@ -364,7 +431,8 @@ fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
             content: Some("Testing background scheduler".to_string()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     // 1. Enable automatic backups in settings
     let mut settings = BackupSettingsService::get_settings(&conn).unwrap();
@@ -379,7 +447,8 @@ fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
         &env.paths,
         true,
         None::<fn(BackupProgressEvent)>,
-    ).expect("Automatic backup check failed");
+    )
+    .expect("Automatic backup check failed");
 
     // 3. Confirm backup created
     assert!(auto_res.is_some());
@@ -395,7 +464,10 @@ fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
     drop(conn);
     let conn_restarted = init_connection(&env.paths.database_file).expect("Reopen failed");
     let state_restarted = BackupSchedulerService::get_state(&conn_restarted).unwrap();
-    assert!(state_restarted.last_successful_at.is_some(), "Scheduler state survived restart");
+    assert!(
+        state_restarted.last_successful_at.is_some(),
+        "Scheduler state survived restart"
+    );
 
     // 5. Verify retention behavior: create 3 more automatic archives
     for _ in 1..=3 {
@@ -410,19 +482,28 @@ fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
             &env.paths,
             req,
             None::<fn(BackupProgressEvent)>,
-        ).unwrap();
+        )
+        .unwrap();
         assert!(res.verified);
 
         let newly_path = Path::new(&res.file_path);
-        let ret_res = BackupRetentionManager::apply_retention(&env.paths.backups_dir, 2, Some(newly_path));
-        assert_eq!(ret_res.kept_count, 2, "Retention must keep at most 2 archives");
+        let ret_res =
+            BackupRetentionManager::apply_retention(&env.paths.backups_dir, 2, Some(newly_path));
+        assert_eq!(
+            ret_res.kept_count, 2,
+            "Retention must keep at most 2 archives"
+        );
     }
 
     // 6. Simulate inaccessible destination
     let mut broken_settings = BackupSettingsService::get_settings(&conn_restarted).unwrap();
     broken_settings.backup_destination_dir = Some("/nonexistent/forbidden/path".to_string());
-    let save_err = BackupSettingsService::save_settings(&conn_restarted, &env.paths, broken_settings);
-    assert!(save_err.is_err(), "Saving an unwritable destination must be rejected");
+    let save_err =
+        BackupSettingsService::save_settings(&conn_restarted, &env.paths, broken_settings);
+    assert!(
+        save_err.is_err(),
+        "Saving an unwritable destination must be rejected"
+    );
 
     let blocked_dir = env.paths.root.join("blocked_media");
     fs::create_dir_all(&blocked_dir).unwrap();
@@ -437,7 +518,11 @@ fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
     let health = BackupHealthService::get_health_status(&conn_restarted, &env.paths).unwrap();
     assert!(!health.destination_available);
     assert!(
-        health.health_level == BackupHealthLevel::Warning || health.health_level == BackupHealthLevel::Critical,
+        health.health_level == BackupHealthLevel::Warning
+            || health.health_level == BackupHealthLevel::Critical,
     );
-    assert!(health.warnings.iter().any(|w| w.code == "DESTINATION_UNAVAILABLE"));
+    assert!(health
+        .warnings
+        .iter()
+        .any(|w| w.code == "DESTINATION_UNAVAILABLE"));
 }

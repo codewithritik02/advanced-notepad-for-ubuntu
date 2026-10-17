@@ -1,5 +1,5 @@
-use rusqlite::Connection;
 use crate::storage::errors::StorageError;
+use rusqlite::Connection;
 
 /// SQL DDL for initial database schema (Migration 001)
 pub const INITIAL_SCHEMA_SQL: &str = r#"
@@ -166,7 +166,8 @@ mod tests {
 
     #[test]
     fn test_apply_initial_schema_and_constraints() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_schema_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_schema_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let conn = init_connection(&db_path).expect("Database initialization failed");
 
@@ -179,7 +180,10 @@ mod tests {
             "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             ["non-existent-note", "non-existent-tag"],
         );
-        assert!(invalid_relation.is_err(), "Foreign key violation must be caught");
+        assert!(
+            invalid_relation.is_err(),
+            "Foreign key violation must be caught"
+        );
 
         // 2. Test notebook creation with hierarchy (parent_id)
         let parent_id = uuid::Uuid::new_v4().to_string();
@@ -207,50 +211,62 @@ mod tests {
             [&note_id, title, content, &child_id, &now],
         ).expect("Insert note failed");
 
-        let retrieved_title: String = conn.query_row(
-            "SELECT title FROM notes WHERE id = ?1",
-            [&note_id],
-            |r| r.get(0),
-        ).expect("Retrieve note failed");
-        assert_eq!(retrieved_title, title, "Unicode characters must match exactly");
+        let retrieved_title: String = conn
+            .query_row("SELECT title FROM notes WHERE id = ?1", [&note_id], |r| {
+                r.get(0)
+            })
+            .expect("Retrieve note failed");
+        assert_eq!(
+            retrieved_title, title,
+            "Unicode characters must match exactly"
+        );
 
         // 4. Test Tag and Note-Tag relationship
         let tag_id = uuid::Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO tags (id, name, created_at) VALUES (?1, ?2, ?3)",
             [&tag_id, "महत्वपूर्ण-work", &now],
-        ).expect("Insert tag failed");
+        )
+        .expect("Insert tag failed");
 
         // Duplicate tag name should fail unique constraint
         let dup_tag = conn.execute(
             "INSERT INTO tags (id, name, created_at) VALUES (?1, ?2, ?3)",
             [&uuid::Uuid::new_v4().to_string(), "महत्वपूर्ण-work", &now],
         );
-        assert!(dup_tag.is_err(), "Duplicate tag names must be rejected by UNIQUE constraint");
+        assert!(
+            dup_tag.is_err(),
+            "Duplicate tag names must be rejected by UNIQUE constraint"
+        );
 
         conn.execute(
             "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             [&note_id, &tag_id],
-        ).expect("Link note and tag failed");
+        )
+        .expect("Link note and tag failed");
 
         // Duplicate composite key should fail
         let dup_relation = conn.execute(
             "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             [&note_id, &tag_id],
         );
-        assert!(dup_relation.is_err(), "Duplicate note-tag pair must fail composite primary key");
+        assert!(
+            dup_relation.is_err(),
+            "Duplicate note-tag pair must fail composite primary key"
+        );
 
         // 5. Test Settings table (key/value)
         conn.execute(
             "INSERT INTO settings (key, value) VALUES ('theme', 'dark')",
             [],
-        ).expect("Insert setting failed");
+        )
+        .expect("Insert setting failed");
 
-        let theme_val: String = conn.query_row(
-            "SELECT value FROM settings WHERE key = 'theme'",
-            [],
-            |r| r.get(0),
-        ).expect("Retrieve setting failed");
+        let theme_val: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'theme'", [], |r| {
+                r.get(0)
+            })
+            .expect("Retrieve setting failed");
         assert_eq!(theme_val, "dark");
 
         // Clean up

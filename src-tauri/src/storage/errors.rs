@@ -161,10 +161,15 @@ pub enum AttachmentError {
 impl AttachmentError {
     pub fn user_friendly_message(&self) -> String {
         match self {
-            AttachmentError::NoteNotFound(_) => "The referenced note could not be found.".to_string(),
+            AttachmentError::NoteNotFound(_) => {
+                "The referenced note could not be found.".to_string()
+            }
             AttachmentError::AttachmentNotFound(_) => "Attachment not found.".to_string(),
             AttachmentError::InvalidRequest(msg) => msg.clone(),
-            AttachmentError::FileTooLarge { size_bytes: _, max_bytes } => {
+            AttachmentError::FileTooLarge {
+                size_bytes: _,
+                max_bytes,
+            } => {
                 let max_mb = max_bytes / (1024 * 1024);
                 format!("File exceeds maximum permitted size of {max_mb} MB.")
             }
@@ -178,7 +183,8 @@ impl AttachmentError {
                 "Insufficient disk space to save attachment.".to_string()
             }
             AttachmentError::ExecutableBlocked(_) => {
-                "Opening executable attachment files directly is blocked for security reasons.".to_string()
+                "Opening executable attachment files directly is blocked for security reasons."
+                    .to_string()
             }
             AttachmentError::ManagedFileMissing(_) => {
                 "Attachment file is missing from storage.".to_string()
@@ -196,9 +202,7 @@ impl AttachmentError {
                 std::io::ErrorKind::PermissionDenied => {
                     "Permission denied when accessing attachment file.".to_string()
                 }
-                std::io::ErrorKind::NotFound => {
-                    "Attachment file was not found.".to_string()
-                }
+                std::io::ErrorKind::NotFound => "Attachment file was not found.".to_string(),
                 _ => "A filesystem error occurred while processing attachment.".to_string(),
             },
         }
@@ -260,7 +264,9 @@ impl TrashError {
             }
             TrashError::Attachment(err) => err.user_friendly_message(),
             TrashError::Storage(err) => err.user_friendly_message(),
-            TrashError::Database(_) => "A database error occurred during the trash operation.".to_string(),
+            TrashError::Database(_) => {
+                "A database error occurred during the trash operation.".to_string()
+            }
         }
     }
 }
@@ -294,11 +300,17 @@ impl InternalLinkError {
     pub fn user_friendly_message(&self) -> String {
         match self {
             InternalLinkError::InvalidNoteId(_) => "Invalid note link identifier.".to_string(),
-            InternalLinkError::TargetNotFound(_) => "The linked note could not be found.".to_string(),
+            InternalLinkError::TargetNotFound(_) => {
+                "The linked note could not be found.".to_string()
+            }
             InternalLinkError::TargetInTrash(_) => "The linked note is in Trash.".to_string(),
-            InternalLinkError::SourceNotFound(_) => "The source note could not be found.".to_string(),
+            InternalLinkError::SourceNotFound(_) => {
+                "The source note could not be found.".to_string()
+            }
             InternalLinkError::MalformedLink(_) => "Malformed internal note link.".to_string(),
-            InternalLinkError::Database(_) => "A database error occurred while resolving the link.".to_string(),
+            InternalLinkError::Database(_) => {
+                "A database error occurred while resolving the link.".to_string()
+            }
             InternalLinkError::Crypto(msg) => msg.clone(),
         }
     }
@@ -441,10 +453,7 @@ pub enum BackupError {
     RequiredAttachmentMissing(String),
 
     #[error("Unsupported backup version: {version} (maximum supported is {max_supported})")]
-    UnsupportedVersion {
-        version: u32,
-        max_supported: u32,
-    },
+    UnsupportedVersion { version: u32, max_supported: u32 },
 
     #[error("Database schema incompatible: backup schema {backup_schema} exceeds current application schema {current_schema}")]
     IncompatibleSchema {
@@ -597,7 +606,8 @@ impl CryptoError {
                 format!("This data was encrypted with a newer format version ({version}) and cannot be opened by this version of Personal Notepad.")
             }
             CryptoError::InvalidMetadata(_) => {
-                "The encryption configuration for this application is invalid or corrupted.".to_string()
+                "The encryption configuration for this application is invalid or corrupted."
+                    .to_string()
             }
             CryptoError::InvalidKdfConfig(msg) => {
                 format!("Invalid encryption key derivation parameters: {msg}")
@@ -606,7 +616,8 @@ impl CryptoError {
                 "Incorrect password. Please try again.".to_string()
             }
             CryptoError::TamperedOrCorrupted(_) => {
-                "Security check failed: the encrypted data appears to be modified or damaged.".to_string()
+                "Security check failed: the encrypted data appears to be modified or damaged."
+                    .to_string()
             }
             CryptoError::EncryptionFailed(_) => "Failed to encrypt data.".to_string(),
             CryptoError::DecryptionFailed(_) => "Failed to decrypt protected content.".to_string(),
@@ -680,14 +691,22 @@ impl StorageError {
     /// Classifies the failure into standard semantic category (Phase 13, Task 3).
     pub fn category(&self) -> ErrorCategory {
         match self {
-            StorageError::Validation(_) | StorageError::InvalidHierarchy(_) => ErrorCategory::Validation,
+            StorageError::Validation(_) | StorageError::InvalidHierarchy(_) => {
+                ErrorCategory::Validation
+            }
             StorageError::NotFound(_) => ErrorCategory::NotFound,
             StorageError::Conflict(_) | StorageError::DeleteBlocked(_) => ErrorCategory::Conflict,
             StorageError::Database(rusqlite::Error::SqliteFailure(err, _)) => match err.code {
-                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => ErrorCategory::DatabaseBusy,
-                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::ReadOnly => ErrorCategory::Permission,
+                rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
+                    ErrorCategory::DatabaseBusy
+                }
+                rusqlite::ErrorCode::CannotOpen | rusqlite::ErrorCode::ReadOnly => {
+                    ErrorCategory::Permission
+                }
                 rusqlite::ErrorCode::ConstraintViolation => ErrorCategory::Validation,
-                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase => ErrorCategory::Corruption,
+                rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase => {
+                    ErrorCategory::Corruption
+                }
                 _ => ErrorCategory::Internal,
             },
             StorageError::Database(_) => ErrorCategory::Internal,
@@ -695,14 +714,19 @@ impl StorageError {
                 std::io::ErrorKind::PermissionDenied => ErrorCategory::Permission,
                 std::io::ErrorKind::NotFound => ErrorCategory::NotFound,
                 _ if err.raw_os_error() == Some(28) => ErrorCategory::DiskSpace,
-                _ if err.raw_os_error() == Some(13) || err.raw_os_error() == Some(1) => ErrorCategory::Permission,
+                _ if err.raw_os_error() == Some(13) || err.raw_os_error() == Some(1) => {
+                    ErrorCategory::Permission
+                }
                 _ => ErrorCategory::Internal,
             },
             StorageError::Crypto(msg) => {
                 let lower = msg.to_lowercase();
                 if lower.contains("locked") {
                     ErrorCategory::Locked
-                } else if lower.contains("authentication failed") || lower.contains("tampered") || lower.contains("corrupt") {
+                } else if lower.contains("authentication failed")
+                    || lower.contains("tampered")
+                    || lower.contains("corrupt")
+                {
                     ErrorCategory::Corruption
                 } else {
                     ErrorCategory::Internal
@@ -747,7 +771,10 @@ impl StorageError {
                     ErrorCategory::DatabaseBusy
                 } else if lower.contains("unsupported") || lower.contains("schema") {
                     ErrorCategory::UnsupportedFormat
-                } else if lower.contains("checksum") || lower.contains("corrupt") || lower.contains("invalid") {
+                } else if lower.contains("checksum")
+                    || lower.contains("corrupt")
+                    || lower.contains("invalid")
+                {
                     ErrorCategory::Corruption
                 } else {
                     ErrorCategory::Internal
@@ -798,7 +825,11 @@ impl StorageError {
     }
 
     /// Produces a safe, structured diagnostic representation free from sensitive secrets or note bodies.
-    pub fn to_diagnostic(&self, operation: Option<&str>, safe_entity_id: Option<&str>) -> StructuredDiagnostic {
+    pub fn to_diagnostic(
+        &self,
+        operation: Option<&str>,
+        safe_entity_id: Option<&str>,
+    ) -> StructuredDiagnostic {
         StructuredDiagnostic {
             code: self.error_code(),
             category: self.category(),
@@ -838,11 +869,15 @@ mod tests {
         assert!(io_err.user_friendly_message().contains("Permission denied"));
 
         let enospc_err = StorageError::Io(std::io::Error::from_raw_os_error(28));
-        assert!(enospc_err.user_friendly_message().contains("Insufficient disk space"));
+        assert!(enospc_err
+            .user_friendly_message()
+            .contains("Insufficient disk space"));
         assert_eq!(enospc_err.category(), ErrorCategory::DiskSpace);
 
         let eacces_err = StorageError::Io(std::io::Error::from_raw_os_error(13));
-        assert!(eacces_err.user_friendly_message().contains("Permission denied"));
+        assert!(eacces_err
+            .user_friendly_message()
+            .contains("Permission denied"));
         assert_eq!(eacces_err.category(), ErrorCategory::Permission);
 
         let att_err = StorageError::AttachmentError("Attachment not found.".to_string());
@@ -852,7 +887,9 @@ mod tests {
     #[test]
     fn test_attachment_error_user_friendly_messages() {
         let not_found = AttachmentError::AttachmentNotFound("att-1".to_string());
-        assert!(not_found.user_friendly_message().contains("Attachment not found"));
+        assert!(not_found
+            .user_friendly_message()
+            .contains("Attachment not found"));
 
         let too_large = AttachmentError::FileTooLarge {
             size_bytes: 150 * 1024 * 1024,
@@ -864,10 +901,14 @@ mod tests {
         assert!(perm.user_friendly_message().contains("Permission denied"));
 
         let space = AttachmentError::InsufficientDiskSpace;
-        assert!(space.user_friendly_message().contains("Insufficient disk space"));
+        assert!(space
+            .user_friendly_message()
+            .contains("Insufficient disk space"));
 
         let missing = AttachmentError::ManagedFileMissing("att-1.pdf".to_string());
-        assert!(missing.user_friendly_message().contains("missing from storage"));
+        assert!(missing
+            .user_friendly_message()
+            .contains("missing from storage"));
 
         let converted: StorageError = too_large.into();
         assert!(converted.user_friendly_message().contains("100 MB"));
@@ -876,22 +917,40 @@ mod tests {
     #[test]
     fn test_internal_link_error_user_friendly_messages() {
         let invalid_id = InternalLinkError::InvalidNoteId("bad-id".to_string());
-        assert_eq!(invalid_id.user_friendly_message(), "Invalid note link identifier.");
+        assert_eq!(
+            invalid_id.user_friendly_message(),
+            "Invalid note link identifier."
+        );
 
         let target_not_found = InternalLinkError::TargetNotFound("n-123".to_string());
-        assert_eq!(target_not_found.user_friendly_message(), "The linked note could not be found.");
+        assert_eq!(
+            target_not_found.user_friendly_message(),
+            "The linked note could not be found."
+        );
 
         let target_in_trash = InternalLinkError::TargetInTrash("n-123".to_string());
-        assert_eq!(target_in_trash.user_friendly_message(), "The linked note is in Trash.");
+        assert_eq!(
+            target_in_trash.user_friendly_message(),
+            "The linked note is in Trash."
+        );
 
         let source_not_found = InternalLinkError::SourceNotFound("src-1".to_string());
-        assert_eq!(source_not_found.user_friendly_message(), "The source note could not be found.");
+        assert_eq!(
+            source_not_found.user_friendly_message(),
+            "The source note could not be found."
+        );
 
         let malformed = InternalLinkError::MalformedLink("[[invalid]]".to_string());
-        assert_eq!(malformed.user_friendly_message(), "Malformed internal note link.");
+        assert_eq!(
+            malformed.user_friendly_message(),
+            "Malformed internal note link."
+        );
 
         let converted: StorageError = target_not_found.into();
-        assert_eq!(converted.user_friendly_message(), "The linked note could not be found.");
+        assert_eq!(
+            converted.user_friendly_message(),
+            "The linked note could not be found."
+        );
     }
 
     #[test]
@@ -900,10 +959,14 @@ mod tests {
         assert_eq!(cancel.user_friendly_message(), "Operation was cancelled.");
 
         let unsupp = ImportExportError::UnsupportedFormat("docx".to_string());
-        assert!(unsupp.user_friendly_message().contains("Unsupported file format 'docx'"));
+        assert!(unsupp
+            .user_friendly_message()
+            .contains("Unsupported file format 'docx'"));
 
         let encoding = ImportExportError::InvalidEncoding("bad bytes".to_string());
-        assert!(encoding.user_friendly_message().contains("invalid UTF-8 encoding"));
+        assert!(encoding
+            .user_friendly_message()
+            .contains("invalid UTF-8 encoding"));
 
         let too_large = ImportExportError::FileTooLarge {
             size_bytes: 20 * 1024 * 1024,
@@ -915,38 +978,53 @@ mod tests {
         assert!(collision.user_friendly_message().contains("Roadmap.md"));
 
         let converted: StorageError = unsupp.into();
-        assert!(converted.user_friendly_message().contains("Unsupported file format"));
+        assert!(converted
+            .user_friendly_message()
+            .contains("Unsupported file format"));
     }
 
     #[test]
     fn test_backup_error_user_friendly_messages() {
         let cancel = BackupError::Cancelled;
-        assert_eq!(cancel.user_friendly_message(), "Backup or restore operation was cancelled.");
+        assert_eq!(
+            cancel.user_friendly_message(),
+            "Backup or restore operation was cancelled."
+        );
 
         let unsupp = BackupError::UnsupportedVersion {
             version: 2,
             max_supported: 1,
         };
-        assert!(unsupp.user_friendly_message().contains("Unsupported backup version 2"));
+        assert!(unsupp
+            .user_friendly_message()
+            .contains("Unsupported backup version 2"));
 
         let mismatch = BackupError::ChecksumMismatch {
             entry: "database.sqlite".to_string(),
             expected: "abc".to_string(),
             actual: "def".to_string(),
         };
-        assert!(mismatch.user_friendly_message().contains("checksum mismatch for 'database.sqlite'"));
+        assert!(mismatch
+            .user_friendly_message()
+            .contains("checksum mismatch for 'database.sqlite'"));
 
         let missing_att = BackupError::RequiredAttachmentMissing("photo.png".to_string());
         assert!(missing_att.user_friendly_message().contains("photo.png"));
 
         let space = BackupError::InsufficientDiskSpace;
-        assert!(space.user_friendly_message().contains("Insufficient disk space"));
+        assert!(space
+            .user_friendly_message()
+            .contains("Insufficient disk space"));
 
         let checkpoint = BackupError::RestoreCheckpointFailed("disk write error".to_string());
-        assert!(checkpoint.user_friendly_message().contains("Safety checkpoint could not be created"));
+        assert!(checkpoint
+            .user_friendly_message()
+            .contains("Safety checkpoint could not be created"));
 
         let converted: StorageError = unsupp.into();
-        assert!(converted.user_friendly_message().contains("Unsupported backup version 2"));
+        assert!(converted
+            .user_friendly_message()
+            .contains("Unsupported backup version 2"));
     }
 
     #[test]
@@ -976,4 +1054,3 @@ mod tests {
         assert!(!diag.retryable);
     }
 }
-

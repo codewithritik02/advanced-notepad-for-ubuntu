@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-quality:
+    name: Frontend Quality & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies (respect lockfile)
+        run: npm ci
+
+      - name: TypeScript Type Checking
+        run: npm run typecheck
+
+      - name: Frontend Code Hygiene & Linting
+        run: npm run lint
+
+      - name: Frontend Unit & Component Tests
+        run: npm test
+
+      - name: Production Frontend Build
+        run: npm run build
+
+  rust-quality:
+    name: Rust Backend Quality & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies for Tauri and WebKit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Rust Code Formatting Check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Rust Compilation Check
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Rust Clippy Lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: SQLite Schema Migrations & Integrity Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test sqlite_schema_migrations_integrity_test
+
+      - name: Safe Test Infrastructure & Isolation Checks
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test test_infrastructure_test
+
+      - name: Regression Defect Tracking Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test
+
+      - name: Critical End-to-End User Journeys
+        run: cargo test --manifest-path src-tauri/Cargo.toml --test e2e_critical_user_journeys_test
+
+      - name: Full Rust Unit & Integration Test Suite
+        run: cargo test --manifest-path src-tauri/Cargo.toml

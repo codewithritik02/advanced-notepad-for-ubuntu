@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection, Row};
 use crate::storage::errors::StorageError;
 use crate::storage::models::{CreateNotebookDto, Notebook, UpdateNotebookDto};
+use rusqlite::{params, Connection, Row};
 
 pub struct NotebookRepository;
 
@@ -15,15 +15,60 @@ impl NotebookRepository {
         })
     }
 
+    pub fn get_depth(conn: &Connection, id: &str) -> Result<usize, StorageError> {
+        let mut depth = 1usize;
+        let mut curr = Self::get_by_id(conn, id)?.and_then(|nb| nb.parent_id);
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(id.to_string());
+
+        while let Some(ancestor_id) = curr {
+            if visited.contains(&ancestor_id) {
+                break; // Cycle protection
+            }
+            visited.insert(ancestor_id.clone());
+            depth += 1;
+            if let Some(anc) = Self::get_by_id(conn, &ancestor_id)? {
+                curr = anc.parent_id;
+            } else {
+                break;
+            }
+        }
+        Ok(depth)
+    }
+
+    fn subtree_height(conn: &Connection, id: &str) -> Result<usize, StorageError> {
+        let mut max_child_height = 0usize;
+        let mut stmt = conn.prepare("SELECT id FROM notebooks WHERE parent_id = ?1")?;
+        let child_ids = stmt
+            .query_map(params![id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for child_id in child_ids {
+            let h = Self::subtree_height(conn, &child_id)?;
+            if h > max_child_height {
+                max_child_height = h;
+            }
+        }
+        Ok(1 + max_child_height)
+    }
+
     pub fn create(conn: &Connection, dto: CreateNotebookDto) -> Result<Notebook, StorageError> {
         let name = dto.name.trim();
         crate::storage::limits::validate_notebook_name(name)?;
 
-        // Validate parent_id exists if specified
+        // Validate parent_id exists and check nesting depth if specified
         if let Some(ref pid) = dto.parent_id {
             if Self::get_by_id(conn, pid)?.is_none() {
                 return Err(StorageError::InvalidHierarchy(format!(
                     "Parent notebook with ID '{pid}' does not exist"
+                )));
+            }
+
+            let parent_depth = Self::get_depth(conn, pid)?;
+            if parent_depth >= crate::storage::limits::MAX_NOTEBOOK_NESTING_DEPTH {
+                return Err(StorageError::InvalidHierarchy(format!(
+                    "Cannot create sub-notebook: maximum nesting depth of {} levels exceeded",
+                    crate::storage::limits::MAX_NOTEBOOK_NESTING_DEPTH
                 )));
             }
         }
@@ -76,7 +121,11 @@ impl NotebookRepository {
         }
     }
 
-    pub fn update(conn: &Connection, id: &str, dto: UpdateNotebookDto) -> Result<Notebook, StorageError> {
+    pub fn update(
+        conn: &Connection,
+        id: &str,
+        dto: UpdateNotebookDto,
+    ) -> Result<Notebook, StorageError> {
         let existing = Self::get_by_id(conn, id)?
             .ok_or_else(|| StorageError::NotFound(format!("Notebook with id '{id}' not found")))?;
 
@@ -99,6 +148,74 @@ impl NotebookRepository {
             created_at: existing.created_at,
             modified_at: now,
         })
+    }
+
+    /// Moves a notebook to a new parent or to root (new_parent_id: None).
+    /// Enforces cycle prevention, self-parent rejection, non-existent parent rejection,
+    /// and total hierarchy depth limit.
+    pub fn move_notebook(
+        conn: &Connection,
+        id: &str,
+        new_parent_id: Option<&str>,
+    ) -> Result<Notebook, StorageError> {
+        let existing = Self::get_by_id(conn, id)?
+            .ok_or_else(|| StorageError::NotFound(format!("Notebook with id '{id}' not found")))?;
+
+        if let Some(target_parent_id) = new_parent_id {
+            if target_parent_id == id {
+                return Err(StorageError::InvalidHierarchy(
+                    "A notebook cannot be its own parent".to_string(),
+                ));
+            }
+
+            if Self::get_by_id(conn, target_parent_id)?.is_none() {
+                return Err(StorageError::InvalidHierarchy(format!(
+                    "Target parent notebook with ID '{target_parent_id}' does not exist"
+                )));
+            }
+
+            // Cycle detection: traverse ancestors of target_parent_id
+            let mut curr = Some(target_parent_id.to_string());
+            let mut visited = std::collections::HashSet::new();
+            while let Some(cid) = curr {
+                if cid == id {
+                    return Err(StorageError::InvalidHierarchy(
+                        "Cannot move a notebook into one of its own descendants (hierarchy cycle)"
+                            .to_string(),
+                    ));
+                }
+                if visited.contains(&cid) {
+                    break;
+                }
+                visited.insert(cid.clone());
+                if let Some(parent_nb) = Self::get_by_id(conn, &cid)? {
+                    curr = parent_nb.parent_id;
+                } else {
+                    break;
+                }
+            }
+
+            // Depth validation: parent_depth + subtree_height <= MAX_NOTEBOOK_NESTING_DEPTH
+            let parent_depth = Self::get_depth(conn, target_parent_id)?;
+            let height = Self::subtree_height(conn, id)?;
+            if parent_depth + height > crate::storage::limits::MAX_NOTEBOOK_NESTING_DEPTH {
+                return Err(StorageError::InvalidHierarchy(format!(
+                    "Moving this notebook would exceed the maximum nesting depth of {} levels",
+                    crate::storage::limits::MAX_NOTEBOOK_NESTING_DEPTH
+                )));
+            }
+        }
+
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE notebooks SET parent_id = ?1, modified_at = ?2 WHERE id = ?3",
+            params![new_parent_id, now, id],
+        )?;
+
+        let mut updated = existing;
+        updated.parent_id = new_parent_id.map(str::to_string);
+        updated.modified_at = now;
+        Ok(updated)
     }
 
     pub fn delete(conn: &mut Connection, id: &str) -> Result<bool, StorageError> {
@@ -126,10 +243,7 @@ impl NotebookRepository {
             params![id],
         )?;
 
-        let rows_affected = tx.execute(
-            "DELETE FROM notebooks WHERE id = ?1",
-            params![id],
-        )?;
+        let rows_affected = tx.execute("DELETE FROM notebooks WHERE id = ?1", params![id])?;
 
         tx.commit()?;
 
@@ -198,7 +312,8 @@ mod tests {
                 name: "व्यक्तिगत परियोजनाएं 📁".to_string(),
                 parent_id: None,
             },
-        ).expect("Create root notebook failed");
+        )
+        .expect("Create root notebook failed");
         assert_eq!(root.name, "व्यक्तिगत परियोजनाएं 📁");
         assert_eq!(root.parent_id, None);
 
@@ -209,7 +324,8 @@ mod tests {
                 name: "Personal Notepad".to_string(),
                 parent_id: Some(root.id.clone()),
             },
-        ).expect("Create child notebook failed");
+        )
+        .expect("Create child notebook failed");
         assert_eq!(child.parent_id, Some(root.id.clone()));
 
         // 4. Verification of listing
@@ -230,7 +346,8 @@ mod tests {
 
     #[test]
     fn test_notebook_crud_rename_and_safe_delete_lifecycle() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_nb_crud_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_nb_crud_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).expect("Init connection failed");
         run_migrations(&mut conn).expect("Migrations failed");
@@ -243,7 +360,10 @@ mod tests {
                 parent_id: Some("non-existent-parent-uuid".to_string()),
             },
         );
-        assert!(invalid_parent_res.is_err(), "Non-existent parent must be rejected");
+        assert!(
+            invalid_parent_res.is_err(),
+            "Non-existent parent must be rejected"
+        );
 
         // 2. Create parent and child
         let parent = NotebookRepository::create(
@@ -252,7 +372,8 @@ mod tests {
                 name: "Work".to_string(),
                 parent_id: None,
             },
-        ).expect("Parent creation failed");
+        )
+        .expect("Parent creation failed");
 
         let child = NotebookRepository::create(
             &conn,
@@ -260,7 +381,8 @@ mod tests {
                 name: "Projects".to_string(),
                 parent_id: Some(parent.id.clone()),
             },
-        ).expect("Child creation failed");
+        )
+        .expect("Child creation failed");
 
         // 3. Create note inside parent
         let note = NoteRepository::create(
@@ -271,11 +393,15 @@ mod tests {
                 notebook_id: Some(parent.id.clone()),
                 ..Default::default()
             },
-        ).expect("Note create failed");
+        )
+        .expect("Note create failed");
 
         // 4. Attempt to delete parent while child exists -> MUST FAIL
         let del_blocked = NotebookRepository::delete(&mut conn, &parent.id);
-        assert!(del_blocked.is_err(), "Deleting parent with children must fail");
+        assert!(
+            del_blocked.is_err(),
+            "Deleting parent with children must fail"
+        );
         if let Err(StorageError::DeleteBlocked(msg)) = del_blocked {
             assert!(msg.contains("contains sub-notebooks"));
         } else {
@@ -289,20 +415,27 @@ mod tests {
             UpdateNotebookDto {
                 name: "Active Projects 2026 🚀".to_string(),
             },
-        ).expect("Rename child failed");
+        )
+        .expect("Rename child failed");
         assert_eq!(renamed_child.name, "Active Projects 2026 🚀");
         assert_eq!(renamed_child.parent_id, Some(parent.id.clone()));
         assert_eq!(renamed_child.id, child.id);
 
         // 6. Delete child first
-        let child_deleted = NotebookRepository::delete(&mut conn, &child.id).expect("Delete child failed");
+        let child_deleted =
+            NotebookRepository::delete(&mut conn, &child.id).expect("Delete child failed");
         assert!(child_deleted);
-        assert!(NotebookRepository::get_by_id(&conn, &child.id).expect("Query failed").is_none());
+        assert!(NotebookRepository::get_by_id(&conn, &child.id)
+            .expect("Query failed")
+            .is_none());
 
         // 7. Now delete parent -> notes must be safely unfiled (notebook_id = NULL)
-        let parent_deleted = NotebookRepository::delete(&mut conn, &parent.id).expect("Delete parent failed");
+        let parent_deleted =
+            NotebookRepository::delete(&mut conn, &parent.id).expect("Delete parent failed");
         assert!(parent_deleted);
-        assert!(NotebookRepository::get_by_id(&conn, &parent.id).expect("Query failed").is_none());
+        assert!(NotebookRepository::get_by_id(&conn, &parent.id)
+            .expect("Query failed")
+            .is_none());
 
         // Verify note survived intact and is unfiled
         let preserved_note = NoteRepository::get_by_id(&conn, &note.id)

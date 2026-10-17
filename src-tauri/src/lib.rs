@@ -48,6 +48,8 @@ pub fn run() {
             commands::move_note_to_notebook,
             commands::set_note_favorite,
             commands::toggle_note_favorite,
+            commands::set_note_pinned,
+            commands::toggle_note_pinned,
             commands::list_favorite_notes,
             commands::list_notebooks,
             commands::get_notebook,

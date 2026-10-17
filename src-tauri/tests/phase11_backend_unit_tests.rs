@@ -1,29 +1,27 @@
+use chrono::Utc;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use chrono::Utc;
 use uuid::Uuid;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use personal_notepad_lib::storage::{
     errors::BackupError,
-    init_connection, run_migrations,
+    init_connection,
     models::{
-        BackupAttachmentsSummary, BackupCompatibilityStatus, BackupDatabaseInfo,
-        BackupManifest, BackupScopeDeclaration,
-        BackupSettings, BackupType,
-        BACKUP_FORMAT_IDENTIFIER, CURRENT_BACKUP_FORMAT_VERSION,
-        PRIMARY_BACKUP_EXTENSION,
+        BackupAttachmentsSummary, BackupCompatibilityStatus, BackupDatabaseInfo, BackupManifest,
+        BackupScopeDeclaration, BackupSettings, BackupType, BACKUP_FORMAT_IDENTIFIER,
+        CURRENT_BACKUP_FORMAT_VERSION, PRIMARY_BACKUP_EXTENSION,
     },
     paths::StoragePaths,
+    run_migrations,
     services::{
         compute_file_sha256, generate_default_backup_filename, sanitize_backup_filename_stem,
-        BackupRetentionManager, BackupSettingsService, ManifestManager,
-        CURRENT_APP_SCHEMA_VERSION, MAX_ARCHIVE_ENTRY_COUNT, MAX_BACKUP_INTERVAL_MINUTES,
-        MAX_BACKUP_RETENTION_COUNT, MAX_TOTAL_UNCOMPRESSED_BYTES,
-        MIN_BACKUP_INTERVAL_MINUTES, MIN_BACKUP_RETENTION_COUNT,
+        BackupRetentionManager, BackupSettingsService, ManifestManager, CURRENT_APP_SCHEMA_VERSION,
+        MAX_ARCHIVE_ENTRY_COUNT, MAX_BACKUP_INTERVAL_MINUTES, MAX_BACKUP_RETENTION_COUNT,
+        MAX_TOTAL_UNCOMPRESSED_BYTES, MIN_BACKUP_INTERVAL_MINUTES, MIN_BACKUP_RETENTION_COUNT,
     },
 };
 
@@ -52,7 +50,10 @@ impl Drop for TempTestDir {
 fn test_unit_1_manifest_serialization_and_parsing() {
     let mut checksums = HashMap::new();
     checksums.insert("database.sqlite".to_string(), "abc123sha256".to_string());
-    checksums.insert("attachments/note-1/photo.png".to_string(), "def456sha256".to_string());
+    checksums.insert(
+        "attachments/note-1/photo.png".to_string(),
+        "def456sha256".to_string(),
+    );
 
     let original_manifest = BackupManifest {
         format_identifier: BACKUP_FORMAT_IDENTIFIER.to_string(),
@@ -83,7 +84,7 @@ fn test_unit_1_manifest_serialization_and_parsing() {
                 file_size: 1048576,
                 mime_type: Some("image/png".to_string()),
                 sha256: "def456sha256".to_string(),
-            }
+            },
         ],
         scope: BackupScopeDeclaration {
             includes_settings: true,
@@ -102,21 +103,31 @@ fn test_unit_1_manifest_serialization_and_parsing() {
     assert!(serialized_json.contains("database.sqlite"));
 
     // Parse back from JSON
-    let parsed_manifest: BackupManifest = serde_json::from_str(&serialized_json)
-        .expect("Manifest parsing must succeed");
+    let parsed_manifest: BackupManifest =
+        serde_json::from_str(&serialized_json).expect("Manifest parsing must succeed");
 
-    assert_eq!(parsed_manifest.format_identifier, original_manifest.format_identifier);
-    assert_eq!(parsed_manifest.format_version, original_manifest.format_version);
+    assert_eq!(
+        parsed_manifest.format_identifier,
+        original_manifest.format_identifier
+    );
+    assert_eq!(
+        parsed_manifest.format_version,
+        original_manifest.format_version
+    );
     assert_eq!(parsed_manifest.app_version, original_manifest.app_version);
     assert_eq!(parsed_manifest.backup_type, BackupType::Manual);
     assert_eq!(parsed_manifest.database.file_size, 40960);
-    assert_eq!(parsed_manifest.database.schema_version, CURRENT_APP_SCHEMA_VERSION);
+    assert_eq!(
+        parsed_manifest.database.schema_version,
+        CURRENT_APP_SCHEMA_VERSION
+    );
     assert_eq!(parsed_manifest.attachments.len(), 1);
     assert_eq!(parsed_manifest.attachments[0].file_name, "photo.png");
     assert_eq!(parsed_manifest.checksums.len(), 2);
 
     // Test malformed / invalid manifest JSON rejected
-    let malformed_json = r#"{"format_identifier": "personal-notepad-backup", "format_version": "NOT_AN_INTEGER"}"#;
+    let malformed_json =
+        r#"{"format_identifier": "personal-notepad-backup", "format_version": "NOT_AN_INTEGER"}"#;
     assert!(serde_json::from_str::<BackupManifest>(malformed_json).is_err());
 }
 
@@ -176,21 +187,36 @@ fn test_unit_2_backup_format_version_validation() {
     create_archive_with_format(BACKUP_FORMAT_IDENTIFIER, CURRENT_BACKUP_FORMAT_VERSION);
     let valid_res = ManifestManager::validate_archive(&archive_path).unwrap();
     assert!(valid_res.is_valid);
-    assert_eq!(valid_res.compatibility, BackupCompatibilityStatus::Compatible);
+    assert_eq!(
+        valid_res.compatibility,
+        BackupCompatibilityStatus::Compatible
+    );
 
     // Invalid format identifier
     create_archive_with_format("some-foreign-backup-format", 1);
     let bad_ident_res = ManifestManager::validate_archive(&archive_path).unwrap();
     assert!(!bad_ident_res.is_valid);
-    assert_eq!(bad_ident_res.compatibility, BackupCompatibilityStatus::Corrupted);
-    assert!(bad_ident_res.issues.iter().any(|i| i.code == "INVALID_FORMAT_IDENTIFIER"));
+    assert_eq!(
+        bad_ident_res.compatibility,
+        BackupCompatibilityStatus::Corrupted
+    );
+    assert!(bad_ident_res
+        .issues
+        .iter()
+        .any(|i| i.code == "INVALID_FORMAT_IDENTIFIER"));
 
     // Future unsupported format version (e.g. 99)
     create_archive_with_format(BACKUP_FORMAT_IDENTIFIER, 99);
     let bad_ver_res = ManifestManager::validate_archive(&archive_path).unwrap();
     assert!(!bad_ver_res.is_valid);
-    assert_eq!(bad_ver_res.compatibility, BackupCompatibilityStatus::IncompatibleVersion);
-    assert!(bad_ver_res.issues.iter().any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
+    assert_eq!(
+        bad_ver_res.compatibility,
+        BackupCompatibilityStatus::IncompatibleVersion
+    );
+    assert!(bad_ver_res
+        .issues
+        .iter()
+        .any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
 }
 
 // -----------------------------------------------------------------------------
@@ -224,7 +250,10 @@ fn test_unit_3_entry_path_validation_and_zip_slip_defense() {
         zip.finish().unwrap();
 
         let res = ManifestManager::validate_archive(&archive_path).unwrap();
-        assert!(!res.is_valid, "Archive with path '{unsafe_path}' must fail validation");
+        assert!(
+            !res.is_valid,
+            "Archive with path '{unsafe_path}' must fail validation"
+        );
         assert!(
             res.issues.iter().any(|i| i.code == "UNSAFE_ARCHIVE_PATH"),
             "Expected UNSAFE_ARCHIVE_PATH for '{unsafe_path}'"
@@ -240,7 +269,10 @@ fn test_unit_3_entry_path_validation_and_zip_slip_defense() {
         let first = zip.start_file("database.sqlite", opts);
         assert!(first.is_ok());
         let second = zip.start_file("database.sqlite", opts);
-        assert!(second.is_err(), "ZipWriter enforces duplicate filename rejection at creation");
+        assert!(
+            second.is_err(),
+            "ZipWriter enforces duplicate filename rejection at creation"
+        );
     }
 }
 
@@ -256,7 +288,8 @@ fn test_unit_4_checksum_generation_and_verification() {
     let payload = b"Personal Notepad Cryptographic Verification Test Bytes";
     fs::write(&test_file, payload).unwrap();
 
-    let (computed_sha256, file_size) = compute_file_sha256(&test_file).expect("Compute sha256 failed");
+    let (computed_sha256, file_size) =
+        compute_file_sha256(&test_file).expect("Compute sha256 failed");
     assert_eq!(file_size, payload.len() as u64);
 
     // Verify sha256 output matches standard sha2 crate directly
@@ -308,8 +341,14 @@ fn test_unit_5_filename_generation_and_sanitization() {
     );
 
     // Empty or whitespace falls back to default fallback stem
-    assert_eq!(sanitize_backup_filename_stem("   "), "personal-notepad-backup");
-    assert_eq!(sanitize_backup_filename_stem("..."), "personal-notepad-backup");
+    assert_eq!(
+        sanitize_backup_filename_stem("   "),
+        "personal-notepad-backup"
+    );
+    assert_eq!(
+        sanitize_backup_filename_stem("..."),
+        "personal-notepad-backup"
+    );
 
     // Length limit enforcement (120 characters max)
     let very_long = "a".repeat(150);
@@ -366,14 +405,38 @@ fn test_unit_6_retention_selection_and_isolation() {
     };
 
     // Create 4 automatic backups
-    let a1 = create_mock_archive("auto-1.pnbackup", BackupType::Automatic, "2026-10-10T10:00:00Z");
-    let a2 = create_mock_archive("auto-2.pnbackup", BackupType::Automatic, "2026-10-11T10:00:00Z");
-    let a3 = create_mock_archive("auto-3.pnbackup", BackupType::Automatic, "2026-10-12T10:00:00Z");
-    let a4 = create_mock_archive("auto-4.pnbackup", BackupType::Automatic, "2026-10-13T10:00:00Z");
+    let a1 = create_mock_archive(
+        "auto-1.pnbackup",
+        BackupType::Automatic,
+        "2026-10-10T10:00:00Z",
+    );
+    let a2 = create_mock_archive(
+        "auto-2.pnbackup",
+        BackupType::Automatic,
+        "2026-10-11T10:00:00Z",
+    );
+    let a3 = create_mock_archive(
+        "auto-3.pnbackup",
+        BackupType::Automatic,
+        "2026-10-12T10:00:00Z",
+    );
+    let a4 = create_mock_archive(
+        "auto-4.pnbackup",
+        BackupType::Automatic,
+        "2026-10-13T10:00:00Z",
+    );
 
     // Create 1 manual backup and 1 checkpoint
-    let m1 = create_mock_archive("manual-1.pnbackup", BackupType::Manual, "2026-10-01T10:00:00Z");
-    let c1 = create_mock_archive("checkpoint-1.pnbackup", BackupType::Checkpoint, "2026-10-02T10:00:00Z");
+    let m1 = create_mock_archive(
+        "manual-1.pnbackup",
+        BackupType::Manual,
+        "2026-10-01T10:00:00Z",
+    );
+    let c1 = create_mock_archive(
+        "checkpoint-1.pnbackup",
+        BackupType::Checkpoint,
+        "2026-10-02T10:00:00Z",
+    );
 
     // Apply retention = 2 on automatic backups
     let res = BackupRetentionManager::apply_retention(temp.path(), 2, None);
@@ -389,7 +452,10 @@ fn test_unit_6_retention_selection_and_isolation() {
     assert!(a4.exists(), "Newest auto backup 4 must be kept");
 
     // Manual and Checkpoint must NEVER be deleted
-    assert!(m1.exists(), "Manual backup must NEVER be deleted by retention");
+    assert!(
+        m1.exists(),
+        "Manual backup must NEVER be deleted by retention"
+    );
     assert!(c1.exists(), "Checkpoint must NEVER be deleted by retention");
 }
 
@@ -400,15 +466,21 @@ fn test_unit_6_retention_selection_and_isolation() {
 fn test_unit_7_error_classification_and_privacy_categories() {
     let err_dest = BackupError::DestinationUnavailable("disk path missing".to_string());
     assert_eq!(err_dest.category(), "DestinationUnavailable");
-    assert!(err_dest.user_friendly_message().contains("Backup destination is unavailable"));
+    assert!(err_dest
+        .user_friendly_message()
+        .contains("Backup destination is unavailable"));
 
     let err_perm = BackupError::PermissionDenied("/root/backups".to_string());
     assert_eq!(err_perm.category(), "PermissionDenied");
-    assert!(err_perm.user_friendly_message().contains("Permission denied"));
+    assert!(err_perm
+        .user_friendly_message()
+        .contains("Permission denied"));
 
     let err_space = BackupError::InsufficientDiskSpace;
     assert_eq!(err_space.category(), "InsufficientDiskSpace");
-    assert!(err_space.user_friendly_message().contains("Insufficient disk space"));
+    assert!(err_space
+        .user_friendly_message()
+        .contains("Insufficient disk space"));
 
     let err_db_snap = BackupError::DatabaseSnapshotFailed("busy".to_string());
     assert_eq!(err_db_snap.category(), "DatabaseSnapshotFailed");
@@ -431,7 +503,9 @@ fn test_unit_7_error_classification_and_privacy_categories() {
         actual: "def".to_string(),
     };
     assert_eq!(err_checksum.category(), "ChecksumMismatch");
-    assert!(err_checksum.user_friendly_message().contains("checksum mismatch for 'database.sqlite'"));
+    assert!(err_checksum
+        .user_friendly_message()
+        .contains("checksum mismatch for 'database.sqlite'"));
 
     let err_unsupp_ver = BackupError::UnsupportedVersion {
         version: 5,
@@ -545,8 +619,14 @@ fn test_unit_9_archive_entry_limits_and_safety_caps() {
 
     let val_res = ManifestManager::validate_archive(&archive_path).unwrap();
     // It will fail because manifest is empty {}, but entry limits did not trigger
-    assert!(!val_res.issues.iter().any(|i| i.code == "ARCHIVE_ENTRY_LIMIT_EXCEEDED"));
-    assert!(!val_res.issues.iter().any(|i| i.code == "ARCHIVE_SIZE_LIMIT_EXCEEDED"));
+    assert!(!val_res
+        .issues
+        .iter()
+        .any(|i| i.code == "ARCHIVE_ENTRY_LIMIT_EXCEEDED"));
+    assert!(!val_res
+        .issues
+        .iter()
+        .any(|i| i.code == "ARCHIVE_SIZE_LIMIT_EXCEEDED"));
 }
 
 // -----------------------------------------------------------------------------
@@ -600,9 +680,15 @@ fn test_unit_10_unsupported_version_handling() {
     zip.finish().unwrap();
 
     let res = ManifestManager::validate_archive(&archive_path).unwrap();
-    assert_eq!(res.compatibility, BackupCompatibilityStatus::IncompatibleVersion);
+    assert_eq!(
+        res.compatibility,
+        BackupCompatibilityStatus::IncompatibleVersion
+    );
     assert!(!res.is_valid);
-    assert!(res.issues.iter().any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
+    assert!(res
+        .issues
+        .iter()
+        .any(|i| i.code == "UNSUPPORTED_FORMAT_VERSION"));
 }
 
 // -----------------------------------------------------------------------------
@@ -631,7 +717,8 @@ fn test_unit_11_database_schema_compatibility_rules() {
                  CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);
                  CREATE TABLE _migrations (version INTEGER PRIMARY KEY);"
             ).unwrap();
-            conn.execute("INSERT INTO _migrations (version) VALUES (?1)", [schema_v]).unwrap();
+            conn.execute("INSERT INTO _migrations (version) VALUES (?1)", [schema_v])
+                .unwrap();
         }
 
         let (db_hash, db_size) = compute_file_sha256(&db_p).unwrap();
@@ -674,21 +761,43 @@ fn test_unit_11_database_schema_compatibility_rules() {
 
     // 1. Current schema (v4): Compatible
     let v4_arch = create_archive("schema_v4.pnbackup", 4);
-    let v4_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(&v4_arch, &paths).unwrap();
+    let v4_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(
+        &v4_arch, &paths,
+    )
+    .unwrap();
     assert!(v4_res.is_valid);
     assert_eq!(v4_res.compatibility, BackupCompatibilityStatus::Compatible);
 
     // 2. Older schema (v2): RequiresMigration
     let v2_arch = create_archive("schema_v2.pnbackup", 2);
-    let v2_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(&v2_arch, &paths).unwrap();
+    let v2_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(
+        &v2_arch, &paths,
+    )
+    .unwrap();
     assert!(v2_res.is_valid);
-    assert_eq!(v2_res.compatibility, BackupCompatibilityStatus::RequiresMigration);
-    assert!(v2_res.issues.iter().any(|i| i.code == "SCHEMA_MIGRATION_REQUIRED"));
+    assert_eq!(
+        v2_res.compatibility,
+        BackupCompatibilityStatus::RequiresMigration
+    );
+    assert!(v2_res
+        .issues
+        .iter()
+        .any(|i| i.code == "SCHEMA_MIGRATION_REQUIRED"));
 
     // 3. Newer unsupported schema (v99): IncompatibleVersion
     let v99_arch = create_archive("schema_v99.pnbackup", 99);
-    let v99_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(&v99_arch, &paths).unwrap();
+    let v99_res =
+        personal_notepad_lib::storage::services::BackupValidationService::validate_backup(
+            &v99_arch, &paths,
+        )
+        .unwrap();
     assert!(!v99_res.is_valid);
-    assert_eq!(v99_res.compatibility, BackupCompatibilityStatus::IncompatibleVersion);
-    assert!(v99_res.issues.iter().any(|i| i.code == "INCOMPATIBLE_SCHEMA_VERSION"));
+    assert_eq!(
+        v99_res.compatibility,
+        BackupCompatibilityStatus::IncompatibleVersion
+    );
+    assert!(v99_res
+        .issues
+        .iter()
+        .any(|i| i.code == "INCOMPATIBLE_SCHEMA_VERSION"));
 }

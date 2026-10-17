@@ -1,9 +1,9 @@
+use crate::storage::errors::StorageError;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
-use crate::storage::errors::StorageError;
 
 /// Default busy timeout for SQLite connections (in milliseconds).
 /// 5000ms gives concurrent background operations (like snapshotting or WAL checkpointing)
@@ -143,26 +143,43 @@ pub fn init_connection_with_config(
 /// along with any associated WAL/SHM files, preserving it safely without deletion or overwrite (Phase 13, Task 18).
 pub fn isolate_corrupted_database(db_path: &Path) -> Result<PathBuf, StorageError> {
     if !db_path.exists() {
-        return Err(StorageError::NotFound("Database file does not exist to isolate".to_string()));
+        return Err(StorageError::NotFound(
+            "Database file does not exist to isolate".to_string(),
+        ));
     }
 
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S");
-    let corrupt_name = format!("{}.corrupt.{timestamp}", db_path.file_name().unwrap().to_string_lossy());
+    let corrupt_name = format!(
+        "{}.corrupt.{timestamp}",
+        db_path.file_name().unwrap().to_string_lossy()
+    );
     let corrupt_path = db_path.with_file_name(&corrupt_name);
 
     // Atomically rename database file
     std::fs::rename(db_path, &corrupt_path)?;
 
     // Also isolate WAL and SHM if present
-    let wal_path = db_path.with_file_name(format!("{}-wal", db_path.file_name().unwrap().to_string_lossy()));
+    let wal_path = db_path.with_file_name(format!(
+        "{}-wal",
+        db_path.file_name().unwrap().to_string_lossy()
+    ));
     if wal_path.exists() {
-        let corrupt_wal = db_path.with_file_name(format!("{}-wal.corrupt.{timestamp}", db_path.file_name().unwrap().to_string_lossy()));
+        let corrupt_wal = db_path.with_file_name(format!(
+            "{}-wal.corrupt.{timestamp}",
+            db_path.file_name().unwrap().to_string_lossy()
+        ));
         let _ = std::fs::rename(wal_path, corrupt_wal);
     }
 
-    let shm_path = db_path.with_file_name(format!("{}-shm", db_path.file_name().unwrap().to_string_lossy()));
+    let shm_path = db_path.with_file_name(format!(
+        "{}-shm",
+        db_path.file_name().unwrap().to_string_lossy()
+    ));
     if shm_path.exists() {
-        let corrupt_shm = db_path.with_file_name(format!("{}-shm.corrupt.{timestamp}", db_path.file_name().unwrap().to_string_lossy()));
+        let corrupt_shm = db_path.with_file_name(format!(
+            "{}-shm.corrupt.{timestamp}",
+            db_path.file_name().unwrap().to_string_lossy()
+        ));
         let _ = std::fs::rename(shm_path, corrupt_shm);
     }
 
@@ -208,7 +225,9 @@ where
         }
     }
 
-    Err(StorageError::InitializationFailed("Max retry attempts exhausted for busy operation".to_string()))
+    Err(StorageError::InitializationFailed(
+        "Max retry attempts exhausted for busy operation".to_string(),
+    ))
 }
 
 /// Helper to query an integer pragma value (e.g. `busy_timeout`, `foreign_keys`).
@@ -265,7 +284,10 @@ mod tests {
                 r.get(0)
             })
             .expect("Should retrieve existing data");
-        assert_eq!(val, "initial value", "Existing data must survive reconnection");
+        assert_eq!(
+            val, "initial value",
+            "Existing data must survive reconnection"
+        );
 
         // Clean up
         drop(conn2);
@@ -274,7 +296,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_pragmas_verification() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_pragmas_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_pragmas_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
 
         let conn = init_connection(&db_path).expect("Connection should succeed");
@@ -309,23 +332,38 @@ mod tests {
                  id TEXT PRIMARY KEY NOT NULL,
                  parent_id TEXT NOT NULL,
                  FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE
-             );"
-        ).expect("Tables creation failed");
+             );",
+        )
+        .expect("Tables creation failed");
 
         // Insert valid parent
-        conn.execute("INSERT INTO parent (id) VALUES ('p1')", []).expect("Parent insert");
+        conn.execute("INSERT INTO parent (id) VALUES ('p1')", [])
+            .expect("Parent insert");
 
         // Insert valid child referencing parent
-        conn.execute("INSERT INTO child (id, parent_id) VALUES ('c1', 'p1')", []).expect("Child insert");
+        conn.execute("INSERT INTO child (id, parent_id) VALUES ('c1', 'p1')", [])
+            .expect("Child insert");
 
         // Attempt to insert invalid child referencing nonexistent parent
-        let res = conn.execute("INSERT INTO child (id, parent_id) VALUES ('c2', 'nonexistent')", []);
-        assert!(res.is_err(), "Foreign key constraint must prevent invalid relationship");
+        let res = conn.execute(
+            "INSERT INTO child (id, parent_id) VALUES ('c2', 'nonexistent')",
+            [],
+        );
+        assert!(
+            res.is_err(),
+            "Foreign key constraint must prevent invalid relationship"
+        );
 
         // Deleting parent should cascade delete child
-        conn.execute("DELETE FROM parent WHERE id = 'p1'", []).expect("Delete parent");
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0)).expect("Count children");
-        assert_eq!(count, 0, "Cascade delete must remove child when parent is deleted");
+        conn.execute("DELETE FROM parent WHERE id = 'p1'", [])
+            .expect("Delete parent");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0))
+            .expect("Count children");
+        assert_eq!(
+            count, 0,
+            "Cascade delete must remove child when parent is deleted"
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -333,7 +371,8 @@ mod tests {
 
     #[test]
     fn test_database_open_failure_preserves_corrupted_file() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_corrupt_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_corrupt_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("database.sqlite");
 
@@ -346,9 +385,15 @@ mod tests {
         assert!(res.is_err(), "Opening invalid file must fail");
 
         // CRITICAL INVARIANT: The corrupted file MUST NOT be deleted or overwritten
-        assert!(db_path.exists(), "Corrupted database file must be preserved on disk");
+        assert!(
+            db_path.exists(),
+            "Corrupted database file must be preserved on disk"
+        );
         let on_disk_bytes = std::fs::read(&db_path).expect("Read database file");
-        assert_eq!(on_disk_bytes, garbage, "Corrupted database content must remain unmodified");
+        assert_eq!(
+            on_disk_bytes, garbage,
+            "Corrupted database content must remain unmodified"
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -372,16 +417,23 @@ mod tests {
             }
         });
         assert_eq!(res.unwrap(), 42);
-        assert_eq!(attempts, 3, "Should have retried until 3rd attempt succeeded");
+        assert_eq!(
+            attempts, 3,
+            "Should have retried until 3rd attempt succeeded"
+        );
 
         // 2. Non-retryable error aborts immediately on first attempt
         let mut attempts_fatal = 0;
-        let res_fatal: Result<i32, StorageError> = retry_on_busy(5, Duration::from_millis(5), || {
-            attempts_fatal += 1;
-            Err(StorageError::NotFound("Note not found".to_string()))
-        });
+        let res_fatal: Result<i32, StorageError> =
+            retry_on_busy(5, Duration::from_millis(5), || {
+                attempts_fatal += 1;
+                Err(StorageError::NotFound("Note not found".to_string()))
+            });
         assert!(res_fatal.is_err());
-        assert_eq!(attempts_fatal, 1, "Non-retryable error must fail fast on attempt 1");
+        assert_eq!(
+            attempts_fatal, 1,
+            "Non-retryable error must fail fast on attempt 1"
+        );
     }
 
     #[test]
@@ -402,7 +454,8 @@ mod tests {
 
     #[test]
     fn test_isolate_corrupted_database() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_isolate_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_isolate_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("database.sqlite");
         let wal_path = temp_dir.join("database.sqlite-wal");
@@ -415,7 +468,11 @@ mod tests {
 
         let isolated_path = isolate_corrupted_database(&db_path).expect("Isolation must succeed");
         assert!(isolated_path.exists());
-        assert!(isolated_path.file_name().unwrap().to_string_lossy().contains(".corrupt."));
+        assert!(isolated_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .contains(".corrupt."));
         assert_eq!(std::fs::read(&isolated_path).unwrap(), garbage);
 
         // Original database file must no longer be at `database.sqlite`

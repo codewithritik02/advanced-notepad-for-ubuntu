@@ -13,15 +13,15 @@ pub fn sanitize_backup_filename_stem(raw_name: &str) -> String {
     let filtered: String = raw_name
         .chars()
         .filter(|c| {
-            !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'..='\x1F')
+            !matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'..='\x1F'
+            )
         })
         .collect();
 
     // 2. Trim whitespace and leading/trailing dots (prevents hidden/traversal paths)
-    let trimmed = filtered
-        .trim()
-        .trim_matches('.')
-        .trim();
+    let trimmed = filtered.trim().trim_matches('.').trim();
 
     if trimmed.is_empty() {
         return "personal-notepad-backup".to_string();
@@ -31,9 +31,28 @@ pub fn sanitize_backup_filename_stem(raw_name: &str) -> String {
     let uppercase = trimmed.to_ascii_uppercase();
     let is_reserved = matches!(
         uppercase.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL"
-            | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-            | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
     );
 
     let neutralized = if is_reserved {
@@ -80,9 +99,11 @@ impl BackupDestinationManager {
 
         let target_path: PathBuf = if requested_raw.is_empty() {
             // Default destination inside managed backups directory
-            paths
-                .ensure_directories()
-                .map_err(|e| BackupError::DestinationUnavailable(format!("Failed to create backups directory: {e}")))?;
+            paths.ensure_directories().map_err(|e| {
+                BackupError::DestinationUnavailable(format!(
+                    "Failed to create backups directory: {e}"
+                ))
+            })?;
             let default_name = generate_default_backup_filename(backup_type);
             let candidate = paths.backups_dir.join(default_name);
 
@@ -98,9 +119,7 @@ impl BackupDestinationManager {
             let live_db_str = paths.database_file.to_string_lossy().to_string();
             let req_str = requested.to_string_lossy().to_string();
 
-            if req_str == live_db_str
-                || req_str.starts_with(&format!("{live_db_str}-"))
-            {
+            if req_str == live_db_str || req_str.starts_with(&format!("{live_db_str}-")) {
                 return Err(BackupError::DestinationUnavailable(
                     "Cannot write backup archive directly to the active SQLite database file or journal.".to_string(),
                 ));
@@ -114,7 +133,8 @@ impl BackupDestinationManager {
             // Guard against writing directly as the attachments directory
             if requested == paths.attachments_dir {
                 return Err(BackupError::DestinationUnavailable(
-                    "Cannot overwrite the active attachments directory with a backup file.".to_string(),
+                    "Cannot overwrite the active attachments directory with a backup file."
+                        .to_string(),
                 ));
             }
 
@@ -143,9 +163,11 @@ impl BackupDestinationManager {
                         p.to_path_buf()
                     }
                     _ => {
-                        paths
-                            .ensure_directories()
-                            .map_err(|e| BackupError::DestinationUnavailable(format!("Failed to create backups directory: {e}")))?;
+                        paths.ensure_directories().map_err(|e| {
+                            BackupError::DestinationUnavailable(format!(
+                                "Failed to create backups directory: {e}"
+                            ))
+                        })?;
                         paths.backups_dir.clone()
                     }
                 };
@@ -156,15 +178,17 @@ impl BackupDestinationManager {
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| generate_default_backup_filename(backup_type));
 
-                let (stem, has_valid_ext) = if raw_filename.ends_with(&format!(".{PRIMARY_BACKUP_EXTENSION}")) {
-                    let s = &raw_filename[..raw_filename.len() - (PRIMARY_BACKUP_EXTENSION.len() + 1)];
-                    (s, true)
-                } else if raw_filename.ends_with(".zip") {
-                    let s = &raw_filename[..raw_filename.len() - 4];
-                    (s, true)
-                } else {
-                    (raw_filename.as_str(), false)
-                };
+                let (stem, has_valid_ext) =
+                    if raw_filename.ends_with(&format!(".{PRIMARY_BACKUP_EXTENSION}")) {
+                        let s = &raw_filename
+                            [..raw_filename.len() - (PRIMARY_BACKUP_EXTENSION.len() + 1)];
+                        (s, true)
+                    } else if raw_filename.ends_with(".zip") {
+                        let s = &raw_filename[..raw_filename.len() - 4];
+                        (s, true)
+                    } else {
+                        (raw_filename.as_str(), false)
+                    };
 
                 let sanitized_stem = sanitize_backup_filename_stem(stem);
                 let final_filename = if has_valid_ext && raw_filename.ends_with(".zip") {
@@ -194,7 +218,10 @@ impl BackupDestinationManager {
     }
 
     /// Finds a collision-free filename by appending sequential counters: `name (1).ext`, `name (2).ext`
-    pub fn find_collision_free_path(dir: &Path, original_path: &Path) -> Result<PathBuf, BackupError> {
+    pub fn find_collision_free_path(
+        dir: &Path,
+        original_path: &Path,
+    ) -> Result<PathBuf, BackupError> {
         let file_name = original_path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -234,10 +261,12 @@ impl BackupDestinationManager {
                 Ok(())
             }
             Err(e) => match e.kind() {
-                std::io::ErrorKind::PermissionDenied => Err(BackupError::PermissionDenied(format!(
-                    "Cannot write to directory '{}': Permission denied",
-                    dir.display()
-                ))),
+                std::io::ErrorKind::PermissionDenied => {
+                    Err(BackupError::PermissionDenied(format!(
+                        "Cannot write to directory '{}': Permission denied",
+                        dir.display()
+                    )))
+                }
                 _ => Err(BackupError::Io(e)),
             },
         }
@@ -256,11 +285,17 @@ mod tests {
             "MyBackup  2026 Final v1Draft"
         );
         assert_eq!(sanitize_backup_filename_stem("...dots..."), "dots");
-        assert_eq!(sanitize_backup_filename_stem("   "), "personal-notepad-backup");
+        assert_eq!(
+            sanitize_backup_filename_stem("   "),
+            "personal-notepad-backup"
+        );
         assert_eq!(sanitize_backup_filename_stem("CON"), "_CON");
         assert_eq!(sanitize_backup_filename_stem("prn"), "_prn");
         assert_eq!(sanitize_backup_filename_stem("NUL"), "_NUL");
-        assert_eq!(sanitize_backup_filename_stem("ValidBackupStem"), "ValidBackupStem");
+        assert_eq!(
+            sanitize_backup_filename_stem("ValidBackupStem"),
+            "ValidBackupStem"
+        );
     }
 
     #[test]
@@ -270,13 +305,9 @@ mod tests {
         paths.ensure_directories().expect("Ensure directories");
 
         // 1. Default destination resolves to backups directory with .pnbackup
-        let default_res = BackupDestinationManager::resolve_destination(
-            None,
-            BackupType::Manual,
-            false,
-            &paths,
-        )
-        .expect("Default resolution");
+        let default_res =
+            BackupDestinationManager::resolve_destination(None, BackupType::Manual, false, &paths)
+                .expect("Default resolution");
         assert_eq!(default_res.parent().unwrap(), paths.backups_dir);
         assert!(default_res.to_string_lossy().ends_with(".pnbackup"));
 
@@ -383,7 +414,10 @@ mod tests {
         .expect("Resolve bare stem");
 
         assert_eq!(resolved_stem.parent().unwrap(), paths.backups_dir);
-        assert_eq!(resolved_stem.file_name().unwrap(), "notes-snapshot.pnbackup");
+        assert_eq!(
+            resolved_stem.file_name().unwrap(),
+            "notes-snapshot.pnbackup"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -442,8 +476,9 @@ mod tests {
         let col2_path = paths.backups_dir.join("archive (2).pnbackup");
         fs::write(&col2_path, b"col2").expect("write col2");
 
-        let found = BackupDestinationManager::find_collision_free_path(&paths.backups_dir, &base_path)
-            .expect("find collision free path");
+        let found =
+            BackupDestinationManager::find_collision_free_path(&paths.backups_dir, &base_path)
+                .expect("find collision free path");
 
         assert_eq!(found.file_name().unwrap(), "archive (3).pnbackup");
 
@@ -504,4 +539,3 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-

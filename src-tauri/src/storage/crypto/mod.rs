@@ -8,8 +8,8 @@ pub mod session;
 
 pub use diagnostics::{
     classify_crypto_failure, clear_security_audit_log, configure_security_log_file,
-    get_security_audit_log, record_security_event, sanitize_security_message,
-    SecurityAuditor, SecurityEventCode, SecurityLogEntry, SecurityLogLevel, MAX_AUDIT_LOGS,
+    get_security_audit_log, record_security_event, sanitize_security_message, SecurityAuditor,
+    SecurityEventCode, SecurityLogEntry, SecurityLogLevel, MAX_AUDIT_LOGS,
 };
 
 pub use migration::{
@@ -22,7 +22,9 @@ pub use cipher::{
     encrypt_string, is_encrypted_string, ENCRYPTED_PREFIX_V1, ENVELOPE_VERSION_V1,
     MIN_ENVELOPE_LEN,
 };
-pub use kdf::{derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, DEK_WRAP_ASSOCIATED_DATA};
+pub use kdf::{
+    derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek, DEK_WRAP_ASSOCIATED_DATA,
+};
 pub use metadata::{
     EncryptionMetadata, KdfConfig, MigrationStatus, WrappedKey, CURRENT_ENCRYPTION_FORMAT_VERSION,
     DEFAULT_CIPHER_ALGORITHM, DEFAULT_KDF_ALGORITHM, DEFAULT_KEY_WRAP_ALGORITHM,

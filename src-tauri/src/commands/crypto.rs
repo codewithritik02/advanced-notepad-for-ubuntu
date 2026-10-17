@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::storage::crypto::{
-    ChangePasswordDto, CryptoSession, SetupEncryptionDto, UnlockDto,
-};
+use crate::storage::crypto::{ChangePasswordDto, CryptoSession, SetupEncryptionDto, UnlockDto};
 use crate::storage::{Database, StoragePaths};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,8 +52,16 @@ pub fn get_encryption_status(
     Ok(EncryptionStatusDto {
         enabled,
         is_locked,
-        algorithm: if enabled { Some("AES-256-GCM".to_string()) } else { None },
-        kdf_algorithm: if enabled { Some("argon2id".to_string()) } else { None },
+        algorithm: if enabled {
+            Some("AES-256-GCM".to_string())
+        } else {
+            None
+        },
+        kdf_algorithm: if enabled {
+            Some("argon2id".to_string())
+        } else {
+            None
+        },
         format_version: if enabled { Some(1) } else { None },
         created_at: None,
         migration_status,
@@ -166,7 +172,7 @@ pub fn disable_encryption(
 pub fn get_security_diagnostics(
     limit: Option<usize>,
 ) -> Result<Vec<crate::storage::crypto::SecurityLogEntry>, String> {
-    Ok(crate::storage::crypto::get_security_audit_log(limit.unwrap_or(50)))
+    Ok(crate::storage::crypto::get_security_audit_log(
+        limit.unwrap_or(50),
+    ))
 }
-
-

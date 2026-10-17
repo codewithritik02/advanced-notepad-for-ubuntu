@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use crate::storage::errors::CryptoError;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
-use crate::storage::errors::CryptoError;
+use serde::{Deserialize, Serialize};
 
 pub const ENCRYPTION_FORMAT_IDENTIFIER: &str = "personal-notepad-encryption";
 pub const CURRENT_ENCRYPTION_FORMAT_VERSION: u32 = 1;
@@ -12,8 +12,8 @@ pub const DEFAULT_PAYLOAD_FORMAT_VERSION: u32 = 1;
 pub const ENCRYPTION_METADATA_KEY: &str = "encryption_metadata";
 
 // Defensive limits against DoS attacks via malformed metadata
-pub const MIN_KDF_MEMORY_KIB: u32 = 8 * 1024;      // 8 MiB
-pub const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024;    // 256 MiB
+pub const MIN_KDF_MEMORY_KIB: u32 = 8 * 1024; // 8 MiB
+pub const MAX_KDF_MEMORY_KIB: u32 = 256 * 1024; // 256 MiB
 pub const MIN_KDF_ITERATIONS: u32 = 1;
 pub const MAX_KDF_ITERATIONS: u32 = 10;
 pub const MIN_KDF_PARALLELISM: u32 = 1;
@@ -124,9 +124,9 @@ impl KdfConfig {
     }
 
     pub fn salt_bytes(&self) -> Result<Vec<u8>, CryptoError> {
-        BASE64_STANDARD.decode(&self.salt_base64).map_err(|e| {
-            CryptoError::InvalidKdfConfig(format!("Malformed base64 salt: {e}"))
-        })
+        BASE64_STANDARD
+            .decode(&self.salt_base64)
+            .map_err(|e| CryptoError::InvalidKdfConfig(format!("Malformed base64 salt: {e}")))
     }
 }
 
@@ -152,7 +152,8 @@ impl WrappedKey {
         if nonce.len() != NONCE_LEN_BYTES {
             return Err(CryptoError::InvalidMetadata(format!(
                 "Wrapped key nonce length is {} bytes, expected {}",
-                nonce.len(), NONCE_LEN_BYTES
+                nonce.len(),
+                NONCE_LEN_BYTES
             )));
         }
 
@@ -160,7 +161,8 @@ impl WrappedKey {
         if ciphertext.len() != DEK_LEN_BYTES {
             return Err(CryptoError::InvalidMetadata(format!(
                 "Wrapped key ciphertext length is {} bytes, expected {}",
-                ciphertext.len(), DEK_LEN_BYTES
+                ciphertext.len(),
+                DEK_LEN_BYTES
             )));
         }
 
@@ -168,7 +170,8 @@ impl WrappedKey {
         if tag.len() != AEAD_TAG_LEN_BYTES {
             return Err(CryptoError::InvalidMetadata(format!(
                 "Wrapped key authentication tag length is {} bytes, expected {}",
-                tag.len(), AEAD_TAG_LEN_BYTES
+                tag.len(),
+                AEAD_TAG_LEN_BYTES
             )));
         }
 
@@ -182,9 +185,11 @@ impl WrappedKey {
     }
 
     pub fn ciphertext_bytes(&self) -> Result<Vec<u8>, CryptoError> {
-        BASE64_STANDARD.decode(&self.ciphertext_base64).map_err(|e| {
-            CryptoError::InvalidMetadata(format!("Invalid wrapped key ciphertext base64: {e}"))
-        })
+        BASE64_STANDARD
+            .decode(&self.ciphertext_base64)
+            .map_err(|e| {
+                CryptoError::InvalidMetadata(format!("Invalid wrapped key ciphertext base64: {e}"))
+            })
     }
 
     pub fn tag_bytes(&self) -> Result<Vec<u8>, CryptoError> {
@@ -306,12 +311,16 @@ mod tests {
         let json = meta.to_json().expect("Serialization should succeed");
 
         // Verify secrets are NOT present
-        assert!(!json.contains("password"), "JSON must never contain password field");
+        assert!(
+            !json.contains("password"),
+            "JSON must never contain password field"
+        );
         assert!(json.contains("personal-notepad-encryption"));
         assert!(json.contains("argon2id"));
         assert!(json.contains("AES-256-GCM"));
 
-        let deserialized = EncryptionMetadata::from_json(&json).expect("Deserialization should succeed");
+        let deserialized =
+            EncryptionMetadata::from_json(&json).expect("Deserialization should succeed");
         assert_eq!(meta, deserialized);
     }
 

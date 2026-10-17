@@ -2,9 +2,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, Row};
 use uuid::Uuid;
 
-use crate::storage::crypto::{
-    decrypt_string, encrypt_string, is_encrypted_string, SecretBytes,
-};
+use crate::storage::crypto::{decrypt_string, encrypt_string, is_encrypted_string, SecretBytes};
 use crate::storage::errors::{AttachmentError, StorageError};
 use crate::storage::models::{Attachment, CreateAttachmentDto};
 
@@ -26,11 +24,17 @@ impl AttachmentRepository {
             return Ok(raw_value.to_string());
         }
         let key = dek.ok_or_else(|| {
-            StorageError::Crypto("Application is locked. Cannot decrypt attachment metadata without active key.".to_string())
+            StorageError::Crypto(
+                "Application is locked. Cannot decrypt attachment metadata without active key."
+                    .to_string(),
+            )
         })?;
         let aad = format!("attachments:{attachment_id}:{field}");
-        decrypt_string(raw_value, key, aad.as_bytes())
-            .map_err(|e| StorageError::Crypto(format!("Decryption failed for attachment {attachment_id} field {field}: {e}")))
+        decrypt_string(raw_value, key, aad.as_bytes()).map_err(|e| {
+            StorageError::Crypto(format!(
+                "Decryption failed for attachment {attachment_id} field {field}: {e}"
+            ))
+        })
     }
 
     fn encrypt_field_if_needed(
@@ -131,10 +135,14 @@ impl AttachmentRepository {
         dek: Option<&SecretBytes>,
     ) -> Result<Attachment, StorageError> {
         if dto.note_id.trim().is_empty() {
-            return Err(StorageError::Validation("note_id cannot be empty".to_string()));
+            return Err(StorageError::Validation(
+                "note_id cannot be empty".to_string(),
+            ));
         }
         if dto.file_name.trim().is_empty() {
-            return Err(StorageError::Validation("file_name cannot be empty".to_string()));
+            return Err(StorageError::Validation(
+                "file_name cannot be empty".to_string(),
+            ));
         }
         if dto.relative_path.trim().is_empty() {
             return Err(StorageError::Validation(
@@ -150,7 +158,8 @@ impl AttachmentRepository {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let plain_file_name = dto.file_name.trim().to_string();
-        let stored_file_name = Self::encrypt_field_if_needed(&plain_file_name, &id, "file_name", dek)?;
+        let stored_file_name =
+            Self::encrypt_field_if_needed(&plain_file_name, &id, "file_name", dek)?;
 
         conn.execute(
             "INSERT INTO attachments (id, note_id, file_name, relative_path, mime_type, file_size, created_at, modified_at)
@@ -282,7 +291,10 @@ impl AttachmentRepository {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::ToSql> = note_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let params: Vec<&dyn rusqlite::ToSql> = note_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
 
         let mut rows = stmt.query(params.as_slice())?;
         let mut map = std::collections::HashMap::new();
@@ -299,11 +311,11 @@ impl AttachmentRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
     use crate::storage::models::CreateNoteDto;
     use crate::storage::repositories::NoteRepository;
+    use std::path::PathBuf;
 
     fn setup_test_db() -> (Connection, PathBuf) {
         let temp_dir = std::env::temp_dir().join(format!("pn_test_att_repo_{}", Uuid::new_v4()));
@@ -355,12 +367,14 @@ mod tests {
         assert_eq!(fetched.id, att.id);
 
         // List by note ID
-        let list = AttachmentRepository::list_by_note_id(&conn, &note.id).expect("List attachments");
+        let list =
+            AttachmentRepository::list_by_note_id(&conn, &note.id).expect("List attachments");
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, att.id);
 
         // Count
-        let count = AttachmentRepository::count_by_note_id(&conn, &note.id).expect("Count attachments");
+        let count =
+            AttachmentRepository::count_by_note_id(&conn, &note.id).expect("Count attachments");
         assert_eq!(count, 1);
 
         // Delete
@@ -481,8 +495,14 @@ mod tests {
         assert_eq!(list_b[0].file_name, "doc_gamma.pdf");
 
         // 3. Count isolation
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_a.id).unwrap(), 2);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note_b.id).unwrap(), 1);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note_a.id).unwrap(),
+            2
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note_b.id).unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -494,11 +514,17 @@ mod tests {
 
         // list_by_note_id must return Err and NOT silently return an empty Vec
         let res = AttachmentRepository::list_by_note_id(&conn, "any-note");
-        assert!(res.is_err(), "Database errors must not be silently converted to empty list");
+        assert!(
+            res.is_err(),
+            "Database errors must not be silently converted to empty list"
+        );
 
         // get_by_id must also return Err on DB error, distinguishing failure from missing record
         let res_get = AttachmentRepository::get_by_id(&conn, "any-id");
-        assert!(res_get.is_err(), "Database errors must not be silently converted to Ok(None)");
+        assert!(
+            res_get.is_err(),
+            "Database errors must not be silently converted to Ok(None)"
+        );
     }
 
     #[test]
@@ -560,14 +586,23 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 1);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(),
+            1
+        );
 
         // Permanently (hard) delete note
         NoteRepository::delete(&conn, &note.id, false).unwrap();
 
         // Foreign key cascade should remove attachment record
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 0);
-        assert_eq!(AttachmentRepository::get_by_id(&conn, &att.id).unwrap(), None);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(),
+            0
+        );
+        assert_eq!(
+            AttachmentRepository::get_by_id(&conn, &att.id).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -602,9 +637,18 @@ mod tests {
         .unwrap();
 
         // Initially zero attachments
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note1.id).unwrap(), 0);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note2.id).unwrap(), 0);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note3.id).unwrap(), 0);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note1.id).unwrap(),
+            0
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note2.id).unwrap(),
+            0
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note3.id).unwrap(),
+            0
+        );
 
         // Add 2 to note1, 1 to note2, 0 to note3
         AttachmentRepository::create(
@@ -644,9 +688,18 @@ mod tests {
         .unwrap();
 
         // Individual counts
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note1.id).unwrap(), 2);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note2.id).unwrap(), 1);
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note3.id).unwrap(), 0);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note1.id).unwrap(),
+            2
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note2.id).unwrap(),
+            1
+        );
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note3.id).unwrap(),
+            0
+        );
 
         // Batch counts avoiding N+1
         let batch = AttachmentRepository::batch_count_by_note_ids(
@@ -676,7 +729,10 @@ mod tests {
 
         let empty_list = AttachmentRepository::list_by_note_id(&conn, &note.id).unwrap();
         assert!(empty_list.is_empty());
-        assert_eq!(AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(), 0);
+        assert_eq!(
+            AttachmentRepository::count_by_note_id(&conn, &note.id).unwrap(),
+            0
+        );
 
         // 2. Non-existent attachment retrieval returns Ok(None)
         let missing_att = AttachmentRepository::get_by_id(&conn, "non-existent-uuid").unwrap();
@@ -697,10 +753,14 @@ mod tests {
                 file_size: 1024,
             },
         );
-        assert!(invalid_fk_res.is_err(), "Foreign key constraint must reject nonexistent note_id");
+        assert!(
+            invalid_fk_res.is_err(),
+            "Foreign key constraint must reject nonexistent note_id"
+        );
 
         // 5. Note eligibility verification
-        let missing_note_err = AttachmentRepository::verify_note_eligible(&conn, "missing-note").unwrap_err();
+        let missing_note_err =
+            AttachmentRepository::verify_note_eligible(&conn, "missing-note").unwrap_err();
         match missing_note_err {
             AttachmentError::NoteNotFound(_) => {}
             other => panic!("Expected NoteNotFound, got: {other:?}"),
@@ -708,7 +768,8 @@ mod tests {
 
         // Soft-deleted note eligibility
         NoteRepository::delete(&conn, &note.id, true).unwrap();
-        let deleted_note_err = AttachmentRepository::verify_note_eligible(&conn, &note.id).unwrap_err();
+        let deleted_note_err =
+            AttachmentRepository::verify_note_eligible(&conn, &note.id).unwrap_err();
         match deleted_note_err {
             AttachmentError::InvalidRequest(msg) => {
                 assert!(msg.contains("deleted note"));
@@ -762,22 +823,30 @@ mod tests {
 
         // 2. get_by_id_with_key
         // Unlocked with DEK
-        let fetched_unlocked = AttachmentRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
-            .unwrap()
-            .expect("Attachment must exist");
+        let fetched_unlocked =
+            AttachmentRepository::get_by_id_with_key(&conn, &created.id, Some(&dek))
+                .unwrap()
+                .expect("Attachment must exist");
         assert_eq!(fetched_unlocked.file_name, "confidential_document.pdf");
 
         // Locked without DEK fails
         let fetched_locked = AttachmentRepository::get_by_id_with_key(&conn, &created.id, None);
-        assert!(fetched_locked.is_err(), "Reading encrypted metadata without DEK must fail");
+        assert!(
+            fetched_locked.is_err(),
+            "Reading encrypted metadata without DEK must fail"
+        );
 
         // 3. list_by_note_id_with_key
-        let list_unlocked = AttachmentRepository::list_by_note_id_with_key(&conn, &note.id, Some(&dek)).unwrap();
+        let list_unlocked =
+            AttachmentRepository::list_by_note_id_with_key(&conn, &note.id, Some(&dek)).unwrap();
         assert_eq!(list_unlocked.len(), 1);
         assert_eq!(list_unlocked[0].file_name, "confidential_document.pdf");
 
         let list_locked = AttachmentRepository::list_by_note_id_with_key(&conn, &note.id, None);
-        assert!(list_locked.is_err(), "Listing encrypted metadata without DEK must fail");
+        assert!(
+            list_locked.is_err(),
+            "Listing encrypted metadata without DEK must fail"
+        );
 
         // 4. Backward compatibility: Unencrypted attachment
         let legacy = AttachmentRepository::create_with_key(
@@ -809,9 +878,10 @@ mod tests {
             .unwrap();
         assert_eq!(read_legacy_no_key.file_name, "legacy_unencrypted.txt");
 
-        let read_legacy_with_key = AttachmentRepository::get_by_id_with_key(&conn, &legacy.id, Some(&dek))
-            .unwrap()
-            .unwrap();
+        let read_legacy_with_key =
+            AttachmentRepository::get_by_id_with_key(&conn, &legacy.id, Some(&dek))
+                .unwrap()
+                .unwrap();
         assert_eq!(read_legacy_with_key.file_name, "legacy_unencrypted.txt");
     }
 }

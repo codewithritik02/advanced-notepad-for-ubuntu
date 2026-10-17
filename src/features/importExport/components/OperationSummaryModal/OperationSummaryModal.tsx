@@ -5,7 +5,6 @@ import {
   ExportSummary,
   ImportProgress,
   ImportSummary,
-  OperationOutcome,
 } from "../../../../services/storage/types";
 import "./OperationSummaryModal.css";
 
@@ -20,39 +19,8 @@ export interface OperationSummaryModalProps {
   isCancelling?: boolean;
 }
 
-export function getOutcomeLabel(outcome?: OperationOutcome): string {
-  switch (outcome) {
-    case "full_success":
-      return "Full Success";
-    case "success_with_warnings":
-      return "Completed with Warnings";
-    case "partial_success":
-      return "Partial Success";
-    case "cancelled":
-      return "Operation Cancelled";
-    case "total_failure":
-      return "Total Failure";
-    default:
-      return "Finished";
-  }
-}
-
-export function getOutcomeBadgeClass(outcome?: OperationOutcome): string {
-  switch (outcome) {
-    case "full_success":
-      return "outcome-full-success";
-    case "success_with_warnings":
-      return "outcome-warnings";
-    case "partial_success":
-      return "outcome-partial";
-    case "cancelled":
-      return "outcome-cancelled";
-    case "total_failure":
-      return "outcome-failure";
-    default:
-      return "outcome-default";
-  }
-}
+import { getOutcomeLabel, getOutcomeBadgeClass } from "../../utils";
+export { getOutcomeLabel, getOutcomeBadgeClass };
 
 export const OperationSummaryModal: React.FC<OperationSummaryModalProps> = ({
   isOpen,

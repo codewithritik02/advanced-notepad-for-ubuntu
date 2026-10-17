@@ -1,20 +1,18 @@
+use rusqlite::Connection;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
-use rusqlite::Connection;
 use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::storage::errors::BackupError;
 use crate::storage::models::{
-    BackupCompatibilityStatus, BackupValidationIssue,
-    BackupValidationIssueSeverity, BackupValidationResult,
+    BackupCompatibilityStatus, BackupValidationIssue, BackupValidationIssueSeverity,
+    BackupValidationResult,
 };
 use crate::storage::paths::StoragePaths;
-use crate::storage::services::manifest::{
-    ManifestManager, CURRENT_APP_SCHEMA_VERSION,
-};
+use crate::storage::services::manifest::{ManifestManager, CURRENT_APP_SCHEMA_VERSION};
 
 /// RAII cleanup guard for temporary validation staging directory.
 struct ValStagingGuard<'a>(&'a Path);
@@ -120,7 +118,9 @@ impl BackupValidationService {
         };
 
         // 3. Extract database.sqlite to an isolated staging directory for deep inspection
-        let staging_dir = paths.backups_dir.join(format!(".val_staging_{}", Uuid::new_v4()));
+        let staging_dir = paths
+            .backups_dir
+            .join(format!(".val_staging_{}", Uuid::new_v4()));
         if let Err(e) = fs::create_dir_all(&staging_dir) {
             return Err(BackupError::Io(e));
         }
@@ -130,9 +130,9 @@ impl BackupValidationService {
 
         // Extract database.sqlite from archive
         let db_extract_res = (|| -> Result<(), BackupError> {
-            let mut db_entry = archive
-                .by_name("database.sqlite")
-                .map_err(|e| BackupError::ArchiveReadFailed(format!("Missing database.sqlite in archive: {e}")))?;
+            let mut db_entry = archive.by_name("database.sqlite").map_err(|e| {
+                BackupError::ArchiveReadFailed(format!("Missing database.sqlite in archive: {e}"))
+            })?;
 
             let out_file = File::create(&temp_db_path).map_err(BackupError::Io)?;
             let mut writer = BufWriter::new(out_file);
@@ -176,7 +176,8 @@ impl BackupValidationService {
         };
 
         // Enforce query_only mode to protect staged copy from unintended mutations
-        if let Err(e) = db_conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;") {
+        if let Err(e) = db_conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA query_only = ON;")
+        {
             eprintln!("Warning: failed to set query_only on validation DB: {e}");
         }
 
@@ -204,38 +205,36 @@ impl BackupValidationService {
 
         // 4b. Run PRAGMA foreign_key_check
         match db_conn.prepare("PRAGMA foreign_key_check;") {
-            Ok(mut fk_stmt) => {
-                match fk_stmt.query([]) {
-                    Ok(mut rows) => {
-                        let mut fk_violations = 0;
-                        while let Ok(Some(row)) = rows.next() {
-                            let table: String = row.get(0).unwrap_or_else(|_| "unknown".to_string());
-                            let rowid: i64 = row.get(1).unwrap_or(0);
-                            let parent: String = row.get(2).unwrap_or_else(|_| "unknown".to_string());
-                            fk_violations += 1;
-                            if fk_violations <= 5 {
-                                archive_val_res.issues.push(BackupValidationIssue {
+            Ok(mut fk_stmt) => match fk_stmt.query([]) {
+                Ok(mut rows) => {
+                    let mut fk_violations = 0;
+                    while let Ok(Some(row)) = rows.next() {
+                        let table: String = row.get(0).unwrap_or_else(|_| "unknown".to_string());
+                        let rowid: i64 = row.get(1).unwrap_or(0);
+                        let parent: String = row.get(2).unwrap_or_else(|_| "unknown".to_string());
+                        fk_violations += 1;
+                        if fk_violations <= 5 {
+                            archive_val_res.issues.push(BackupValidationIssue {
                                     severity: BackupValidationIssueSeverity::Error,
                                     code: "FOREIGN_KEY_VIOLATION".to_string(),
                                     message: format!(
                                         "Foreign key violation in table '{table}' (rowid {rowid}) referencing '{parent}'."
                                     ),
                                 });
-                            }
-                        }
-                        if fk_violations > 0 {
-                            archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
                         }
                     }
-                    Err(e) => {
-                        archive_val_res.issues.push(BackupValidationIssue {
-                            severity: BackupValidationIssueSeverity::Warning,
-                            code: "FOREIGN_KEY_CHECK_ERROR".to_string(),
-                            message: format!("Could not evaluate foreign keys: {e}"),
-                        });
+                    if fk_violations > 0 {
+                        archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
                     }
                 }
-            }
+                Err(e) => {
+                    archive_val_res.issues.push(BackupValidationIssue {
+                        severity: BackupValidationIssueSeverity::Warning,
+                        code: "FOREIGN_KEY_CHECK_ERROR".to_string(),
+                        message: format!("Could not evaluate foreign keys: {e}"),
+                    });
+                }
+            },
             Err(e) => {
                 archive_val_res.issues.push(BackupValidationIssue {
                     severity: BackupValidationIssueSeverity::Warning,
@@ -247,11 +246,24 @@ impl BackupValidationService {
 
         // 4c. Verify required tables and expected columns
         let required_tables = [
-            ("notes", vec!["id", "title", "content", "format", "created_at", "modified_at"]),
+            (
+                "notes",
+                vec![
+                    "id",
+                    "title",
+                    "content",
+                    "format",
+                    "created_at",
+                    "modified_at",
+                ],
+            ),
             ("notebooks", vec!["id", "name", "created_at", "modified_at"]),
             ("tags", vec!["id", "name", "created_at"]),
             ("note_tags", vec!["note_id", "tag_id"]),
-            ("attachments", vec!["id", "note_id", "file_name", "relative_path", "file_size"]),
+            (
+                "attachments",
+                vec!["id", "note_id", "file_name", "relative_path", "file_size"],
+            ),
             ("settings", vec!["key", "value"]),
             ("_migrations", vec!["version"]),
         ];
@@ -269,7 +281,9 @@ impl BackupValidationService {
                 archive_val_res.issues.push(BackupValidationIssue {
                     severity: BackupValidationIssueSeverity::Error,
                     code: "MISSING_TABLE".to_string(),
-                    message: format!("Required table '{table_name}' is missing from the backup database."),
+                    message: format!(
+                        "Required table '{table_name}' is missing from the backup database."
+                    ),
                 });
                 archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
                 continue;
@@ -345,7 +359,9 @@ impl BackupValidationService {
         }
 
         // 4e. Cross-check database attachment records with archive entries
-        if let Ok(mut att_stmt) = db_conn.prepare("SELECT id, note_id, file_name, relative_path FROM attachments") {
+        if let Ok(mut att_stmt) =
+            db_conn.prepare("SELECT id, note_id, file_name, relative_path FROM attachments")
+        {
             if let Ok(att_rows) = att_stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -360,7 +376,8 @@ impl BackupValidationService {
                     let (att_id, _note_id, file_name, rel_path) = att_row;
                     db_attachment_ids.insert(att_id.clone());
 
-                    let expected_entry = format!("attachments/{}", rel_path.trim().replace('\\', "/"));
+                    let expected_entry =
+                        format!("attachments/{}", rel_path.trim().replace('\\', "/"));
                     if archive.by_name(&expected_entry).is_err() {
                         archive_val_res.issues.push(BackupValidationIssue {
                             severity: BackupValidationIssueSeverity::Error,
@@ -416,53 +433,53 @@ impl BackupValidationService {
 
         if manifest.is_encrypted {
             match db_enc_meta_str {
-                Some(ref s) => {
-                    match crate::storage::crypto::EncryptionMetadata::from_json(s) {
-                        Ok(meta) => {
-                            if let Err(e) = meta.validate() {
-                                crate::storage::crypto::record_security_event(
-                                    crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
-                                    crate::storage::crypto::SecurityLogLevel::Error,
-                                    "Backup encryption metadata validation failed",
-                                    Some("metadata_invalid"),
-                                );
-                                archive_val_res.issues.push(BackupValidationIssue {
-                                    severity: BackupValidationIssueSeverity::Error,
-                                    code: "ENCRYPTION_METADATA_INVALID".to_string(),
-                                    message: format!("Encryption metadata failed validation: {e}"),
-                                });
-                                archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
-                            } else if !meta.enabled {
-                                crate::storage::crypto::record_security_event(
-                                    crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
-                                    crate::storage::crypto::SecurityLogLevel::Error,
-                                    "Backup declared encrypted but metadata is disabled",
-                                    Some("encryption_disabled"),
-                                );
-                                archive_val_res.issues.push(BackupValidationIssue {
-                                    severity: BackupValidationIssueSeverity::Error,
-                                    code: "ENCRYPTION_DISABLED_IN_METADATA".to_string(),
-                                    message: "Manifest declared backup as encrypted, but encryption metadata has enabled=false.".to_string(),
-                                });
-                                archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
-                            }
-                        }
-                        Err(e) => {
+                Some(ref s) => match crate::storage::crypto::EncryptionMetadata::from_json(s) {
+                    Ok(meta) => {
+                        if let Err(e) = meta.validate() {
                             crate::storage::crypto::record_security_event(
                                 crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
                                 crate::storage::crypto::SecurityLogLevel::Error,
-                                "Backup encryption metadata in settings is malformed",
-                                Some("metadata_malformed"),
+                                "Backup encryption metadata validation failed",
+                                Some("metadata_invalid"),
                             );
                             archive_val_res.issues.push(BackupValidationIssue {
                                 severity: BackupValidationIssueSeverity::Error,
                                 code: "ENCRYPTION_METADATA_INVALID".to_string(),
-                                message: format!("Encryption metadata in database settings is malformed: {e}"),
+                                message: format!("Encryption metadata failed validation: {e}"),
                             });
+                            archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                        } else if !meta.enabled {
+                            crate::storage::crypto::record_security_event(
+                                crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                                crate::storage::crypto::SecurityLogLevel::Error,
+                                "Backup declared encrypted but metadata is disabled",
+                                Some("encryption_disabled"),
+                            );
+                            archive_val_res.issues.push(BackupValidationIssue {
+                                    severity: BackupValidationIssueSeverity::Error,
+                                    code: "ENCRYPTION_DISABLED_IN_METADATA".to_string(),
+                                    message: "Manifest declared backup as encrypted, but encryption metadata has enabled=false.".to_string(),
+                                });
                             archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
                         }
                     }
-                }
+                    Err(e) => {
+                        crate::storage::crypto::record_security_event(
+                            crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
+                            crate::storage::crypto::SecurityLogLevel::Error,
+                            "Backup encryption metadata in settings is malformed",
+                            Some("metadata_malformed"),
+                        );
+                        archive_val_res.issues.push(BackupValidationIssue {
+                            severity: BackupValidationIssueSeverity::Error,
+                            code: "ENCRYPTION_METADATA_INVALID".to_string(),
+                            message: format!(
+                                "Encryption metadata in database settings is malformed: {e}"
+                            ),
+                        });
+                        archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
+                    }
+                },
                 None => {
                     crate::storage::crypto::record_security_event(
                         crate::storage::crypto::SecurityEventCode::BackupValidationFailed,
@@ -505,7 +522,9 @@ impl BackupValidationService {
             .any(|i| i.severity == BackupValidationIssueSeverity::Error);
 
         archive_val_res.is_valid = !has_errors;
-        if has_errors && archive_val_res.compatibility != BackupCompatibilityStatus::IncompatibleVersion {
+        if has_errors
+            && archive_val_res.compatibility != BackupCompatibilityStatus::IncompatibleVersion
+        {
             archive_val_res.compatibility = BackupCompatibilityStatus::Corrupted;
         }
 
@@ -542,7 +561,8 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create backup
         let backup_res = BackupService::create_backup(
@@ -554,7 +574,8 @@ mod tests {
                 allow_overwrite: Some(false),
             },
             None::<fn(_)>,
-        ).unwrap();
+        )
+        .unwrap();
 
         let archive_path = Path::new(&backup_res.file_path);
         let val_res = BackupValidationService::validate_backup(archive_path, &paths).unwrap();
@@ -562,7 +583,10 @@ mod tests {
         assert!(val_res.is_valid, "Valid backup must pass validation");
         assert_eq!(val_res.compatibility, BackupCompatibilityStatus::Compatible);
         assert!(val_res.manifest.is_some());
-        assert!(!val_res.issues.iter().any(|i| i.severity == BackupValidationIssueSeverity::Error));
+        assert!(!val_res
+            .issues
+            .iter()
+            .any(|i| i.severity == BackupValidationIssueSeverity::Error));
     }
 
     #[test]
@@ -582,12 +606,16 @@ mod tests {
         let val_res = BackupValidationService::validate_backup(&corrupt_path, &paths).unwrap();
         assert!(!val_res.is_valid, "Corrupt file must be invalid");
         assert_eq!(val_res.compatibility, BackupCompatibilityStatus::Corrupted);
-        assert!(val_res.issues.iter().any(|i| i.code == "ARCHIVE_READ_FAILED"));
+        assert!(val_res
+            .issues
+            .iter()
+            .any(|i| i.code == "ARCHIVE_READ_FAILED"));
     }
 
     #[test]
     fn test_task_14_rejects_active_database_as_backup() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_val_activedb_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_val_activedb_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -595,12 +623,16 @@ mod tests {
         run_migrations(&mut conn).unwrap();
 
         let err = BackupValidationService::validate_backup(&paths.database_file, &paths);
-        assert!(err.is_err(), "Cannot validate active database file as backup archive");
+        assert!(
+            err.is_err(),
+            "Cannot validate active database file as backup archive"
+        );
     }
 
     #[test]
     fn test_task_14_detects_missing_table_or_column() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_val_missing_tbl_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_val_missing_tbl_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -652,7 +684,9 @@ mod tests {
                     "checksums": {{}}
                 }}"#,
                 fs::metadata(&bad_db_path).unwrap().len(),
-                crate::storage::services::snapshot::compute_file_sha256(&bad_db_path).unwrap().0
+                crate::storage::services::snapshot::compute_file_sha256(&bad_db_path)
+                    .unwrap()
+                    .0
             );
             zip.write_all(manifest_json.as_bytes()).unwrap();
 
@@ -664,14 +698,21 @@ mod tests {
         }
 
         let val_res = BackupValidationService::validate_backup(&archive_path, &paths).unwrap();
-        assert!(!val_res.is_valid, "Archive with missing required table must be invalid");
+        assert!(
+            !val_res.is_valid,
+            "Archive with missing required table must be invalid"
+        );
         assert_eq!(val_res.compatibility, BackupCompatibilityStatus::Corrupted);
-        assert!(val_res.issues.iter().any(|i| i.code == "MISSING_TABLE" && i.message.contains("tags")));
+        assert!(val_res
+            .issues
+            .iter()
+            .any(|i| i.code == "MISSING_TABLE" && i.message.contains("tags")));
     }
 
     #[test]
     fn test_task_14_schema_version_compatibility_modes() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_val_schema_modes_{}", Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_val_schema_modes_{}", Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -698,7 +739,8 @@ mod tests {
             let opts = zip::write::SimpleFileOptions::default();
 
             zip.start_file("manifest.json", opts).unwrap();
-            let (db_hash, db_size) = crate::storage::services::snapshot::compute_file_sha256(&v2_db_path).unwrap();
+            let (db_hash, db_size) =
+                crate::storage::services::snapshot::compute_file_sha256(&v2_db_path).unwrap();
             let manifest_json = format!(
                 r#"{{
                     "format_identifier": "personal-notepad-backup",
@@ -731,8 +773,14 @@ mod tests {
 
         let val_v2 = BackupValidationService::validate_backup(&archive_v2_path, &paths).unwrap();
         assert!(val_v2.is_valid, "Older supported schema must remain valid");
-        assert_eq!(val_v2.compatibility, BackupCompatibilityStatus::RequiresMigration);
-        assert!(val_v2.issues.iter().any(|i| i.code == "SCHEMA_MIGRATION_REQUIRED"));
+        assert_eq!(
+            val_v2.compatibility,
+            BackupCompatibilityStatus::RequiresMigration
+        );
+        assert!(val_v2
+            .issues
+            .iter()
+            .any(|i| i.code == "SCHEMA_MIGRATION_REQUIRED"));
 
         // 2. Newer unsupported schema (v99)
         let v99_db_path = temp_dir.join("v99_database.sqlite");
@@ -757,7 +805,8 @@ mod tests {
             let opts = zip::write::SimpleFileOptions::default();
 
             zip.start_file("manifest.json", opts).unwrap();
-            let (db_hash, db_size) = crate::storage::services::snapshot::compute_file_sha256(&v99_db_path).unwrap();
+            let (db_hash, db_size) =
+                crate::storage::services::snapshot::compute_file_sha256(&v99_db_path).unwrap();
             let manifest_json = format!(
                 r#"{{
                     "format_identifier": "personal-notepad-backup",
@@ -789,8 +838,17 @@ mod tests {
         }
 
         let val_v99 = BackupValidationService::validate_backup(&archive_v99_path, &paths).unwrap();
-        assert!(!val_v99.is_valid, "Newer unsupported schema version must be invalid");
-        assert_eq!(val_v99.compatibility, BackupCompatibilityStatus::IncompatibleVersion);
-        assert!(val_v99.issues.iter().any(|i| i.code == "INCOMPATIBLE_SCHEMA_VERSION"));
+        assert!(
+            !val_v99.is_valid,
+            "Newer unsupported schema version must be invalid"
+        );
+        assert_eq!(
+            val_v99.compatibility,
+            BackupCompatibilityStatus::IncompatibleVersion
+        );
+        assert!(val_v99
+            .issues
+            .iter()
+            .any(|i| i.code == "INCOMPATIBLE_SCHEMA_VERSION"));
     }
 }

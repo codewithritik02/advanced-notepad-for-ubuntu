@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use rusqlite::Connection;
+use std::path::{Path, PathBuf};
 
 use crate::storage::attachment_storage::{
     sanitize_original_filename, AttachmentStorage, ManagedFileInfo,
@@ -98,7 +98,8 @@ impl AttachmentService {
             )));
         }
 
-        let attachments = AttachmentRepository::list_by_note_id_with_key(conn, trimmed_note_id, dek)?;
+        let attachments =
+            AttachmentRepository::list_by_note_id_with_key(conn, trimmed_note_id, dek)?;
         Ok(attachments)
     }
 
@@ -214,18 +215,24 @@ impl AttachmentService {
 
         // Enforce executable blocking policy: never execute or open untrusted executables
         if AttachmentStorage::is_executable_extension(&attachment.file_name) {
-            return Err(AttachmentError::ExecutableBlocked(attachment.file_name.clone()));
+            return Err(AttachmentError::ExecutableBlocked(
+                attachment.file_name.clone(),
+            ));
         }
 
         let safe_path = storage.resolve_safe_path(&attachment.relative_path)?;
         if !safe_path.exists() {
-            return Err(AttachmentError::ManagedFileMissing(attachment.relative_path));
+            return Err(AttachmentError::ManagedFileMissing(
+                attachment.relative_path,
+            ));
         }
 
         // Secondary check on safe_path file name
         if let Some(disk_name) = safe_path.file_name().and_then(|s| s.to_str()) {
             if AttachmentStorage::is_executable_extension(disk_name) {
-                return Err(AttachmentError::ExecutableBlocked(attachment.file_name.clone()));
+                return Err(AttachmentError::ExecutableBlocked(
+                    attachment.file_name.clone(),
+                ));
             }
         }
 
@@ -242,17 +249,34 @@ impl AttachmentService {
 
             let decrypted_dir = storage.decrypted_attachments_dir();
             std::fs::create_dir_all(&decrypted_dir).map_err(|e| {
-                AttachmentError::FileOperationFailed(format!("Failed to create decrypted temporary directory: {e}"))
+                AttachmentError::FileOperationFailed(format!(
+                    "Failed to create decrypted temporary directory: {e}"
+                ))
             })?;
 
-            let stored_name = attachment.relative_path.split('/').last().unwrap_or(&attachment.relative_path);
+            let stored_name = attachment
+                .relative_path
+                .split('/')
+                .last()
+                .unwrap_or(&attachment.relative_path);
             let aad = format!("attachments:{}:{stored_name}", attachment.note_id.trim());
 
-            let temp_file_name = format!("{}_{}", uuid::Uuid::new_v4(), sanitize_original_filename(&attachment.file_name));
+            let temp_file_name = format!(
+                "{}_{}",
+                uuid::Uuid::new_v4(),
+                sanitize_original_filename(&attachment.file_name)
+            );
             let temp_decrypted_path = decrypted_dir.join(temp_file_name);
 
-            crate::storage::crypto::decrypt_file_to_file(&safe_path, &temp_decrypted_path, key, aad.as_bytes())
-                .map_err(|e| AttachmentError::FileOperationFailed(format!("Attachment decryption failed: {e}")))?;
+            crate::storage::crypto::decrypt_file_to_file(
+                &safe_path,
+                &temp_decrypted_path,
+                key,
+                aad.as_bytes(),
+            )
+            .map_err(|e| {
+                AttachmentError::FileOperationFailed(format!("Attachment decryption failed: {e}"))
+            })?;
 
             Ok(temp_decrypted_path)
         } else {
@@ -308,7 +332,8 @@ impl AttachmentService {
                 Some(disk_file) => {
                     let expected_size = att.file_size as u64;
                     let matches_plaintext = disk_file.file_size == expected_size;
-                    let matches_encrypted = disk_file.file_size == expected_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
+                    let matches_encrypted = disk_file.file_size
+                        == expected_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
 
                     if !matches_plaintext && !matches_encrypted {
                         size_mismatches.push(SizeMismatchIssue {
@@ -374,15 +399,20 @@ impl AttachmentService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use uuid::Uuid;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
     use crate::storage::models::CreateNoteDto;
     use crate::storage::paths::StoragePaths;
     use crate::storage::repositories::NoteRepository;
+    use std::fs;
+    use uuid::Uuid;
 
-    fn setup_test_env() -> (Connection, AttachmentStorage, PathBuf, tempfile_guard::TempDirGuard) {
+    fn setup_test_env() -> (
+        Connection,
+        AttachmentStorage,
+        PathBuf,
+        tempfile_guard::TempDirGuard,
+    ) {
         let unique = Uuid::new_v4();
         let base_dir = std::env::temp_dir().join(format!("pn_test_att_svc_{unique}"));
         let paths = StoragePaths::from_root(base_dir.clone());
@@ -447,7 +477,8 @@ mod tests {
         assert_eq!(list[0].id, attachment.id);
 
         // 3. Get attachment by ID
-        let fetched = AttachmentService::get_attachment(&conn, &attachment.id).expect("Get attachment");
+        let fetched =
+            AttachmentService::get_attachment(&conn, &attachment.id).expect("Get attachment");
         assert_eq!(fetched.id, attachment.id);
         assert_eq!(fetched.file_name, "sample_report.pdf");
 
@@ -496,8 +527,8 @@ mod tests {
         .unwrap();
         NoteRepository::delete(&conn, &note.id, true).unwrap();
 
-        let err_del = AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file)
-            .unwrap_err();
+        let err_del =
+            AttachmentService::add_attachment(&conn, &storage, &note.id, &src_file).unwrap_err();
         match err_del {
             AttachmentError::InvalidRequest(msg) => {
                 assert!(msg.contains("deleted note"));
@@ -695,15 +726,24 @@ mod tests {
         assert!(!report_mismatch.is_consistent);
         assert_eq!(report_mismatch.size_mismatches.len(), 1);
         assert_eq!(report_mismatch.size_mismatches[0].attachment_id, att1.id);
-        assert_eq!(report_mismatch.size_mismatches[0].recorded_size, b"valid contents".len() as i64);
-        assert_eq!(report_mismatch.size_mismatches[0].actual_size, b"tampered longer contents".len() as u64);
+        assert_eq!(
+            report_mismatch.size_mismatches[0].recorded_size,
+            b"valid contents".len() as i64
+        );
+        assert_eq!(
+            report_mismatch.size_mismatches[0].actual_size,
+            b"tampered longer contents".len() as u64
+        );
 
         // 6. Simulate missing disk file
         fs::remove_file(&disk_att1).unwrap();
         let report_missing = AttachmentService::check_consistency(&conn, &storage).unwrap();
         assert!(!report_missing.is_consistent);
         assert_eq!(report_missing.missing_managed_files.len(), 1);
-        assert_eq!(report_missing.missing_managed_files[0].attachment_id, att1.id);
+        assert_eq!(
+            report_missing.missing_managed_files[0].attachment_id,
+            att1.id
+        );
     }
 
     #[test]
@@ -749,12 +789,14 @@ mod tests {
             fs::write(&malicious_src, b"safe payload").unwrap();
 
             // Attaching to malicious note_id fails safely with NoteNotFound or InvalidRequest
-            let res_malicious_note = AttachmentService::add_attachment(&conn, &storage, payload, &malicious_src);
+            let res_malicious_note =
+                AttachmentService::add_attachment(&conn, &storage, payload, &malicious_src);
             assert!(res_malicious_note.is_err());
 
             // Attaching file with SQL injection in filename to valid note is sanitized safely
-            let att_sanitized = AttachmentService::add_attachment(&conn, &storage, &note.id, &malicious_src)
-                .expect("Sanitized attachment should succeed");
+            let att_sanitized =
+                AttachmentService::add_attachment(&conn, &storage, &note.id, &malicious_src)
+                    .expect("Sanitized attachment should succeed");
             assert!(!att_sanitized.id.is_empty());
             assert!(storage.file_exists(&att_sanitized.relative_path));
 
@@ -769,16 +811,19 @@ mod tests {
         // 4. Security: Path traversal in note_id or relative path rejected
         let traversal_note_ids = ["../etc", "../../root", "/tmp", "sub/folder"];
         for bad_id in traversal_note_ids {
-            let res_traversal = AttachmentService::add_attachment(&conn, &storage, bad_id, &valid_src);
+            let res_traversal =
+                AttachmentService::add_attachment(&conn, &storage, bad_id, &valid_src);
             assert!(res_traversal.is_err());
         }
 
         // 5. Open attachment validation
-        let open_valid = AttachmentService::get_attachment_for_open(&conn, &storage, &att1.id).unwrap();
+        let open_valid =
+            AttachmentService::get_attachment_for_open(&conn, &storage, &att1.id).unwrap();
         assert!(open_valid.exists());
 
         // Opening nonexistent ID fails with AttachmentNotFound
-        let open_missing_id = AttachmentService::get_attachment_for_open(&conn, &storage, "nonexistent-id");
+        let open_missing_id =
+            AttachmentService::get_attachment_for_open(&conn, &storage, "nonexistent-id");
         match open_missing_id {
             Err(AttachmentError::AttachmentNotFound(_)) => {}
             other => panic!("Expected AttachmentNotFound, got: {other:?}"),
@@ -838,26 +883,38 @@ mod tests {
         );
 
         // 3. Verify disk file encryption at rest
-        let stored_path = storage.resolve_safe_path(&attachment.relative_path).unwrap();
+        let stored_path = storage
+            .resolve_safe_path(&attachment.relative_path)
+            .unwrap();
         assert!(stored_path.exists());
         let disk_bytes = fs::read(&stored_path).unwrap();
 
-        assert_eq!(disk_bytes[0], crate::storage::crypto::cipher::ENVELOPE_VERSION_V1);
+        assert_eq!(
+            disk_bytes[0],
+            crate::storage::crypto::cipher::ENVELOPE_VERSION_V1
+        );
         assert_eq!(disk_bytes.len(), plaintext_payload.len() + 29);
-        assert!(!disk_bytes.windows(plaintext_payload.len()).any(|w| w == plaintext_payload));
+        assert!(!disk_bytes
+            .windows(plaintext_payload.len())
+            .any(|w| w == plaintext_payload));
         assert!(AttachmentStorage::is_encrypted_file(&stored_path));
 
         // 4. Listing attachments
         // With DEK
-        let list_unlocked = AttachmentService::list_attachments_with_key(&conn, &note.id, Some(&dek)).unwrap();
+        let list_unlocked =
+            AttachmentService::list_attachments_with_key(&conn, &note.id, Some(&dek)).unwrap();
         assert_eq!(list_unlocked.len(), 1);
         assert_eq!(list_unlocked[0].file_name, "financial_statement.pdf");
 
         // Without DEK (locked) - must reject with locked error
-        let list_locked_err = AttachmentService::list_attachments_with_key(&conn, &note.id, None).unwrap_err();
+        let list_locked_err =
+            AttachmentService::list_attachments_with_key(&conn, &note.id, None).unwrap_err();
         match list_locked_err {
             AttachmentError::FileOperationFailed(msg) => {
-                assert!(msg.contains("locked"), "Expected locked error message, got: {msg}");
+                assert!(
+                    msg.contains("locked"),
+                    "Expected locked error message, got: {msg}"
+                );
             }
             other => panic!("Expected locked error, got: {other:?}"),
         }
@@ -872,7 +929,10 @@ mod tests {
         );
         let locked_err = locked_res.unwrap_err();
         let err_msg = format!("{locked_err:?}");
-        assert!(err_msg.contains("locked"), "Expected locked error message, got: {err_msg}");
+        assert!(
+            err_msg.contains("locked"),
+            "Expected locked error message, got: {err_msg}"
+        );
 
         // Unlocked
         let opened_path = AttachmentService::get_attachment_for_open_with_key(
@@ -899,7 +959,10 @@ mod tests {
             &attachment.id,
             Some(&dek),
         );
-        assert!(tamper_res.is_err(), "Tampered ciphertext must fail tag validation!");
+        assert!(
+            tamper_res.is_err(),
+            "Tampered ciphertext must fail tag validation!"
+        );
         // Restore original valid ciphertext
         fs::write(&stored_path, &disk_bytes).unwrap();
 
@@ -914,7 +977,11 @@ mod tests {
         .unwrap();
 
         // Tamper note_id in DB to point to note2
-        conn.execute("UPDATE attachments SET note_id = ? WHERE id = ?", [&note2.id, &attachment.id]).unwrap();
+        conn.execute(
+            "UPDATE attachments SET note_id = ? WHERE id = ?",
+            [&note2.id, &attachment.id],
+        )
+        .unwrap();
 
         let splice_res = AttachmentService::get_attachment_for_open_with_key(
             &conn,
@@ -922,9 +989,16 @@ mod tests {
             &attachment.id,
             Some(&dek),
         );
-        assert!(splice_res.is_err(), "Splicing attachment to a different note must fail AAD validation!");
+        assert!(
+            splice_res.is_err(),
+            "Splicing attachment to a different note must fail AAD validation!"
+        );
         // Restore note_id
-        conn.execute("UPDATE attachments SET note_id = ? WHERE id = ?", [&note.id, &attachment.id]).unwrap();
+        conn.execute(
+            "UPDATE attachments SET note_id = ? WHERE id = ?",
+            [&note.id, &attachment.id],
+        )
+        .unwrap();
 
         // 8. Consistency check tolerates encrypted file size
         let report = AttachmentService::check_consistency(&conn, &storage).unwrap();
@@ -936,6 +1010,9 @@ mod tests {
         // 9. Cleanup temporary decrypted attachments
         assert!(opened_path.exists());
         storage.cleanup_decrypted_attachments().unwrap();
-        assert!(!opened_path.exists(), "Decrypted temp file should be deleted after cleanup");
+        assert!(
+            !opened_path.exists(),
+            "Decrypted temp file should be deleted after cleanup"
+        );
     }
 }

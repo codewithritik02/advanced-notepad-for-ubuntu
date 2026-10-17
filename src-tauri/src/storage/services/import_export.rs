@@ -1,22 +1,26 @@
+use rusqlite::{params, Connection};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use rusqlite::{params, Connection};
 
+use crate::storage::crypto::SecretBytes;
 #[allow(unused_imports)]
 use crate::storage::errors::{ImportExportError, StorageError};
 #[allow(unused_imports)]
 use crate::storage::models::{
-    CreateAttachmentDto, CreateNotebookDto, CreateNoteDto, DuplicateMatch, DuplicatePolicy, ExportBatchRequest, ExportFileResult,
-    ExportFormat, ExportItemStatus, ExportNoteMetadataItem, ExportProgress, ExportScope, ExportSelectionPreview,
-    ExportSingleNoteRequest, ExportSummary, ImportCandidate, ImportCandidateOverride, ImportFileResult,
-    ImportFormat, ImportItemStatus, ImportOptions, ImportPreview, ImportProgress, ImportRequest, ImportSummary,
-    InterchangeDocument, InterchangeInternalLink, InterchangeNote, Note, OperationOutcome, ValidationStatus,
+    CreateAttachmentDto, CreateNoteDto, CreateNotebookDto, DuplicateMatch, DuplicatePolicy,
+    ExportBatchRequest, ExportFileResult, ExportFormat, ExportItemStatus, ExportNoteMetadataItem,
+    ExportProgress, ExportScope, ExportSelectionPreview, ExportSingleNoteRequest, ExportSummary,
+    ImportCandidate, ImportCandidateOverride, ImportFileResult, ImportFormat, ImportItemStatus,
+    ImportOptions, ImportPreview, ImportProgress, ImportRequest, ImportSummary,
+    InterchangeDocument, InterchangeInternalLink, InterchangeNote, Note, OperationOutcome,
+    ValidationStatus,
 };
-use crate::storage::crypto::SecretBytes;
-use crate::storage::repositories::{AttachmentRepository, NoteRepository, NotebookRepository, SearchRepository, TagRepository};
+use crate::storage::repositories::{
+    AttachmentRepository, NoteRepository, NotebookRepository, SearchRepository, TagRepository,
+};
 use crate::storage::services::links::LinkParser;
 
 fn cancelled_set() -> &'static Mutex<HashSet<String>> {
@@ -91,10 +95,7 @@ impl ImportExportService {
     /// Sanitizes an arbitrary title string by stripping control characters and trimming whitespace,
     /// falling back to "Untitled Note" if the result is empty.
     pub fn sanitize_title(raw_title: &str) -> String {
-        let cleaned: String = raw_title
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
+        let cleaned: String = raw_title.chars().filter(|c| !c.is_control()).collect();
 
         let final_title = cleaned.trim();
         if final_title.is_empty() || final_title == "." {
@@ -115,8 +116,15 @@ impl ImportExportService {
         let stem = match path.file_stem().and_then(|s| s.to_str()) {
             Some(s) => {
                 let lower = s.to_lowercase();
-                if lower == ".txt" || lower == ".md" || lower == ".markdown" || lower == ".json"
-                    || lower == "txt" || lower == "md" || lower == "markdown" || lower == "json" {
+                if lower == ".txt"
+                    || lower == ".md"
+                    || lower == ".markdown"
+                    || lower == ".json"
+                    || lower == "txt"
+                    || lower == "md"
+                    || lower == "markdown"
+                    || lower == "json"
+                {
                     if trimmed.starts_with('.') && path.extension().is_none() {
                         ""
                     } else {
@@ -182,7 +190,8 @@ impl ImportExportService {
         for segment in segments {
             let name = Self::sanitize_title(segment);
             let existing_id: Option<String> = if let Some(ref pid) = current_parent_id {
-                let mut stmt = conn.prepare("SELECT id FROM notebooks WHERE name = ?1 AND parent_id = ?2")?;
+                let mut stmt =
+                    conn.prepare("SELECT id FROM notebooks WHERE name = ?1 AND parent_id = ?2")?;
                 let mut rows = stmt.query(params![name, pid])?;
                 if let Some(row) = rows.next()? {
                     Some(row.get(0)?)
@@ -190,7 +199,8 @@ impl ImportExportService {
                     None
                 }
             } else {
-                let mut stmt = conn.prepare("SELECT id FROM notebooks WHERE name = ?1 AND parent_id IS NULL")?;
+                let mut stmt =
+                    conn.prepare("SELECT id FROM notebooks WHERE name = ?1 AND parent_id IS NULL")?;
                 let mut rows = stmt.query(params![name])?;
                 if let Some(row) = rows.next()? {
                     Some(row.get(0)?)
@@ -213,7 +223,8 @@ impl ImportExportService {
             }
         }
 
-        current_parent_id.ok_or_else(|| StorageError::Validation("Failed to resolve notebook path".to_string()))
+        current_parent_id
+            .ok_or_else(|| StorageError::Validation("Failed to resolve notebook path".to_string()))
     }
 
     /// Inspects and expands paths submitted from the file picker.
@@ -240,8 +251,11 @@ impl ImportExportService {
                     for entry in entries.flatten() {
                         let child_path = entry.path();
                         if child_path.is_file() {
-                            if let Some(file_name) = child_path.file_name().and_then(|n| n.to_str()) {
-                                if !file_name.starts_with('.') && Self::detect_format_from_path(&child_path).is_some() {
+                            if let Some(file_name) = child_path.file_name().and_then(|n| n.to_str())
+                            {
+                                if !file_name.starts_with('.')
+                                    && Self::detect_format_from_path(&child_path).is_some()
+                                {
                                     resolved.push(child_path);
                                     if resolved.len() >= MAX_BATCH_FILE_COUNT {
                                         break;
@@ -276,7 +290,10 @@ impl ImportExportService {
         }
 
         let metadata = std::fs::metadata(path).map_err(|e| {
-            ImportExportError::CannotReadFile(format!("Cannot read metadata for '{}': {e}", path.display()))
+            ImportExportError::CannotReadFile(format!(
+                "Cannot read metadata for '{}': {e}",
+                path.display()
+            ))
         })?;
 
         if !metadata.is_file() {
@@ -299,7 +316,10 @@ impl ImportExportService {
             ImportExportError::CannotReadFile(format!("Cannot open file '{}': {e}", path.display()))
         })?;
         file.read_to_end(&mut raw_bytes).map_err(|e| {
-            ImportExportError::CannotReadFile(format!("Cannot read bytes from '{}': {e}", path.display()))
+            ImportExportError::CannotReadFile(format!(
+                "Cannot read bytes from '{}': {e}",
+                path.display()
+            ))
         })?;
 
         // Empty file handling
@@ -476,9 +496,8 @@ impl ImportExportService {
         }
 
         // 3. Check for title collision only (different content)
-        let mut title_stmt = conn.prepare(
-            "SELECT id, title FROM notes WHERE title = ?1 AND is_deleted = 0 LIMIT 1",
-        )?;
+        let mut title_stmt = conn
+            .prepare("SELECT id, title FROM notes WHERE title = ?1 AND is_deleted = 0 LIMIT 1")?;
         let mut title_rows = title_stmt.query(params![title])?;
         if let Some(row) = title_rows.next()? {
             let existing_id: String = row.get(0)?;
@@ -589,7 +608,9 @@ impl ImportExportService {
                     proposed_title,
                     validation_status: ValidationStatus::Invalid,
                     warnings: Vec::new(),
-                    error_message: Some("File does not exist or is no longer accessible.".to_string()),
+                    error_message: Some(
+                        "File does not exist or is no longer accessible.".to_string(),
+                    ),
                     is_duplicate: false,
                     duplicate_note_id: None,
                     duplicate_note_title: None,
@@ -659,7 +680,10 @@ impl ImportExportService {
                         proposed_title,
                         validation_status: ValidationStatus::Invalid,
                         warnings: Vec::new(),
-                        error_message: Some("Unsupported file extension. Only .txt, .md, and .json are supported.".to_string()),
+                        error_message: Some(
+                            "Unsupported file extension. Only .txt, .md, and .json are supported."
+                                .to_string(),
+                        ),
                         is_duplicate: false,
                         duplicate_note_id: None,
                         duplicate_note_title: None,
@@ -719,27 +743,51 @@ impl ImportExportService {
             };
 
             if validated.is_empty {
-                warnings.push("File is empty (0 bytes). An empty note will be created.".to_string());
+                warnings
+                    .push("File is empty (0 bytes). An empty note will be created.".to_string());
             }
 
             // 6. Check for duplicate note in SQLite
             // Distinguish between ExactMatch, ContentMatch, TitleCollisionOnly, and None.
             // Invariant: Title equality alone does not treat two notes as duplicates.
             let dup_match = if let Some(ref doc) = validated.interchange_doc {
-                let total_omitted_att: usize = doc.notes.iter().filter_map(|n| n.attachments_omitted_count).sum();
+                let total_omitted_att: usize = doc
+                    .notes
+                    .iter()
+                    .filter_map(|n| n.attachments_omitted_count)
+                    .sum();
                 if total_omitted_att > 0 {
                     warnings.push(format!("Source package notes omit {total_omitted_att} attachment(s) not bundled in JSON interchange."));
                 }
-                let total_ext_links: usize = doc.notes.iter().map(|n| n.internal_links.iter().filter(|l| !l.is_package_internal).count()).sum();
+                let total_ext_links: usize = doc
+                    .notes
+                    .iter()
+                    .map(|n| {
+                        n.internal_links
+                            .iter()
+                            .filter(|l| !l.is_package_internal)
+                            .count()
+                    })
+                    .sum();
                 if total_ext_links > 0 {
-                    warnings.push(format!("Package contains {total_ext_links} link(s) to notes outside this export."));
+                    warnings.push(format!(
+                        "Package contains {total_ext_links} link(s) to notes outside this export."
+                    ));
                 }
 
                 if doc.notes.len() == 1 {
                     proposed_title = Self::sanitize_title(&doc.notes[0].title);
-                    Self::check_duplicate_with_key(conn, &proposed_title, &doc.notes[0].content, dek)?
+                    Self::check_duplicate_with_key(
+                        conn,
+                        &proposed_title,
+                        &doc.notes[0].content,
+                        dek,
+                    )?
                 } else {
-                    warnings.push(format!("Structured package containing {} note(s).", doc.notes.len()));
+                    warnings.push(format!(
+                        "Structured package containing {} note(s).",
+                        doc.notes.len()
+                    ));
                     DuplicateMatch::None
                 }
             } else {
@@ -747,24 +795,31 @@ impl ImportExportService {
             };
 
             let (is_duplicate, duplicate_note_id, duplicate_note_title) = match dup_match {
-                DuplicateMatch::ExactMatch { existing_id, existing_title } => {
+                DuplicateMatch::ExactMatch {
+                    existing_id,
+                    existing_title,
+                } => {
                     duplicate_count += 1;
                     warnings.push(format!("Exact duplicate note detected: identical to active note '{existing_title}'."));
                     (true, Some(existing_id), Some(existing_title))
                 }
-                DuplicateMatch::ContentMatch { existing_id, existing_title } => {
+                DuplicateMatch::ContentMatch {
+                    existing_id,
+                    existing_title,
+                } => {
                     duplicate_count += 1;
                     warnings.push(format!("Duplicate content detected: identical to active note '{existing_title}' with different title."));
                     (true, Some(existing_id), Some(existing_title))
                 }
-                DuplicateMatch::TitleCollisionOnly { existing_id, existing_title } => {
+                DuplicateMatch::TitleCollisionOnly {
+                    existing_id,
+                    existing_title,
+                } => {
                     // Crucial: Title equality alone is NOT an exact duplicate!
                     warnings.push(format!("Title collision: an existing note '{existing_title}' shares this title with different content. Both notes will be kept safely."));
                     (false, Some(existing_id), Some(existing_title))
                 }
-                DuplicateMatch::None => {
-                    (false, None, None)
-                }
+                DuplicateMatch::None => (false, None, None),
             };
 
             valid_count += 1;
@@ -1064,8 +1119,17 @@ impl ImportExportService {
                         };
 
                         // Check duplicate under chosen policy
-                        let dup_match = Self::check_duplicate_with_key(&tx, &note_title, &interchange_note.content, dek)?;
-                        let (skip, _) = Self::should_skip_candidate(request.options.duplicate_policy, &dup_match, true);
+                        let dup_match = Self::check_duplicate_with_key(
+                            &tx,
+                            &note_title,
+                            &interchange_note.content,
+                            dek,
+                        )?;
+                        let (skip, _) = Self::should_skip_candidate(
+                            request.options.duplicate_policy,
+                            &dup_match,
+                            true,
+                        );
                         if skip {
                             continue;
                         }
@@ -1134,8 +1198,18 @@ impl ImportExportService {
                             .cloned()
                             .unwrap_or_else(|| now.clone());
 
-                        let stored_title = NoteRepository::encrypt_field_if_needed(&note_title, &target_note_id, "title", dek)?;
-                        let stored_content = NoteRepository::encrypt_field_if_needed(&content, &target_note_id, "content", dek)?;
+                        let stored_title = NoteRepository::encrypt_field_if_needed(
+                            &note_title,
+                            &target_note_id,
+                            "title",
+                            dek,
+                        )?;
+                        let stored_content = NoteRepository::encrypt_field_if_needed(
+                            &content,
+                            &target_note_id,
+                            "content",
+                            dek,
+                        )?;
 
                         tx.execute(
                             "INSERT INTO notes (
@@ -1176,7 +1250,10 @@ impl ImportExportService {
                                 file_name: file_name.clone(),
                                 status: ImportItemStatus::Skipped,
                                 created_note_id: None,
-                                message: Some("All notes in structured package were skipped as duplicates.".to_string()),
+                                message: Some(
+                                    "All notes in structured package were skipped as duplicates."
+                                        .to_string(),
+                                ),
                             });
                             skipped_count += 1;
                         } else {
@@ -1230,8 +1307,10 @@ impl ImportExportService {
                     });
 
                 // Duplicate policy check
-                let dup_match = Self::check_duplicate_with_key(conn, &final_title, &validated.text, dek)?;
-                let (skip, skip_reason) = Self::should_skip_candidate(request.options.duplicate_policy, &dup_match, true);
+                let dup_match =
+                    Self::check_duplicate_with_key(conn, &final_title, &validated.text, dek)?;
+                let (skip, skip_reason) =
+                    Self::should_skip_candidate(request.options.duplicate_policy, &dup_match, true);
                 if skip {
                     results.push(ImportFileResult {
                         candidate_id: candidate.id,
@@ -1353,9 +1432,28 @@ impl ImportExportService {
             let upper = trimmed.to_uppercase();
             let is_reserved = matches!(
                 upper.as_str(),
-                "CON" | "PRN" | "AUX" | "NUL"
-                    | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9"
-                    | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9"
+                "CON"
+                    | "PRN"
+                    | "AUX"
+                    | "NUL"
+                    | "COM1"
+                    | "COM2"
+                    | "COM3"
+                    | "COM4"
+                    | "COM5"
+                    | "COM6"
+                    | "COM7"
+                    | "COM8"
+                    | "COM9"
+                    | "LPT1"
+                    | "LPT2"
+                    | "LPT3"
+                    | "LPT4"
+                    | "LPT5"
+                    | "LPT6"
+                    | "LPT7"
+                    | "LPT8"
+                    | "LPT9"
             );
             let safe_name = if is_reserved {
                 format!("_{trimmed}")
@@ -1376,7 +1474,9 @@ impl ImportExportService {
     pub fn validate_destination_path(path: &Path) -> Result<(), StorageError> {
         let path_str = path.to_string_lossy();
         if path_str.trim().is_empty() {
-            return Err(StorageError::Validation("Destination path cannot be empty".to_string()));
+            return Err(StorageError::Validation(
+                "Destination path cannot be empty".to_string(),
+            ));
         }
 
         // Cross-platform check: handle Windows-style '\' as well as Unix '/'
@@ -1552,8 +1652,10 @@ impl ImportExportService {
             ));
         }
 
-        let note = NoteRepository::get_by_id_with_key(conn, &request.note_id, dek)?
-            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{}' not found", request.note_id)))?;
+        let note =
+            NoteRepository::get_by_id_with_key(conn, &request.note_id, dek)?.ok_or_else(|| {
+                StorageError::NotFound(format!("Note with id '{}' not found", request.note_id))
+            })?;
 
         let dest_path = Path::new(&request.destination_path);
         Self::validate_destination_path(dest_path)?;
@@ -1650,7 +1752,9 @@ impl ImportExportService {
 
                 // Roundtrip validation before committing to disk
                 serde_json::from_slice::<InterchangeDocument>(&json_bytes).map_err(|e| {
-                    StorageError::Validation(format!("Generated interchange JSON failed roundtrip validation: {e}"))
+                    StorageError::Validation(format!(
+                        "Generated interchange JSON failed roundtrip validation: {e}"
+                    ))
                 })?;
 
                 json_bytes
@@ -1669,7 +1773,10 @@ impl ImportExportService {
     }
 
     /// Recursively retrieves all descendant notebook IDs (including root_id)
-    pub fn get_descendant_notebook_ids(conn: &Connection, root_id: &str) -> Result<Vec<String>, StorageError> {
+    pub fn get_descendant_notebook_ids(
+        conn: &Connection,
+        root_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
         let all = NotebookRepository::list(conn)?;
         let mut descendants = Vec::new();
         let mut queue = vec![root_id.to_string()];
@@ -1755,7 +1862,8 @@ impl ImportExportService {
                                 content_length_bytes: note.content.len(),
                                 modified_at: note.modified_at,
                             };
-                            let included_notebook_count = if item.notebook_id.is_some() { 1 } else { 0 };
+                            let included_notebook_count =
+                                if item.notebook_id.is_some() { 1 } else { 0 };
                             Ok(ExportSelectionPreview {
                                 total_requested: 1,
                                 total_included: 1,
@@ -1795,7 +1903,8 @@ impl ImportExportService {
                                 if let Some(ref nb_id) = note.notebook_id {
                                     notebook_set.insert(nb_id.clone());
                                 }
-                                let tag_count = TagRepository::get_tags_for_note(conn, &note.id)?.len();
+                                let tag_count =
+                                    TagRepository::get_tags_for_note(conn, &note.id)?.len();
                                 let notebook_path = if let Some(ref nb_id) = note.notebook_id {
                                     NotebookRepository::get_hierarchy_path(conn, nb_id).ok()
                                 } else {
@@ -1827,9 +1936,16 @@ impl ImportExportService {
                     notes,
                 })
             }
-            ExportScope::Notebook { notebook_id, include_nested } => {
-                let _target_nb = NotebookRepository::get_by_id(conn, notebook_id)?
-                    .ok_or_else(|| StorageError::NotFound(format!("Notebook with id '{notebook_id}' not found")))?;
+            ExportScope::Notebook {
+                notebook_id,
+                include_nested,
+            } => {
+                let _target_nb =
+                    NotebookRepository::get_by_id(conn, notebook_id)?.ok_or_else(|| {
+                        StorageError::NotFound(format!(
+                            "Notebook with id '{notebook_id}' not found"
+                        ))
+                    })?;
 
                 let target_notebook_ids = if *include_nested {
                     Self::get_descendant_notebook_ids(conn, notebook_id)?
@@ -1841,12 +1957,20 @@ impl ImportExportService {
                 let mut skipped_trashed_count = 0;
 
                 for nb_id in &target_notebook_ids {
-                    let active_notes = NoteRepository::list_filtered_with_key(conn, false, Some(nb_id), false, dek)?;
-                    let trashed_in_nb: usize = conn.query_row(
-                        "SELECT COUNT(1) FROM notes WHERE notebook_id = ?1 AND is_deleted = 1",
-                        params![nb_id],
-                        |r| r.get::<_, i64>(0).map(|c| c as usize),
-                    ).unwrap_or(0);
+                    let active_notes = NoteRepository::list_filtered_with_key(
+                        conn,
+                        false,
+                        Some(nb_id),
+                        false,
+                        dek,
+                    )?;
+                    let trashed_in_nb: usize = conn
+                        .query_row(
+                            "SELECT COUNT(1) FROM notes WHERE notebook_id = ?1 AND is_deleted = 1",
+                            params![nb_id],
+                            |r| r.get::<_, i64>(0).map(|c| c as usize),
+                        )
+                        .unwrap_or(0);
                     skipped_trashed_count += trashed_in_nb;
 
                     for note in active_notes {
@@ -1885,11 +2009,11 @@ impl ImportExportService {
             }
             ExportScope::AllNotes => {
                 let active_notes = NoteRepository::list_active_with_key(conn, dek)?;
-                let skipped_trashed_count: usize = conn.query_row(
-                    "SELECT COUNT(1) FROM notes WHERE is_deleted = 1",
-                    [],
-                    |r| r.get::<_, i64>(0).map(|c| c as usize),
-                ).unwrap_or(0);
+                let skipped_trashed_count: usize = conn
+                    .query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
+                        r.get::<_, i64>(0).map(|c| c as usize)
+                    })
+                    .unwrap_or(0);
 
                 let mut notes = Vec::new();
                 let mut notebook_set = std::collections::HashSet::new();
@@ -1982,10 +2106,8 @@ impl ImportExportService {
         let operation_id = request.operation_id.clone();
 
         // 1. Resolve scope
-        let scope = request.scope.unwrap_or_else(|| {
-            ExportScope::SelectedNotes {
-                note_ids: request.note_ids,
-            }
+        let scope = request.scope.unwrap_or_else(|| ExportScope::SelectedNotes {
+            note_ids: request.note_ids,
         });
 
         // 2. Resolve preview to obtain eligible note IDs and skip counts
@@ -2008,23 +2130,23 @@ impl ImportExportService {
         match request.format {
             ExportFormat::Json => {
                 // Structured JSON: export all notes into a single InterchangeDocument
-                let exported_ids: std::collections::HashSet<String> = preview
-                    .notes
-                    .iter()
-                    .map(|m| m.id.clone())
-                    .collect();
+                let exported_ids: std::collections::HashSet<String> =
+                    preview.notes.iter().map(|m| m.id.clone()).collect();
 
                 let mut interchange_notes = Vec::new();
                 for meta in &preview.notes {
                     if let Some(note) = NoteRepository::get_by_id_with_key(conn, &meta.id, dek)? {
-                        let mut tags: Vec<String> = TagRepository::get_tags_for_note(conn, &note.id)?
-                            .into_iter()
-                            .map(|t| t.name)
-                            .collect();
+                        let mut tags: Vec<String> =
+                            TagRepository::get_tags_for_note(conn, &note.id)?
+                                .into_iter()
+                                .map(|t| t.name)
+                                .collect();
                         tags.sort(); // Deterministic ordering
 
-                        let att_count = AttachmentRepository::count_by_note_id(conn, &note.id).unwrap_or(0);
-                        let attachments_omitted_count = if att_count > 0 { Some(att_count) } else { None };
+                        let att_count =
+                            AttachmentRepository::count_by_note_id(conn, &note.id).unwrap_or(0);
+                        let attachments_omitted_count =
+                            if att_count > 0 { Some(att_count) } else { None };
 
                         let mut internal_links = Vec::new();
                         let parsed_links = LinkParser::parse_internal_links(&note.content);
@@ -2119,12 +2241,16 @@ impl ImportExportService {
                 };
 
                 let json_bytes = serde_json::to_vec_pretty(&doc).map_err(|e| {
-                    StorageError::Validation(format!("Failed to serialize notes batch to JSON: {e}"))
+                    StorageError::Validation(format!(
+                        "Failed to serialize notes batch to JSON: {e}"
+                    ))
                 })?;
 
                 // Roundtrip validation before committing to disk
                 serde_json::from_slice::<InterchangeDocument>(&json_bytes).map_err(|e| {
-                    StorageError::Validation(format!("Generated interchange JSON failed roundtrip validation: {e}"))
+                    StorageError::Validation(format!(
+                        "Generated interchange JSON failed roundtrip validation: {e}"
+                    ))
                 })?;
 
                 if Self::is_operation_cancelled(operation_id.as_deref()) {
@@ -2143,7 +2269,8 @@ impl ImportExportService {
                             current_index: idx + 1,
                             current_title: meta.title.clone(),
                             exported_count,
-                            skipped_count: preview.skipped_trashed_count + preview.skipped_missing_count,
+                            skipped_count: preview.skipped_trashed_count
+                                + preview.skipped_missing_count,
                             failed_count,
                             cancelled_count,
                         });
@@ -2167,7 +2294,8 @@ impl ImportExportService {
                             current_index: idx + 1,
                             current_title: meta.title.clone(),
                             exported_count,
-                            skipped_count: preview.skipped_trashed_count + preview.skipped_missing_count,
+                            skipped_count: preview.skipped_trashed_count
+                                + preview.skipped_missing_count,
                             failed_count,
                             cancelled_count,
                         });
@@ -2182,7 +2310,11 @@ impl ImportExportService {
                     std::fs::create_dir_all(dest_dir)?;
                 }
 
-                let ext = if request.format == ExportFormat::Md { "md" } else { "txt" };
+                let ext = if request.format == ExportFormat::Md {
+                    "md"
+                } else {
+                    "txt"
+                };
                 let mut used_filenames = std::collections::HashSet::new();
                 let skipped_init = preview.skipped_trashed_count + preview.skipped_missing_count;
                 let mut is_cancelled = false;
@@ -2226,7 +2358,9 @@ impl ImportExportService {
                         let base_stem = Self::sanitize_filename(&note.title);
                         let mut filename = format!("{base_stem}.{ext}");
                         let mut counter = 1;
-                        while used_filenames.contains(&filename) || (!request.overwrite && dest_dir.join(&filename).exists()) {
+                        while used_filenames.contains(&filename)
+                            || (!request.overwrite && dest_dir.join(&filename).exists())
+                        {
                             filename = format!("{base_stem} ({counter}).{ext}");
                             counter += 1;
                         }
@@ -2324,7 +2458,8 @@ mod tests {
                 is_deleted INTEGER NOT NULL DEFAULT 0,
                 deleted_at TEXT
             );",
-        ).unwrap();
+        )
+        .unwrap();
         conn
     }
 
@@ -2356,7 +2491,8 @@ mod tests {
         // 1. Empty file (0 bytes)
         let empty_path = dir.join("empty.txt");
         File::create(&empty_path).unwrap();
-        let res_empty = ImportExportService::read_and_validate_file(&empty_path, ImportFormat::Txt).unwrap();
+        let res_empty =
+            ImportExportService::read_and_validate_file(&empty_path, ImportFormat::Txt).unwrap();
         assert!(res_empty.is_empty);
         assert_eq!(res_empty.text, "");
 
@@ -2364,7 +2500,8 @@ mod tests {
         let short_path = dir.join("short.md");
         let mut f_short = File::create(&short_path).unwrap();
         f_short.write_all(b"#").unwrap();
-        let res_short = ImportExportService::read_and_validate_file(&short_path, ImportFormat::Md).unwrap();
+        let res_short =
+            ImportExportService::read_and_validate_file(&short_path, ImportFormat::Md).unwrap();
         assert!(!res_short.is_empty);
         assert_eq!(res_short.text, "#");
 
@@ -2379,10 +2516,12 @@ mod tests {
         // Unicode + Emojis in body and title
         let uni_path = dir.join("✨ Unicode Notes 🚀.md");
         let mut f_uni = File::create(&uni_path).unwrap();
-        let uni_text = "# नमस्ते Duniya!\n\nThis note has emojis 🦀 🚀 ✨ and Japanese: こんにちは世界。\n";
+        let uni_text =
+            "# नमस्ते Duniya!\n\nThis note has emojis 🦀 🚀 ✨ and Japanese: こんにちは世界。\n";
         f_uni.write_all(uni_text.as_bytes()).unwrap();
 
-        let res_uni = ImportExportService::read_and_validate_file(&uni_path, ImportFormat::Md).unwrap();
+        let res_uni =
+            ImportExportService::read_and_validate_file(&uni_path, ImportFormat::Md).unwrap();
         assert_eq!(res_uni.text, uni_text);
 
         // Long single line (100,000 characters)
@@ -2391,7 +2530,8 @@ mod tests {
         let long_line: String = "A".repeat(100_000);
         f_long.write_all(long_line.as_bytes()).unwrap();
 
-        let res_long = ImportExportService::read_and_validate_file(&long_path, ImportFormat::Txt).unwrap();
+        let res_long =
+            ImportExportService::read_and_validate_file(&long_path, ImportFormat::Txt).unwrap();
         assert_eq!(res_long.text.len(), 100_000);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2408,7 +2548,8 @@ mod tests {
         content.extend_from_slice(b"BOM content without pollution");
         f_bom.write_all(&content).unwrap();
 
-        let res = ImportExportService::read_and_validate_file(&bom_path, ImportFormat::Txt).unwrap();
+        let res =
+            ImportExportService::read_and_validate_file(&bom_path, ImportFormat::Txt).unwrap();
         assert_eq!(res.text, "BOM content without pollution");
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -2424,7 +2565,8 @@ mod tests {
         // Invalid UTF-8 sequence [0xFF, 0xFE]
         f.write_all(&[0xFF, 0xFE, 0x41, 0x42]).unwrap();
 
-        let err = ImportExportService::read_and_validate_file(&bad_path, ImportFormat::Txt).unwrap_err();
+        let err =
+            ImportExportService::read_and_validate_file(&bad_path, ImportFormat::Txt).unwrap_err();
         match err {
             ImportExportError::InvalidEncoding(msg) => {
                 assert!(msg.contains("invalid UTF-8"));
@@ -2467,9 +2609,11 @@ mod tests {
                 internal_links: vec![],
             }],
         };
-        f_v.write_all(serde_json::to_string(&doc).unwrap().as_bytes()).unwrap();
+        f_v.write_all(serde_json::to_string(&doc).unwrap().as_bytes())
+            .unwrap();
 
-        let res = ImportExportService::read_and_validate_file(&valid_json_path, ImportFormat::Json).unwrap();
+        let res = ImportExportService::read_and_validate_file(&valid_json_path, ImportFormat::Json)
+            .unwrap();
         assert!(res.interchange_doc.is_some());
         assert_eq!(res.interchange_doc.unwrap().notes.len(), 1);
 
@@ -2478,7 +2622,9 @@ mod tests {
         let mut f_m = File::create(&malformed_path).unwrap();
         f_m.write_all(b"{ not valid json ...").unwrap();
 
-        let err_m = ImportExportService::read_and_validate_file(&malformed_path, ImportFormat::Json).unwrap_err();
+        let err_m =
+            ImportExportService::read_and_validate_file(&malformed_path, ImportFormat::Json)
+                .unwrap_err();
         match err_m {
             ImportExportError::Validation(msg) => {
                 assert!(msg.contains("Malformed interchange JSON"));
@@ -2491,9 +2637,12 @@ mod tests {
         let mut f_w = File::create(&wrong_app_path).unwrap();
         let mut wrong_doc = doc.clone();
         wrong_doc.app = "other-app".to_string();
-        f_w.write_all(serde_json::to_string(&wrong_doc).unwrap().as_bytes()).unwrap();
+        f_w.write_all(serde_json::to_string(&wrong_doc).unwrap().as_bytes())
+            .unwrap();
 
-        let err_w = ImportExportService::read_and_validate_file(&wrong_app_path, ImportFormat::Json).unwrap_err();
+        let err_w =
+            ImportExportService::read_and_validate_file(&wrong_app_path, ImportFormat::Json)
+                .unwrap_err();
         match err_w {
             ImportExportError::Validation(msg) => {
                 assert!(msg.contains("expected app 'personal-notepad'"));
@@ -2507,39 +2656,108 @@ mod tests {
     #[test]
     fn test_task_8_title_derivation_suite() {
         // Standard extensions
-        assert_eq!(ImportExportService::derive_proposed_title("Sprint Plan.md"), "Sprint Plan");
-        assert_eq!(ImportExportService::derive_proposed_title("Notes.txt"), "Notes");
-        assert_eq!(ImportExportService::derive_proposed_title("export.markdown"), "export");
-        assert_eq!(ImportExportService::derive_proposed_title("archive.json"), "archive");
+        assert_eq!(
+            ImportExportService::derive_proposed_title("Sprint Plan.md"),
+            "Sprint Plan"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("Notes.txt"),
+            "Notes"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("export.markdown"),
+            "export"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("archive.json"),
+            "archive"
+        );
 
         // Multiple dots in filename
-        assert_eq!(ImportExportService::derive_proposed_title("Report.2026.Q3.final.md"), "Report.2026.Q3.final");
-        assert_eq!(ImportExportService::derive_proposed_title("my.notes.txt"), "my.notes");
+        assert_eq!(
+            ImportExportService::derive_proposed_title("Report.2026.Q3.final.md"),
+            "Report.2026.Q3.final"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("my.notes.txt"),
+            "my.notes"
+        );
 
         // Unicode and emoji preservation
-        assert_eq!(ImportExportService::derive_proposed_title("✨ Rocket Notes 🚀.md"), "✨ Rocket Notes 🚀");
-        assert_eq!(ImportExportService::derive_proposed_title("दस्तावेज़.txt"), "दस्तावेज़");
-        assert_eq!(ImportExportService::derive_proposed_title("日本語ノート.markdown"), "日本語ノート");
-        assert_eq!(ImportExportService::derive_proposed_title("Plan d'action & résumé.txt"), "Plan d'action & résumé");
+        assert_eq!(
+            ImportExportService::derive_proposed_title("✨ Rocket Notes 🚀.md"),
+            "✨ Rocket Notes 🚀"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("दस्तावेज़.txt"),
+            "दस्तावेज़"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("日本語ノート.markdown"),
+            "日本語ノート"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("Plan d'action & résumé.txt"),
+            "Plan d'action & résumé"
+        );
 
         // Whitespace and control character stripping
-        assert_eq!(ImportExportService::derive_proposed_title("   Leading and Trailing   .md"), "Leading and Trailing");
-        assert_eq!(ImportExportService::derive_proposed_title("\t\nNote with controls\r\n.txt"), "Note with controls");
+        assert_eq!(
+            ImportExportService::derive_proposed_title("   Leading and Trailing   .md"),
+            "Leading and Trailing"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("\t\nNote with controls\r\n.txt"),
+            "Note with controls"
+        );
 
         // Degenerate, empty, or dotfile names fallback to "Untitled Note"
-        assert_eq!(ImportExportService::derive_proposed_title(""), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title("     "), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title(".txt"), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title(".md"), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title(".json"), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title("."), "Untitled Note");
-        assert_eq!(ImportExportService::derive_proposed_title("\x00\x01\x02.txt"), "Untitled Note");
+        assert_eq!(
+            ImportExportService::derive_proposed_title(""),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("     "),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title(".txt"),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title(".md"),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title(".json"),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("."),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::derive_proposed_title("\x00\x01\x02.txt"),
+            "Untitled Note"
+        );
 
         // sanitize_title direct checks
-        assert_eq!(ImportExportService::sanitize_title("Clean Title"), "Clean Title");
-        assert_eq!(ImportExportService::sanitize_title("  \t\n  "), "Untitled Note");
-        assert_eq!(ImportExportService::sanitize_title("🚀 Custom Emoji Title 🎉"), "🚀 Custom Emoji Title 🎉");
-        assert_eq!(ImportExportService::sanitize_title("\x07\x08Title with controls\x1F"), "Title with controls");
+        assert_eq!(
+            ImportExportService::sanitize_title("Clean Title"),
+            "Clean Title"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_title("  \t\n  "),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_title("🚀 Custom Emoji Title 🎉"),
+            "🚀 Custom Emoji Title 🎉"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_title("\x07\x08Title with controls\x1F"),
+            "Title with controls"
+        );
 
         // Structured JSON single note title derivation in scan_candidates
         let mut conn = Connection::open_in_memory().unwrap();
@@ -2570,7 +2788,9 @@ mod tests {
         let json_path = dir.join("random_filename.json");
         std::fs::write(&json_path, serde_json::to_string(&single_note_doc).unwrap()).unwrap();
 
-        let preview = ImportExportService::scan_candidates(&conn, &[json_path.to_string_lossy().to_string()]).unwrap();
+        let preview =
+            ImportExportService::scan_candidates(&conn, &[json_path.to_string_lossy().to_string()])
+                .unwrap();
         assert_eq!(preview.candidates.len(), 1);
         assert_eq!(
             preview.candidates[0].proposed_title,
@@ -2604,7 +2824,8 @@ mod tests {
             &conn,
             "Roadmap 2026",
             "Quarterly roadmap details and milestones.",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             dup1,
             DuplicateMatch::ExactMatch {
@@ -2618,7 +2839,8 @@ mod tests {
             &conn,
             "New Filename For Same Roadmap",
             "Quarterly roadmap details and milestones.",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             dup2,
             DuplicateMatch::ContentMatch {
@@ -2633,7 +2855,8 @@ mod tests {
             &conn,
             "Roadmap 2026",
             "Entirely different quarterly objectives and budgets.",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(
             dup3,
             DuplicateMatch::TitleCollisionOnly {
@@ -2647,7 +2870,8 @@ mod tests {
             &conn,
             "Archived Spec",
             "Legacy content that was deleted.",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(dup_trashed, DuplicateMatch::None);
 
         // Entirely unique note
@@ -2655,49 +2879,41 @@ mod tests {
             &conn,
             "Completely New Note",
             "Fresh unique note content.",
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(dup_unique, DuplicateMatch::None);
 
         // 3. Test should_skip_candidate under all 3 duplicate policies
         // A. ImportAsNew: creates new notes regardless of possible content matches
-        let (skip_new_exact, _) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::ImportAsNew,
-            &dup1,
-            true,
+        let (skip_new_exact, _) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::ImportAsNew, &dup1, true);
+        assert!(
+            !skip_new_exact,
+            "ImportAsNew must not skip exact duplicates"
         );
-        assert!(!skip_new_exact, "ImportAsNew must not skip exact duplicates");
 
-        let (skip_new_col, _) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::ImportAsNew,
-            &dup3,
-            true,
-        );
+        let (skip_new_col, _) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::ImportAsNew, &dup3, true);
         assert!(!skip_new_col, "ImportAsNew must not skip title collisions");
 
         // B. SkipExact: skips exact matches and content matches, but DOES NOT skip title collision only
-        let (skip_exact_exact, msg_exact) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::SkipExact,
-            &dup1,
-            true,
-        );
+        let (skip_exact_exact, msg_exact) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::SkipExact, &dup1, true);
         assert!(skip_exact_exact, "SkipExact must skip exact duplicate");
         assert!(msg_exact.unwrap().contains("Skipped exact duplicate note"));
 
-        let (skip_exact_content, msg_content) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::SkipExact,
-            &dup2,
-            true,
-        );
+        let (skip_exact_content, msg_content) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::SkipExact, &dup2, true);
         assert!(skip_exact_content, "SkipExact must skip content duplicate");
         assert!(msg_content.unwrap().contains("Skipped duplicate content"));
 
         // Critical Invariant: Title collision with different content MUST NOT be skipped!
-        let (skip_exact_col, _) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::SkipExact,
-            &dup3,
-            true,
+        let (skip_exact_col, _) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::SkipExact, &dup3, true);
+        assert!(
+            !skip_exact_col,
+            "SkipExact must NOT skip title collisions with different content"
         );
-        assert!(!skip_exact_col, "SkipExact must NOT skip title collisions with different content");
 
         // Unique note must not be skipped
         let (skip_exact_unique, _) = ImportExportService::should_skip_candidate(
@@ -2708,19 +2924,13 @@ mod tests {
         assert!(!skip_exact_unique, "SkipExact must not skip unique note");
 
         // C. Ask: respects user selection; if selected, does not skip
-        let (skip_ask_selected, _) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::Ask,
-            &dup1,
-            true,
-        );
+        let (skip_ask_selected, _) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::Ask, &dup1, true);
         assert!(!skip_ask_selected, "Ask must not skip selected note");
 
         // User deselection always skips
-        let (skip_deselected, msg_desel) = ImportExportService::should_skip_candidate(
-            DuplicatePolicy::ImportAsNew,
-            &dup1,
-            false,
-        );
+        let (skip_deselected, msg_desel) =
+            ImportExportService::should_skip_candidate(DuplicatePolicy::ImportAsNew, &dup1, false);
         assert!(skip_deselected, "Deselected candidate must be skipped");
         assert_eq!(msg_desel.unwrap(), "Deselected by user.");
 
@@ -2745,20 +2955,39 @@ mod tests {
                 exact_file.to_string_lossy().to_string(),
                 collision_file2.to_string_lossy().to_string(),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(preview.candidates.len(), 2);
         // Candidate 0: Exact duplicate
         assert_eq!(preview.candidates[0].is_duplicate, true);
-        assert_eq!(preview.candidates[0].duplicate_note_id, Some("note-1".to_string()));
-        assert_eq!(preview.candidates[0].duplicate_note_title, Some("Roadmap 2026".to_string()));
-        assert!(preview.candidates[0].warnings.iter().any(|w| w.contains("Exact duplicate note detected")));
+        assert_eq!(
+            preview.candidates[0].duplicate_note_id,
+            Some("note-1".to_string())
+        );
+        assert_eq!(
+            preview.candidates[0].duplicate_note_title,
+            Some("Roadmap 2026".to_string())
+        );
+        assert!(preview.candidates[0]
+            .warnings
+            .iter()
+            .any(|w| w.contains("Exact duplicate note detected")));
 
         // Candidate 1: Title collision with different content (NOT flagged as exact duplicate to skip)
         assert_eq!(preview.candidates[1].is_duplicate, false);
-        assert_eq!(preview.candidates[1].duplicate_note_id, Some("note-1".to_string()));
-        assert_eq!(preview.candidates[1].duplicate_note_title, Some("Roadmap 2026".to_string()));
-        assert!(preview.candidates[1].warnings.iter().any(|w| w.contains("Title collision")));
+        assert_eq!(
+            preview.candidates[1].duplicate_note_id,
+            Some("note-1".to_string())
+        );
+        assert_eq!(
+            preview.candidates[1].duplicate_note_title,
+            Some("Roadmap 2026".to_string())
+        );
+        assert!(preview.candidates[1]
+            .warnings
+            .iter()
+            .any(|w| w.contains("Title collision")));
 
         assert_eq!(preview.duplicate_files, 1);
         assert_eq!(preview.valid_files, 2);
@@ -2782,7 +3011,8 @@ mod tests {
                 name: "Work Projects".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Create a Markdown note file
         let md_file = dir.join("Architecture Notes.md");
@@ -2861,33 +3091,47 @@ mod tests {
         // 3. Verify granular summary report
         assert_eq!(summary.total_processed, 4);
         assert_eq!(summary.imported_count, 2); // md_file and json_file
-        assert_eq!(summary.skipped_count, 1);  // txt_file deselected
-        assert_eq!(summary.failed_count, 1);   // missing_file
+        assert_eq!(summary.skipped_count, 1); // txt_file deselected
+        assert_eq!(summary.failed_count, 1); // missing_file
 
         assert_eq!(summary.results[0].status, ImportItemStatus::Imported);
         assert_eq!(summary.results[0].file_name, "Architecture Notes.md");
         let created_md_id = summary.results[0].created_note_id.as_ref().unwrap();
 
         assert_eq!(summary.results[1].status, ImportItemStatus::Skipped);
-        assert_eq!(summary.results[1].message.as_deref(), Some("Deselected by user."));
+        assert_eq!(
+            summary.results[1].message.as_deref(),
+            Some("Deselected by user.")
+        );
 
         assert_eq!(summary.results[2].status, ImportItemStatus::Failed);
-        assert!(summary.results[2].message.as_ref().unwrap().contains("does not exist"));
+        assert!(summary.results[2]
+            .message
+            .as_ref()
+            .unwrap()
+            .contains("does not exist"));
 
         assert_eq!(summary.results[3].status, ImportItemStatus::Imported);
         let created_json_id = summary.results[3].created_note_id.as_ref().unwrap();
 
         // 4. Verify database persistence and invariants
-        let md_note = NoteRepository::get_by_id(&conn, created_md_id).unwrap().unwrap();
+        let md_note = NoteRepository::get_by_id(&conn, created_md_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(md_note.title, "Custom Architecture Title");
         assert_eq!(md_note.content, md_content);
         assert_eq!(md_note.format, "md");
         assert_eq!(md_note.notebook_id, Some(nb.id.clone()));
         assert_eq!(md_note.is_deleted, false);
 
-        let json_note = NoteRepository::get_by_id(&conn, created_json_id).unwrap().unwrap();
+        let json_note = NoteRepository::get_by_id(&conn, created_json_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(json_note.title, "Tagged Note From JSON");
-        assert_eq!(json_note.content, "Content inside structured interchange package.");
+        assert_eq!(
+            json_note.content,
+            "Content inside structured interchange package."
+        );
         assert_eq!(json_note.format, "md");
         assert_eq!(json_note.is_favorite, true);
         assert_eq!(json_note.notebook_id, Some(nb.id.clone()));
@@ -2895,7 +3139,9 @@ mod tests {
         assert_ne!(json_note.id, "external-export-uuid-999");
 
         // Verify tags were properly created and linked
-        let note_tags = crate::storage::repositories::TagRepository::get_tags_for_note(&conn, created_json_id).unwrap();
+        let note_tags =
+            crate::storage::repositories::TagRepository::get_tags_for_note(&conn, created_json_id)
+                .unwrap();
         assert_eq!(note_tags.len(), 3);
         let tag_names: Vec<String> = note_tags.into_iter().map(|t| t.name).collect();
         assert!(tag_names.contains(&"rust".to_string()));
@@ -2905,14 +3151,12 @@ mod tests {
         // 5. Verify target notebook validation error
         let invalid_nb_request = ImportRequest {
             operation_id: None,
-            candidates: vec![
-                ImportCandidateOverride {
-                    id: "cand-x".to_string(),
-                    file_path: md_file.to_string_lossy().to_string(),
-                    selected: true,
-                    custom_title: None,
-                },
-            ],
+            candidates: vec![ImportCandidateOverride {
+                id: "cand-x".to_string(),
+                file_path: md_file.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: None,
+            }],
             options: ImportOptions {
                 target_notebook_id: Some("non-existent-notebook-uuid".to_string()),
                 duplicate_policy: DuplicatePolicy::ImportAsNew,
@@ -2973,7 +3217,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         std::fs::write(&md_file, rich_markdown_content).unwrap();
 
         // 2. Scan candidate - verify format detection as Md
-        let preview = ImportExportService::scan_candidates(&conn, &[md_file.to_string_lossy().to_string()]).unwrap();
+        let preview =
+            ImportExportService::scan_candidates(&conn, &[md_file.to_string_lossy().to_string()])
+                .unwrap();
         assert_eq!(preview.candidates.len(), 1);
         assert_eq!(preview.candidates[0].detected_format, ImportFormat::Md);
         assert_eq!(preview.candidates[0].proposed_title, "Architecture_Spec");
@@ -2981,14 +3227,12 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         // 3. Execute import
         let request = ImportRequest {
             operation_id: None,
-            candidates: vec![
-                ImportCandidateOverride {
-                    id: preview.candidates[0].id.clone(),
-                    file_path: md_file.to_string_lossy().to_string(),
-                    selected: true,
-                    custom_title: Some("Preserved Architecture Spec".to_string()),
-                },
-            ],
+            candidates: vec![ImportCandidateOverride {
+                id: preview.candidates[0].id.clone(),
+                file_path: md_file.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: Some("Preserved Architecture Spec".to_string()),
+            }],
             options: ImportOptions {
                 target_notebook_id: None,
                 duplicate_policy: DuplicatePolicy::ImportAsNew,
@@ -3000,16 +3244,24 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let created_note_id = summary.results[0].created_note_id.as_ref().unwrap();
 
         // 4. Verify database record
-        let imported_note = NoteRepository::get_by_id(&conn, created_note_id).unwrap().unwrap();
+        let imported_note = NoteRepository::get_by_id(&conn, created_note_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(imported_note.title, "Preserved Architecture Spec");
         // Verify format is explicitly set to "md"
         assert_eq!(imported_note.format, "md");
         // Verify raw Markdown source syntax is completely intact without HTML conversion or construct stripping
         assert_eq!(imported_note.content, rich_markdown_content);
-        assert!(imported_note.content.contains("# Technical Architecture & Specification"));
+        assert!(imported_note
+            .content
+            .contains("# Technical Architecture & Specification"));
         assert!(imported_note.content.contains("```rust"));
-        assert!(imported_note.content.contains("| Component | Responsibility | Tech Stack |"));
-        assert!(imported_note.content.contains("<script>alert(\"Untrusted script must stay plain text\");</script>"));
+        assert!(imported_note
+            .content
+            .contains("| Component | Responsibility | Tech Stack |"));
+        assert!(imported_note
+            .content
+            .contains("<script>alert(\"Untrusted script must stay plain text\");</script>"));
 
         // 5. Verify editing and updating note preserves "md" format and does not silently convert to "txt"
         let updated_note = NoteRepository::update(
@@ -3017,13 +3269,17 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             created_note_id,
             crate::storage::models::UpdateNoteDto {
                 title: Some("Preserved Architecture Spec (Edited)".to_string()),
-                content: Some(format!("{}
+                content: Some(format!(
+                    "{}
 
-## 2. Updated Appendix", rich_markdown_content)),
+## 2. Updated Appendix",
+                    rich_markdown_content
+                )),
                 format: None, // format is omitted, must preserve existing "md" format
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(updated_note.format, "md");
         assert_eq!(updated_note.title, "Preserved Architecture Spec (Edited)");
         assert!(updated_note.content.contains("## 2. Updated Appendix"));
@@ -3059,14 +3315,12 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
 
         let json_request = ImportRequest {
             operation_id: None,
-            candidates: vec![
-                ImportCandidateOverride {
-                    id: "cand-struct-md".to_string(),
-                    file_path: json_file.to_string_lossy().to_string(),
-                    selected: true,
-                    custom_title: None,
-                },
-            ],
+            candidates: vec![ImportCandidateOverride {
+                id: "cand-struct-md".to_string(),
+                file_path: json_file.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: None,
+            }],
             options: ImportOptions {
                 target_notebook_id: None,
                 duplicate_policy: DuplicatePolicy::ImportAsNew,
@@ -3076,7 +3330,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let json_summary = ImportExportService::execute_import(&mut conn, json_request).unwrap();
         assert_eq!(json_summary.imported_count, 1);
         let struct_note_id = json_summary.results[0].created_note_id.as_ref().unwrap();
-        let struct_note = NoteRepository::get_by_id(&conn, struct_note_id).unwrap().unwrap();
+        let struct_note = NoteRepository::get_by_id(&conn, struct_note_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(struct_note.format, "md");
         assert_eq!(struct_note.content, sample_json_content);
 
@@ -3087,7 +3343,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     fn test_task_12_plain_text_import_and_encoding_behavior_suite() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::storage::migrations::run_migrations(&mut conn).unwrap();
-        let dir = std::env::temp_dir().join(format!("test_t12_txt_import_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("test_t12_txt_import_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // 1. Plain text with meaningful whitespace, blank lines, tabs, and Windows CRLF
@@ -3122,29 +3379,56 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 invalid_utf8_file.to_string_lossy().to_string(),
                 binary_file.to_string_lossy().to_string(),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(preview.candidates.len(), 5);
         // Candidate 0: Daily_Notes.txt (Valid)
         assert_eq!(preview.candidates[0].detected_format, ImportFormat::Txt);
-        assert_eq!(preview.candidates[0].validation_status, ValidationStatus::Valid);
+        assert_eq!(
+            preview.candidates[0].validation_status,
+            ValidationStatus::Valid
+        );
 
         // Candidate 1: Unicode_Doc.txt (Valid)
         assert_eq!(preview.candidates[1].detected_format, ImportFormat::Txt);
-        assert_eq!(preview.candidates[1].validation_status, ValidationStatus::Valid);
+        assert_eq!(
+            preview.candidates[1].validation_status,
+            ValidationStatus::Valid
+        );
 
         // Candidate 2: Empty_Doc.txt (Valid with warning)
         assert_eq!(preview.candidates[2].detected_format, ImportFormat::Txt);
-        assert_eq!(preview.candidates[2].validation_status, ValidationStatus::Warning);
-        assert!(preview.candidates[2].warnings.iter().any(|w| w.contains("File is empty (0 bytes)")));
+        assert_eq!(
+            preview.candidates[2].validation_status,
+            ValidationStatus::Warning
+        );
+        assert!(preview.candidates[2]
+            .warnings
+            .iter()
+            .any(|w| w.contains("File is empty (0 bytes)")));
 
         // Candidate 3: Corrupt_Encoding.txt (Invalid)
-        assert_eq!(preview.candidates[3].validation_status, ValidationStatus::Invalid);
-        assert!(preview.candidates[3].error_message.as_ref().unwrap().contains("invalid UTF-8 encoding"));
+        assert_eq!(
+            preview.candidates[3].validation_status,
+            ValidationStatus::Invalid
+        );
+        assert!(preview.candidates[3]
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("invalid UTF-8 encoding"));
 
         // Candidate 4: Binary_Doc.txt (Invalid)
-        assert_eq!(preview.candidates[4].validation_status, ValidationStatus::Invalid);
-        assert!(preview.candidates[4].error_message.as_ref().unwrap().contains("Binary file content detected"));
+        assert_eq!(
+            preview.candidates[4].validation_status,
+            ValidationStatus::Invalid
+        );
+        assert!(preview.candidates[4]
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("Binary file content detected"));
 
         // Execute import on the candidates
         let request = ImportRequest {
@@ -3198,7 +3482,10 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let note_1 = NoteRepository::get_by_id(&conn, id_1).unwrap().unwrap();
         assert_eq!(note_1.format, "txt");
         assert_eq!(note_1.content, unicode_txt);
-        assert!(!note_1.content.contains('\u{FFFD}'), "Must never contain replacement character");
+        assert!(
+            !note_1.content.contains('\u{FFFD}'),
+            "Must never contain replacement character"
+        );
 
         // Verify Empty_Doc.txt: note created successfully with empty content
         let id_2 = summary.results[2].created_note_id.as_ref().unwrap();
@@ -3218,7 +3505,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     fn test_task_13_notebook_and_metadata_handling_for_structured_imports_suite() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::storage::migrations::run_migrations(&mut conn).unwrap();
-        let dir = std::env::temp_dir().join(format!("test_t13_struct_import_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("test_t13_struct_import_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // 1. Version rejection test: version 2.0 must be rejected with actionable error
@@ -3230,9 +3518,18 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             "notes": []
         });
         std::fs::write(&v2_file, serde_json::to_string(&v2_doc).unwrap()).unwrap();
-        let v2_preview = ImportExportService::scan_candidates(&conn, &[v2_file.to_string_lossy().to_string()]).unwrap();
-        assert_eq!(v2_preview.candidates[0].validation_status, ValidationStatus::Invalid);
-        assert!(v2_preview.candidates[0].error_message.as_ref().unwrap().contains("Unsupported interchange version '2.0'"));
+        let v2_preview =
+            ImportExportService::scan_candidates(&conn, &[v2_file.to_string_lossy().to_string()])
+                .unwrap();
+        assert_eq!(
+            v2_preview.candidates[0].validation_status,
+            ValidationStatus::Invalid
+        );
+        assert!(v2_preview.candidates[0]
+            .error_message
+            .as_ref()
+            .unwrap()
+            .contains("Unsupported interchange version '2.0'"));
 
         // 2. Structured JSON package with:
         // - 2 notes linking to each other via internal links (canonical + shorthand)
@@ -3274,22 +3571,30 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         std::fs::write(&package_file, serde_json::to_string(&package_doc).unwrap()).unwrap();
 
         // 3. Scan candidate
-        let preview = ImportExportService::scan_candidates(&conn, &[package_file.to_string_lossy().to_string()]).unwrap();
+        let preview = ImportExportService::scan_candidates(
+            &conn,
+            &[package_file.to_string_lossy().to_string()],
+        )
+        .unwrap();
         assert_eq!(preview.candidates.len(), 1);
-        assert_eq!(preview.candidates[0].validation_status, ValidationStatus::Warning);
-        assert!(preview.candidates[0].warnings.iter().any(|w| w.contains("Structured package containing 2 note(s)")));
+        assert_eq!(
+            preview.candidates[0].validation_status,
+            ValidationStatus::Warning
+        );
+        assert!(preview.candidates[0]
+            .warnings
+            .iter()
+            .any(|w| w.contains("Structured package containing 2 note(s)")));
 
         // 4. Execute import without target_notebook_id override (should preserve notebook_path hierarchy)
         let request = ImportRequest {
             operation_id: None,
-            candidates: vec![
-                ImportCandidateOverride {
-                    id: preview.candidates[0].id.clone(),
-                    file_path: package_file.to_string_lossy().to_string(),
-                    selected: true,
-                    custom_title: None,
-                },
-            ],
+            candidates: vec![ImportCandidateOverride {
+                id: preview.candidates[0].id.clone(),
+                file_path: package_file.to_string_lossy().to_string(),
+                selected: true,
+                custom_title: None,
+            }],
             options: ImportOptions {
                 target_notebook_id: None,
                 duplicate_policy: DuplicatePolicy::ImportAsNew,
@@ -3303,13 +3608,22 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         // 5. Verify database records
         // Check created notebook hierarchy
         let all_notebooks = NotebookRepository::list(&conn).unwrap();
-        let eng_nb = all_notebooks.iter().find(|n| n.name == "Engineering").expect("Engineering notebook");
+        let eng_nb = all_notebooks
+            .iter()
+            .find(|n| n.name == "Engineering")
+            .expect("Engineering notebook");
         assert!(eng_nb.parent_id.is_none());
 
-        let backend_nb = all_notebooks.iter().find(|n| n.name == "Backend").expect("Backend notebook");
+        let backend_nb = all_notebooks
+            .iter()
+            .find(|n| n.name == "Backend")
+            .expect("Backend notebook");
         assert_eq!(backend_nb.parent_id, Some(eng_nb.id.clone()));
 
-        let storage_nb = all_notebooks.iter().find(|n| n.name == "Storage").expect("Storage notebook");
+        let storage_nb = all_notebooks
+            .iter()
+            .find(|n| n.name == "Storage")
+            .expect("Storage notebook");
         assert_eq!(storage_nb.parent_id, Some(backend_nb.id.clone()));
 
         // Hierarchy path check
@@ -3320,8 +3634,14 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let all_notes = NoteRepository::list_active(&conn).unwrap();
         assert_eq!(all_notes.len(), 2);
 
-        let arch_note = all_notes.iter().find(|n| n.title == "Architecture Overview").expect("Arch note");
-        let store_note = all_notes.iter().find(|n| n.title == "Storage Engine").expect("Store note");
+        let arch_note = all_notes
+            .iter()
+            .find(|n| n.title == "Architecture Overview")
+            .expect("Arch note");
+        let store_note = all_notes
+            .iter()
+            .find(|n| n.title == "Storage Engine")
+            .expect("Store note");
 
         // Verify assigned notebook
         assert_eq!(arch_note.notebook_id, Some(storage_nb.id.clone()));
@@ -3337,7 +3657,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert!(arch_note.content.contains(&expected_canonical_link));
         assert!(arch_note.content.contains(&expected_shorthand_link));
         // External reference not in package remained untouched
-        assert!(arch_note.content.contains("notepad://note/external-unimported-id"));
+        assert!(arch_note
+            .content
+            .contains("notepad://note/external-unimported-id"));
 
         let expected_backlink = format!("notepad://note/{}", arch_note.id);
         assert!(store_note.content.contains(&expected_backlink));
@@ -3368,11 +3690,19 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
 
         // 1. Filename sanitization tests
         assert_eq!(
-            ImportExportService::sanitize_filename("Project / Plan : 2026 * Final ? <v1> | \"Draft\""),
+            ImportExportService::sanitize_filename(
+                "Project / Plan : 2026 * Final ? <v1> | \"Draft\""
+            ),
             "Project  Plan  2026  Final  v1  Draft"
         );
-        assert_eq!(ImportExportService::sanitize_filename("   ...   "), "Untitled Note");
-        assert_eq!(ImportExportService::sanitize_filename("Valid Note Name"), "Valid Note Name");
+        assert_eq!(
+            ImportExportService::sanitize_filename("   ...   "),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("Valid Note Name"),
+            "Valid Note Name"
+        );
 
         // 2. Create sample notes: 1 Markdown note, 1 Plain text note
         let md_content = "# Project Architecture\n\n- Local-first SQLite\n- Rich Markdown syntax\n\n```rust\nfn main() {}\n```";
@@ -3386,11 +3716,16 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 is_favorite: Some(true),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Add a tag to md_note
         let tag = TagRepository::create(&conn, "architecture").unwrap();
-        conn.execute("INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)", params![md_note.id, tag.id]).unwrap();
+        conn.execute(
+            "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
+            params![md_note.id, tag.id],
+        )
+        .unwrap();
 
         let txt_content = "1. Plain text line\n2. Another text line with spaces   \n";
         let txt_note = NoteRepository::create(
@@ -3403,7 +3738,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Export md_note as Markdown (.md)
         let md_dest = dir.join("exported_notes/architecture.md");
@@ -3415,7 +3751,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: md_dest.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(md_export_res.status, ExportItemStatus::Exported);
         assert_eq!(md_export_res.note_id, md_note.id);
@@ -3432,7 +3769,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: txt_dest_for_md.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(txt_md_res.status, ExportItemStatus::Exported);
         let read_txt_md_file = std::fs::read_to_string(&txt_dest_for_md).unwrap();
@@ -3449,7 +3787,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: txt_dest.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(txt_export_res.status, ExportItemStatus::Exported);
         let read_txt_file = std::fs::read_to_string(&txt_dest).unwrap();
@@ -3465,7 +3804,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: json_dest.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(json_export_res.status, ExportItemStatus::Exported);
         let read_json_file = std::fs::read_to_string(&json_dest).unwrap();
@@ -3478,7 +3818,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(parsed_doc.notes[0].is_favorite, true);
 
         // 7. Verify source note in SQLite remained untouched
-        let note_in_db = NoteRepository::get_by_id(&conn, &md_note.id).unwrap().unwrap();
+        let note_in_db = NoteRepository::get_by_id(&conn, &md_note.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(note_in_db.title, md_note.title);
         assert_eq!(note_in_db.content, md_note.content);
         assert_eq!(note_in_db.format, md_note.format);
@@ -3504,7 +3846,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     fn test_task_15_multiple_note_and_notebook_export_selection_suite() {
         use crate::storage::database::init_connection;
         use crate::storage::migrations::run_migrations;
-        use crate::storage::models::{CreateNotebookDto, CreateNoteDto};
+        use crate::storage::models::{CreateNoteDto, CreateNotebookDto};
         use crate::storage::repositories::TagRepository;
 
         let mut conn = init_connection(std::path::Path::new(":memory:")).unwrap();
@@ -3517,7 +3859,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Engineering".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let child_nb = NotebookRepository::create(
             &conn,
@@ -3525,7 +3868,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Backend".to_string(),
                 parent_id: Some(root_nb.id.clone()),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let grandchild_nb = NotebookRepository::create(
             &conn,
@@ -3533,7 +3877,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Storage".to_string(),
                 parent_id: Some(child_nb.id.clone()),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let unassigned_nb = NotebookRepository::create(
             &conn,
@@ -3541,7 +3886,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Marketing".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Create notes across notebooks
         let note_root = NoteRepository::create(
@@ -3552,7 +3898,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(root_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let note_child = NoteRepository::create(
             &conn,
@@ -3562,7 +3909,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(child_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let _note_grandchild = NoteRepository::create(
             &conn,
@@ -3572,7 +3920,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(grandchild_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let _note_marketing = NoteRepository::create(
             &conn,
@@ -3582,7 +3931,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(unassigned_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let note_trashed = NoteRepository::create(
             &conn,
@@ -3592,7 +3942,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(child_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         // Soft-delete the note into trash
         NoteRepository::soft_delete(&conn, &note_trashed.id).unwrap();
 
@@ -3601,13 +3952,17 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         conn.execute(
             "INSERT INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
             params![note_root.id, tag_eng.id],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Test Preview: Single Note Scope
         let preview_single = ImportExportService::resolve_export_selection(
             &conn,
-            &ExportScope::SingleNote { note_id: note_root.id.clone() },
-        ).unwrap();
+            &ExportScope::SingleNote {
+                note_id: note_root.id.clone(),
+            },
+        )
+        .unwrap();
         assert_eq!(preview_single.total_requested, 1);
         assert_eq!(preview_single.total_included, 1);
         assert_eq!(preview_single.skipped_trashed_count, 0);
@@ -3615,13 +3970,19 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(preview_single.notes.len(), 1);
         assert_eq!(preview_single.notes[0].title, "Engineering Overview");
         assert_eq!(preview_single.notes[0].tag_count, 1);
-        assert_eq!(preview_single.notes[0].notebook_path.as_deref(), Some("Engineering"));
+        assert_eq!(
+            preview_single.notes[0].notebook_path.as_deref(),
+            Some("Engineering")
+        );
 
         // Single note trashed -> reported as skipped_trashed
         let preview_single_trashed = ImportExportService::resolve_export_selection(
             &conn,
-            &ExportScope::SingleNote { note_id: note_trashed.id.clone() },
-        ).unwrap();
+            &ExportScope::SingleNote {
+                note_id: note_trashed.id.clone(),
+            },
+        )
+        .unwrap();
         assert_eq!(preview_single_trashed.total_requested, 1);
         assert_eq!(preview_single_trashed.total_included, 0);
         assert_eq!(preview_single_trashed.skipped_trashed_count, 1);
@@ -3637,7 +3998,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                     "missing-random-uuid".to_string(),
                 ],
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(preview_selected.total_requested, 4);
         assert_eq!(preview_selected.total_included, 2);
         assert_eq!(preview_selected.skipped_trashed_count, 1);
@@ -3651,7 +4013,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: root_nb.id.clone(),
                 include_nested: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(preview_nb_shallow.total_included, 1); // Only root note
         assert_eq!(preview_nb_shallow.notes[0].id, note_root.id);
         assert_eq!(preview_nb_shallow.included_notebook_count, 1);
@@ -3663,20 +4026,26 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: root_nb.id.clone(),
                 include_nested: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         // Root + Child + Grandchild = 3 active notes (trashed note excluded!)
         assert_eq!(preview_nb_nested.total_included, 3);
         assert_eq!(preview_nb_nested.skipped_trashed_count, 1); // 1 trashed note in child_nb
         assert_eq!(preview_nb_nested.included_notebook_count, 3); // 3 descendant notebooks
 
         // Verify hierarchy paths are present without misrepresenting structure
-        let paths: Vec<Option<String>> = preview_nb_nested.notes.iter().map(|n| n.notebook_path.clone()).collect();
+        let paths: Vec<Option<String>> = preview_nb_nested
+            .notes
+            .iter()
+            .map(|n| n.notebook_path.clone())
+            .collect();
         assert!(paths.contains(&Some("Engineering".to_string())));
         assert!(paths.contains(&Some("Engineering / Backend".to_string())));
         assert!(paths.contains(&Some("Engineering / Backend / Storage".to_string())));
 
         // 7. Test Batch Export: Structured JSON
-        let temp_dir = std::env::temp_dir().join(format!("test_task15_export_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test_task15_export_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let json_dest_file = temp_dir.join("engineering_notes.json");
 
@@ -3695,7 +4064,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(batch_json_res.exported_count, 3);
         assert_eq!(batch_json_res.skipped_count, 1); // 1 trashed skipped
@@ -3718,7 +4088,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(root_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let txt_dest_dir = temp_dir.join("txt_exports");
         let batch_txt_res = ImportExportService::export_notes_batch(
@@ -3736,7 +4107,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(batch_txt_res.exported_count, 2);
         // Verify collision was handled predictably with (1) suffix
@@ -3744,7 +4116,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert!(txt_dest_dir.join("Engineering Overview (1).txt").exists());
 
         // 9. Zero Side Effects: verify database notes are intact and not modified
-        let orig_root_note = NoteRepository::get_by_id(&conn, &note_root.id).unwrap().unwrap();
+        let orig_root_note = NoteRepository::get_by_id(&conn, &note_root.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(orig_root_note.title, note_root.title);
         assert_eq!(orig_root_note.content, note_root.content);
         assert_eq!(orig_root_note.is_deleted, false);
@@ -3760,7 +4134,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let mut conn = init_connection(std::path::Path::new(":memory:")).unwrap();
         run_migrations(&mut conn).unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("notepad_task_16_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("notepad_task_16_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Setup Notebooks and Tags
@@ -3770,7 +4145,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Architecture".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let design_nb = NotebookRepository::create(
             &conn,
@@ -3778,7 +4154,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "Design".to_string(),
                 parent_id: Some(arch_nb.id.clone()),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let tag_specs = TagRepository::create(&conn, "specs").unwrap();
         let tag_api = TagRepository::create(&conn, "api").unwrap();
@@ -3792,7 +4169,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(design_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         TagRepository::add_tag_to_note(&conn, &note_db.id, &tag_specs.id).unwrap();
 
         // 3. Setup Note 1 (System Design)
@@ -3823,7 +4201,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 mime_type: Some("image/png".to_string()),
                 file_size: 2048,
             },
-        ).unwrap();
+        )
+        .unwrap();
         AttachmentRepository::create(
             &conn,
             CreateAttachmentDto {
@@ -3833,7 +4212,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 mime_type: Some("application/pdf".to_string()),
                 file_size: 8192,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 5. Test Batch Export: Structured JSON
         let json_dest_file = temp_dir.join("structured_export.json");
@@ -3841,7 +4221,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             &conn,
             ExportBatchRequest {
                 operation_id: None,
-                scope: Some(ExportScope::SelectedNotes { note_ids: vec![note_sys.id.clone(), note_db.id.clone()] }),
+                scope: Some(ExportScope::SelectedNotes {
+                    note_ids: vec![note_sys.id.clone(), note_db.id.clone()],
+                }),
                 note_ids: vec![],
                 format: ExportFormat::Json,
                 destination_dir: temp_dir.to_string_lossy().to_string(),
@@ -3849,7 +4231,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(batch_res.exported_count, 2);
         assert_eq!(batch_res.failed_count, 0);
@@ -3863,15 +4246,34 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(doc.format, "personal-notepad-interchange");
         assert_eq!(doc.version, "1.0");
         assert_eq!(doc.note_count, 2);
-        assert!(doc.internal_link_policy.as_ref().unwrap().contains("Package-scoped internal links"));
-        assert!(doc.attachment_policy.as_ref().unwrap().contains("attachments are omitted"));
+        assert!(doc
+            .internal_link_policy
+            .as_ref()
+            .unwrap()
+            .contains("Package-scoped internal links"));
+        assert!(doc
+            .attachment_policy
+            .as_ref()
+            .unwrap()
+            .contains("attachments are omitted"));
 
         // Locate Note 1 and Note 2 in exported JSON
-        let exp_note_sys = doc.notes.iter().find(|n| n.export_id == note_sys.id).unwrap();
-        let exp_note_db = doc.notes.iter().find(|n| n.export_id == note_db.id).unwrap();
+        let exp_note_sys = doc
+            .notes
+            .iter()
+            .find(|n| n.export_id == note_sys.id)
+            .unwrap();
+        let exp_note_db = doc
+            .notes
+            .iter()
+            .find(|n| n.export_id == note_db.id)
+            .unwrap();
 
         // 7. Verify Deterministic Sorting of Tags
-        assert_eq!(exp_note_sys.tags, vec!["api".to_string(), "specs".to_string()]);
+        assert_eq!(
+            exp_note_sys.tags,
+            vec!["api".to_string(), "specs".to_string()]
+        );
         assert_eq!(exp_note_db.tags, vec!["specs".to_string()]);
 
         // 8. Verify Omitted Attachments Accounting
@@ -3881,11 +4283,25 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         // 9. Verify Internal Links Analysis
         // Note 1 has 2 links: one to Note 2 (in package), one to external_uuid (outside package)
         assert_eq!(exp_note_sys.internal_links.len(), 2);
-        let link_to_db = exp_note_sys.internal_links.iter().find(|l| l.target_export_id == note_db.id).unwrap();
-        assert!(link_to_db.is_package_internal, "Link to note in package must be marked package-internal");
+        let link_to_db = exp_note_sys
+            .internal_links
+            .iter()
+            .find(|l| l.target_export_id == note_db.id)
+            .unwrap();
+        assert!(
+            link_to_db.is_package_internal,
+            "Link to note in package must be marked package-internal"
+        );
 
-        let link_to_ext = exp_note_sys.internal_links.iter().find(|l| l.target_export_id == external_uuid).unwrap();
-        assert!(!link_to_ext.is_package_internal, "Link to note outside package must be marked external (not portable)");
+        let link_to_ext = exp_note_sys
+            .internal_links
+            .iter()
+            .find(|l| l.target_export_id == external_uuid)
+            .unwrap();
+        assert!(
+            !link_to_ext.is_package_internal,
+            "Link to note outside package must be marked external (not portable)"
+        );
 
         // 10. Verify Single Note Export Internal Link Isolation
         // When Note 1 is exported individually, its link to Note 2 MUST NOT be marked package-internal
@@ -3898,31 +4314,45 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: single_dest.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let single_bytes = std::fs::read(&single_dest).unwrap();
         let single_doc: InterchangeDocument = serde_json::from_slice(&single_bytes).unwrap();
         let single_note = &single_doc.notes[0];
-        let link_db_in_single = single_note.internal_links.iter().find(|l| l.target_export_id == note_db.id).unwrap();
-        assert!(!link_db_in_single.is_package_internal, "In single-note export, link to another note must not be marked internal");
+        let link_db_in_single = single_note
+            .internal_links
+            .iter()
+            .find(|l| l.target_export_id == note_db.id)
+            .unwrap();
+        assert!(
+            !link_db_in_single.is_package_internal,
+            "In single-note export, link to another note must not be marked internal"
+        );
 
         // 11. Verify Roundtrip Validation & Import into Fresh Database
         let mut fresh_conn = init_connection(std::path::Path::new(":memory:")).unwrap();
         run_migrations(&mut fresh_conn).unwrap();
-        let validated = ImportExportService::read_and_validate_file(&json_dest_file, ImportFormat::Json).unwrap();
+        let validated =
+            ImportExportService::read_and_validate_file(&json_dest_file, ImportFormat::Json)
+                .unwrap();
         assert!(validated.interchange_doc.is_some());
 
         let raw_paths = vec![json_dest_file.to_string_lossy().to_string()];
-        let preview = ImportExportService::scan_candidates(
-            &fresh_conn,
-            &raw_paths,
-        ).unwrap();
+        let preview = ImportExportService::scan_candidates(&fresh_conn, &raw_paths).unwrap();
         assert_eq!(preview.candidates.len(), 1);
         // Candidate preview should reflect warnings about omitted attachments and external links
-        assert!(preview.candidates[0].warnings.iter().any(|w| w.contains("omit 2 attachment(s)")));
-        assert!(preview.candidates[0].warnings.iter().any(|w| w.contains("1 link(s) to notes outside")));
+        assert!(preview.candidates[0]
+            .warnings
+            .iter()
+            .any(|w| w.contains("omit 2 attachment(s)")));
+        assert!(preview.candidates[0]
+            .warnings
+            .iter()
+            .any(|w| w.contains("1 link(s) to notes outside")));
 
-        let candidate_overrides: Vec<ImportCandidateOverride> = preview.candidates
+        let candidate_overrides: Vec<ImportCandidateOverride> = preview
+            .candidates
             .iter()
             .map(|c| ImportCandidateOverride {
                 id: c.id.clone(),
@@ -3942,20 +4372,31 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                     duplicate_policy: DuplicatePolicy::ImportAsNew,
                 },
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(import_summary.imported_count, 1);
         let imported_notes = NoteRepository::list(&fresh_conn, false).unwrap();
         assert_eq!(imported_notes.len(), 2);
 
         // Find re-imported notes in fresh database
-        let fresh_sys = imported_notes.iter().find(|n| n.title == "System Design").unwrap();
-        let fresh_db = imported_notes.iter().find(|n| n.title == "Database Engine").unwrap();
+        let fresh_sys = imported_notes
+            .iter()
+            .find(|n| n.title == "System Design")
+            .unwrap();
+        let fresh_db = imported_notes
+            .iter()
+            .find(|n| n.title == "Database Engine")
+            .unwrap();
 
         // Check internal link rewriting: link to Note 2 rewritten to fresh_db.id!
-        assert!(fresh_sys.content.contains(&format!("notepad://note/{}", fresh_db.id)));
+        assert!(fresh_sys
+            .content
+            .contains(&format!("notepad://note/{}", fresh_db.id)));
         // External link remains unmapped:
-        assert!(fresh_sys.content.contains(&format!("notepad://note/{}", external_uuid)));
+        assert!(fresh_sys
+            .content
+            .contains(&format!("notepad://note/{}", external_uuid)));
 
         // 12. Verify Nesting Depth Enforcement (Max 3 levels)
         let deep_json = temp_dir.join("deep_nesting.json");
@@ -3983,10 +4424,17 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 internal_links: vec![],
             }],
         };
-        std::fs::write(&deep_json, serde_json::to_vec_pretty(&invalid_deep_doc).unwrap()).unwrap();
+        std::fs::write(
+            &deep_json,
+            serde_json::to_vec_pretty(&invalid_deep_doc).unwrap(),
+        )
+        .unwrap();
 
-        let deep_err = ImportExportService::read_and_validate_file(&deep_json, ImportFormat::Json).unwrap_err();
-        assert!(deep_err.to_string().contains("exceeding maximum nesting depth of 3 levels"));
+        let deep_err = ImportExportService::read_and_validate_file(&deep_json, ImportFormat::Json)
+            .unwrap_err();
+        assert!(deep_err
+            .to_string()
+            .contains("exceeding maximum nesting depth of 3 levels"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -3995,28 +4443,54 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     fn test_task_17_safe_filenames_and_collision_handling_suite() {
         use crate::storage::database::init_connection;
         use crate::storage::migrations::run_migrations;
-        use crate::storage::models::{CreateNotebookDto, CreateNoteDto};
+        use crate::storage::models::{CreateNoteDto, CreateNotebookDto};
 
         let mut conn = init_connection(std::path::Path::new(":memory:")).unwrap();
         run_migrations(&mut conn).unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("notepad_task_17_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("notepad_task_17_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Sanitization: Illegal Characters & Control Characters
-        let dirty_title = "Report\u{0000}\u{001F} <2026> : \"Confidential\" / *Draft* | Status? \\ Final";
+        let dirty_title =
+            "Report\u{0000}\u{001F} <2026> : \"Confidential\" / *Draft* | Status? \\ Final";
         let sanitized_dirty = ImportExportService::sanitize_filename(dirty_title);
-        assert_eq!(sanitized_dirty, "Report 2026  Confidential  Draft  Status  Final");
+        assert_eq!(
+            sanitized_dirty,
+            "Report 2026  Confidential  Draft  Status  Final"
+        );
 
         // 2. Sanitization: Leading & Trailing Dots and Spaces
-        assert_eq!(ImportExportService::sanitize_filename(".hidden_note"), "hidden_note");
-        assert_eq!(ImportExportService::sanitize_filename("...triple_dot"), "triple_dot");
-        assert_eq!(ImportExportService::sanitize_filename("note_trailing_dot."), "note_trailing_dot");
-        assert_eq!(ImportExportService::sanitize_filename("note_trailing_dots...   "), "note_trailing_dots");
+        assert_eq!(
+            ImportExportService::sanitize_filename(".hidden_note"),
+            "hidden_note"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("...triple_dot"),
+            "triple_dot"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("note_trailing_dot."),
+            "note_trailing_dot"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("note_trailing_dots...   "),
+            "note_trailing_dots"
+        );
         assert_eq!(ImportExportService::sanitize_filename("."), "Untitled Note");
-        assert_eq!(ImportExportService::sanitize_filename(".."), "Untitled Note");
-        assert_eq!(ImportExportService::sanitize_filename("..."), "Untitled Note");
-        assert_eq!(ImportExportService::sanitize_filename("   "), "Untitled Note");
+        assert_eq!(
+            ImportExportService::sanitize_filename(".."),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("..."),
+            "Untitled Note"
+        );
+        assert_eq!(
+            ImportExportService::sanitize_filename("   "),
+            "Untitled Note"
+        );
         assert_eq!(ImportExportService::sanitize_filename(""), "Untitled Note");
 
         // 3. Sanitization: Windows Reserved Device Names
@@ -4030,14 +4504,23 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(ImportExportService::sanitize_filename("lpt1"), "_lpt1");
         assert_eq!(ImportExportService::sanitize_filename("LPT9"), "_LPT9");
         // Non-reserved names that happen to start or end with reserved substrings must not be altered
-        assert_eq!(ImportExportService::sanitize_filename("Conference Notes"), "Conference Notes");
+        assert_eq!(
+            ImportExportService::sanitize_filename("Conference Notes"),
+            "Conference Notes"
+        );
         assert_eq!(ImportExportService::sanitize_filename("Pronto"), "Pronto");
-        assert_eq!(ImportExportService::sanitize_filename("Auxiliary Motor"), "Auxiliary Motor");
+        assert_eq!(
+            ImportExportService::sanitize_filename("Auxiliary Motor"),
+            "Auxiliary Motor"
+        );
         assert_eq!(ImportExportService::sanitize_filename("Nullify"), "Nullify");
 
         // 4. Sanitization: Unicode Preservation
         let unicode_title = "Notes 🚀 2026 日本語 हिन्दी Русский";
-        assert_eq!(ImportExportService::sanitize_filename(unicode_title), unicode_title);
+        assert_eq!(
+            ImportExportService::sanitize_filename(unicode_title),
+            unicode_title
+        );
 
         // 5. Sanitization: Length Limit Truncation (180 chars)
         let long_title = "a".repeat(250);
@@ -4078,10 +4561,15 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             Err(StorageError::Validation(_))
         ));
         assert!(matches!(
-            ImportExportService::validate_destination_path(Path::new("/some/path/database.sqlite-wal")),
+            ImportExportService::validate_destination_path(Path::new(
+                "/some/path/database.sqlite-wal"
+            )),
             Err(StorageError::Validation(_))
         ));
-        assert!(ImportExportService::validate_destination_path(Path::new("/valid/path/note.txt")).is_ok());
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("/valid/path/note.txt"))
+                .is_ok()
+        );
 
         // 7. Single Note Export: Destination Collision Handling
         let sample_note = NoteRepository::create(
@@ -4094,7 +4582,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 is_favorite: Some(false),
                 is_pinned: Some(false),
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let single_file_path = temp_dir.join("single_collision.txt");
         std::fs::write(&single_file_path, "Pre-existing content on disk").unwrap();
@@ -4108,9 +4597,13 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: single_file_path.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(matches!(conflict_err, StorageError::Conflict(_)));
-        assert_eq!(std::fs::read_to_string(&single_file_path).unwrap(), "Pre-existing content on disk");
+        assert_eq!(
+            std::fs::read_to_string(&single_file_path).unwrap(),
+            "Pre-existing content on disk"
+        );
 
         // 7b. Overwrite = true succeeds and replaces existing file
         let overwrite_res = ImportExportService::export_single_note(
@@ -4121,9 +4614,13 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: single_file_path.to_string_lossy().to_string(),
                 overwrite: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(overwrite_res.status, ExportItemStatus::Exported);
-        assert_eq!(std::fs::read_to_string(&single_file_path).unwrap(), "First version content.");
+        assert_eq!(
+            std::fs::read_to_string(&single_file_path).unwrap(),
+            "First version content."
+        );
 
         // 7c. Export to directory path returns Validation error
         let dir_err = ImportExportService::export_single_note(
@@ -4134,7 +4631,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: temp_dir.to_string_lossy().to_string(),
                 overwrite: true,
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(matches!(dir_err, StorageError::Validation(_)));
 
         // 8. Batch Export TXT/MD: In-Batch and On-Disk Collision Avoidance
@@ -4144,7 +4642,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 name: "BatchNB".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let b_note_1 = NoteRepository::create(
             &conn,
@@ -4155,7 +4654,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(batch_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let b_note_2 = NoteRepository::create(
             &conn,
@@ -4166,7 +4666,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(batch_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let b_note_traversal = NoteRepository::create(
             &conn,
@@ -4177,19 +4678,28 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 notebook_id: Some(batch_nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let txt_batch_dir = temp_dir.join("batch_collision_txt");
         std::fs::create_dir_all(&txt_batch_dir).unwrap();
         // Create pre-existing file on disk for Team Meeting
-        std::fs::write(txt_batch_dir.join("Team Meeting.txt"), "Pre-existing on disk").unwrap();
+        std::fs::write(
+            txt_batch_dir.join("Team Meeting.txt"),
+            "Pre-existing on disk",
+        )
+        .unwrap();
 
         let batch_txt_summary = ImportExportService::export_notes_batch(
             &conn,
             ExportBatchRequest {
                 operation_id: None,
                 scope: Some(ExportScope::SelectedNotes {
-                    note_ids: vec![b_note_1.id.clone(), b_note_2.id.clone(), b_note_traversal.id.clone()],
+                    note_ids: vec![
+                        b_note_1.id.clone(),
+                        b_note_2.id.clone(),
+                        b_note_traversal.id.clone(),
+                    ],
                 }),
                 note_ids: vec![],
                 format: ExportFormat::Txt,
@@ -4198,20 +4708,33 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: false,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(batch_txt_summary.exported_count, 3);
         // Pre-existing file on disk remains intact:
-        assert_eq!(std::fs::read_to_string(txt_batch_dir.join("Team Meeting.txt")).unwrap(), "Pre-existing on disk");
+        assert_eq!(
+            std::fs::read_to_string(txt_batch_dir.join("Team Meeting.txt")).unwrap(),
+            "Pre-existing on disk"
+        );
         // Note 1 gets (1) suffix because disk file exists
         assert!(txt_batch_dir.join("Team Meeting (1).txt").exists());
-        assert_eq!(std::fs::read_to_string(txt_batch_dir.join("Team Meeting (1).txt")).unwrap(), "First team meeting");
+        assert_eq!(
+            std::fs::read_to_string(txt_batch_dir.join("Team Meeting (1).txt")).unwrap(),
+            "First team meeting"
+        );
         // Note 2 gets (2) suffix because Note 1 took (1)
         assert!(txt_batch_dir.join("Team Meeting (2).txt").exists());
-        assert_eq!(std::fs::read_to_string(txt_batch_dir.join("Team Meeting (2).txt")).unwrap(), "Second team meeting with same title");
+        assert_eq!(
+            std::fs::read_to_string(txt_batch_dir.join("Team Meeting (2).txt")).unwrap(),
+            "Second team meeting with same title"
+        );
         // Traversal attempt is sanitized to escape_plan.txt inside dest_dir
         assert!(txt_batch_dir.join("escape_plan.txt").exists());
-        assert!(!temp_dir.join("escape_plan.txt").exists(), "Must not have escaped destination directory");
+        assert!(
+            !temp_dir.join("escape_plan.txt").exists(),
+            "Must not have escaped destination directory"
+        );
 
         // 9. Batch Export JSON: File Collision Handling
         let json_target_file = temp_dir.join("batch_export.json");
@@ -4222,7 +4745,9 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             &conn,
             ExportBatchRequest {
                 operation_id: None,
-                scope: Some(ExportScope::SelectedNotes { note_ids: vec![sample_note.id.clone()] }),
+                scope: Some(ExportScope::SelectedNotes {
+                    note_ids: vec![sample_note.id.clone()],
+                }),
                 note_ids: vec![],
                 format: ExportFormat::Json,
                 destination_dir: temp_dir.to_string_lossy().to_string(),
@@ -4230,16 +4755,22 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: false,
             },
-        ).unwrap_err();
+        )
+        .unwrap_err();
         assert!(matches!(json_conflict_err, StorageError::Conflict(_)));
-        assert_eq!(std::fs::read_to_string(&json_target_file).unwrap(), "Pre-existing JSON");
+        assert_eq!(
+            std::fs::read_to_string(&json_target_file).unwrap(),
+            "Pre-existing JSON"
+        );
 
         // 9b. Explicit destination_file already exists and overwrite = true -> Replaced
         let json_overwrite_res = ImportExportService::export_notes_batch(
             &conn,
             ExportBatchRequest {
                 operation_id: None,
-                scope: Some(ExportScope::SelectedNotes { note_ids: vec![sample_note.id.clone()] }),
+                scope: Some(ExportScope::SelectedNotes {
+                    note_ids: vec![sample_note.id.clone()],
+                }),
                 note_ids: vec![],
                 format: ExportFormat::Json,
                 destination_dir: temp_dir.to_string_lossy().to_string(),
@@ -4247,7 +4778,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: true,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(json_overwrite_res.exported_count, 1);
         let overwritten_json = std::fs::read_to_string(&json_target_file).unwrap();
         assert!(overwritten_json.contains("Collision Note"));
@@ -4255,13 +4787,19 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         // 9c. Default export.json in directory already exists -> Automatically increments to export (1).json
         let auto_json_dir = temp_dir.join("auto_json_dir");
         std::fs::create_dir_all(&auto_json_dir).unwrap();
-        std::fs::write(auto_json_dir.join("export.json"), "Pre-existing default export").unwrap();
+        std::fs::write(
+            auto_json_dir.join("export.json"),
+            "Pre-existing default export",
+        )
+        .unwrap();
 
         let auto_json_res = ImportExportService::export_notes_batch(
             &conn,
             ExportBatchRequest {
                 operation_id: None,
-                scope: Some(ExportScope::SelectedNotes { note_ids: vec![sample_note.id.clone()] }),
+                scope: Some(ExportScope::SelectedNotes {
+                    note_ids: vec![sample_note.id.clone()],
+                }),
                 note_ids: vec![],
                 format: ExportFormat::Json,
                 destination_dir: auto_json_dir.to_string_lossy().to_string(),
@@ -4269,9 +4807,13 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: true,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(auto_json_res.exported_count, 1);
-        assert_eq!(std::fs::read_to_string(auto_json_dir.join("export.json")).unwrap(), "Pre-existing default export");
+        assert_eq!(
+            std::fs::read_to_string(auto_json_dir.join("export.json")).unwrap(),
+            "Pre-existing default export"
+        );
         assert!(auto_json_dir.join("export (1).json").exists());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -4286,7 +4828,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let mut conn = init_connection(std::path::Path::new(":memory:")).unwrap();
         run_migrations(&mut conn).unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("notepad_task_18_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("notepad_task_18_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Direct write_file_atomically: creates file and parent directories
@@ -4297,7 +4840,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
 
         // Verify no .tmp_* or *.part files remain
         let parent_dir = nested_dest.parent().unwrap();
-        let entries: Vec<_> = std::fs::read_dir(parent_dir).unwrap()
+        let entries: Vec<_> = std::fs::read_dir(parent_dir)
+            .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(entries.len(), 1);
@@ -4316,13 +4860,21 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
 
         // Attempting to treat a file as a directory should fail
         let invalid_dest = protected_file.join("sub_invalid.txt");
-        let err = ImportExportService::write_file_atomically(&invalid_dest, b"Should fail").unwrap_err();
-        assert!(matches!(err, StorageError::Io(_) | StorageError::Validation(_)));
+        let err =
+            ImportExportService::write_file_atomically(&invalid_dest, b"Should fail").unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::Io(_) | StorageError::Validation(_)
+        ));
         // Original file must remain completely intact
-        assert_eq!(std::fs::read_to_string(&protected_file).unwrap(), safe_original_content);
+        assert_eq!(
+            std::fs::read_to_string(&protected_file).unwrap(),
+            safe_original_content
+        );
 
         // 4. Reject directory destinations
-        let dir_dest_err = ImportExportService::write_file_atomically(&temp_dir, b"Data").unwrap_err();
+        let dir_dest_err =
+            ImportExportService::write_file_atomically(&temp_dir, b"Data").unwrap_err();
         assert!(matches!(dir_dest_err, StorageError::Validation(_)));
 
         // 5. Single Note Export via Service: verifies end-to-end atomic write
@@ -4334,7 +4886,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 format: Some("md".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let single_dest = temp_dir.join("reliable_note.md");
         let export_res = ImportExportService::export_single_note(
@@ -4345,10 +4898,14 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 destination_path: single_dest.to_string_lossy().to_string(),
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(export_res.status, ExportItemStatus::Exported);
-        assert_eq!(std::fs::read_to_string(&single_dest).unwrap(), "# Reliable Note\n\nVerbatim export content.");
+        assert_eq!(
+            std::fs::read_to_string(&single_dest).unwrap(),
+            "# Reliable Note\n\nVerbatim export content."
+        );
 
         // 6. Database Immutability Invariant:
         // Verifies the database is NEVER mutated merely because an export file was written
@@ -4367,7 +4924,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let batch_dest_dir = temp_dir.join("batch_reliable_txt");
         let batch_res = ImportExportService::export_notes_batch(
@@ -4384,7 +4942,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 include_metadata: false,
                 overwrite: false,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(batch_res.exported_count, 2);
         assert_eq!(batch_res.failed_count, 0);
@@ -4392,7 +4951,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert!(batch_dest_dir.join("Second Reliable Note.txt").exists());
 
         // Verify no leftover .tmp_* files
-        let batch_entries: Vec<_> = std::fs::read_dir(&batch_dest_dir).unwrap()
+        let batch_entries: Vec<_> = std::fs::read_dir(&batch_dest_dir)
+            .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(batch_entries.len(), 2);
@@ -4407,8 +4967,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         use crate::storage::migrations::run_migrations;
         use crate::storage::models::{
             CreateNoteDto, DuplicatePolicy, ExportBatchRequest, ExportFormat, ExportItemStatus,
-            ExportScope, ImportCandidateOverride, ImportItemStatus,
-            ImportOptions, ImportRequest, ImportSummary, OperationOutcome,
+            ExportScope, ImportCandidateOverride, ImportItemStatus, ImportOptions, ImportRequest,
+            ImportSummary, OperationOutcome,
         };
 
         // 1. Cancellation registry functions test
@@ -4444,7 +5004,10 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             results: vec![],
             duration_ms: 10,
         };
-        assert_eq!(s_warn.calculate_outcome(), OperationOutcome::SuccessWithWarnings);
+        assert_eq!(
+            s_warn.calculate_outcome(),
+            OperationOutcome::SuccessWithWarnings
+        );
 
         // Partial Success
         let s_partial = ImportSummary {
@@ -4457,7 +5020,10 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             results: vec![],
             duration_ms: 10,
         };
-        assert_eq!(s_partial.calculate_outcome(), OperationOutcome::PartialSuccess);
+        assert_eq!(
+            s_partial.calculate_outcome(),
+            OperationOutcome::PartialSuccess
+        );
 
         // Total Failure
         let s_fail = ImportSummary {
@@ -4489,7 +5055,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let mut conn = init_connection(std::path::Path::new(":memory:")).unwrap();
         run_migrations(&mut conn).unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("notepad_task_19_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("notepad_task_19_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let file_1 = temp_dir.join("file_1.txt");
@@ -4531,17 +5098,15 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         };
 
         let op_clone = import_op_id.clone();
-        let import_summary = ImportExportService::execute_import_with_progress(
-            &mut conn,
-            import_req,
-            |prog| {
+        let import_summary =
+            ImportExportService::execute_import_with_progress(&mut conn, import_req, |prog| {
                 import_progress_events.push(prog.clone());
                 // Trigger cancellation after first file is processed
                 if prog.current_index == 1 && prog.imported_count == 1 {
                     ImportExportService::cancel_operation(&op_clone);
                 }
-            },
-        ).unwrap();
+            })
+            .unwrap();
 
         assert_eq!(import_summary.imported_count, 1);
         assert_eq!(import_summary.cancelled_count, 2);
@@ -4549,12 +5114,22 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(import_summary.outcome, Some(OperationOutcome::Cancelled));
         assert_eq!(import_summary.results.len(), 3);
         assert_eq!(import_summary.results[0].status, ImportItemStatus::Imported);
-        assert_eq!(import_summary.results[1].status, ImportItemStatus::Cancelled);
-        assert_eq!(import_summary.results[2].status, ImportItemStatus::Cancelled);
+        assert_eq!(
+            import_summary.results[1].status,
+            ImportItemStatus::Cancelled
+        );
+        assert_eq!(
+            import_summary.results[2].status,
+            ImportItemStatus::Cancelled
+        );
         assert!(!import_progress_events.is_empty());
 
         // Safe boundary verification: Note 1 must remain intact and committed in database
-        let imported_note = NoteRepository::get_by_id(&conn, import_summary.results[0].created_note_id.as_ref().unwrap()).unwrap();
+        let imported_note = NoteRepository::get_by_id(
+            &conn,
+            import_summary.results[0].created_note_id.as_ref().unwrap(),
+        )
+        .unwrap();
         assert!(imported_note.is_some());
         assert_eq!(imported_note.unwrap().title, "Imported First");
 
@@ -4571,7 +5146,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         let note_b = NoteRepository::create(
             &conn,
             CreateNoteDto {
@@ -4580,7 +5156,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         let note_c = NoteRepository::create(
             &conn,
             CreateNoteDto {
@@ -4589,7 +5166,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let export_dest_dir = temp_dir.join("export_cancel_dir");
         let export_op_id = format!("export-op-{}", uuid::Uuid::new_v4());
@@ -4617,26 +5195,40 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                     ImportExportService::cancel_operation(&op_clone_exp);
                 }
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(export_summary.exported_count, 1);
         assert_eq!(export_summary.cancelled_count, 2);
         assert_eq!(export_summary.outcome, Some(OperationOutcome::Cancelled));
         assert_eq!(export_summary.results[0].status, ExportItemStatus::Exported);
-        assert_eq!(export_summary.results[1].status, ExportItemStatus::Cancelled);
-        assert_eq!(export_summary.results[2].status, ExportItemStatus::Cancelled);
+        assert_eq!(
+            export_summary.results[1].status,
+            ExportItemStatus::Cancelled
+        );
+        assert_eq!(
+            export_summary.results[2].status,
+            ExportItemStatus::Cancelled
+        );
 
         // Safe boundary verification: Note Alpha file remains intact on disk
         assert!(export_dest_dir.join("Note Alpha.txt").exists());
-        assert_eq!(std::fs::read_to_string(export_dest_dir.join("Note Alpha.txt")).unwrap(), "Alpha content");
+        assert_eq!(
+            std::fs::read_to_string(export_dest_dir.join("Note Alpha.txt")).unwrap(),
+            "Alpha content"
+        );
 
         // Cancelled notes must NOT exist on disk
         assert!(!export_dest_dir.join("Note Beta.txt").exists());
         assert!(!export_dest_dir.join("Note Gamma.txt").exists());
 
         // Database remains unmutated
-        assert!(NoteRepository::get_by_id(&conn, &note_b.id).unwrap().is_some());
-        assert!(NoteRepository::get_by_id(&conn, &note_c.id).unwrap().is_some());
+        assert!(NoteRepository::get_by_id(&conn, &note_b.id)
+            .unwrap()
+            .is_some());
+        assert!(NoteRepository::get_by_id(&conn, &note_c.id)
+            .unwrap()
+            .is_some());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
@@ -4645,7 +5237,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     fn test_task_12_failure_safe_unit_invariants() {
         let mut conn = setup_test_db();
 
-        let temp_dir = std::env::temp_dir().join(format!("test_task12_unit_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("test_task12_unit_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Non-regular file rejection (directories, FIFOs, special devices)
@@ -4653,15 +5246,20 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         std::fs::create_dir_all(&sub_dir).unwrap();
         let read_res = ImportExportService::read_and_validate_file(&sub_dir, ImportFormat::Txt);
         assert!(read_res.is_err());
-        assert!(read_res.unwrap_err().to_string().contains("not a regular file"));
+        assert!(read_res
+            .unwrap_err()
+            .to_string()
+            .contains("not a regular file"));
 
         // 2. Batch limit check in execute_import (> 500 candidates)
-        let oversized_candidates: Vec<ImportCandidateOverride> = (0..501).map(|i| ImportCandidateOverride {
-            id: format!("cand-{i}"),
-            file_path: format!("/tmp/fake_{i}.txt"),
-            selected: true,
-            custom_title: Some(format!("Fake {i}")),
-        }).collect();
+        let oversized_candidates: Vec<ImportCandidateOverride> = (0..501)
+            .map(|i| ImportCandidateOverride {
+                id: format!("cand-{i}"),
+                file_path: format!("/tmp/fake_{i}.txt"),
+                selected: true,
+                custom_title: Some(format!("Fake {i}")),
+            })
+            .collect();
 
         let req = ImportRequest {
             candidates: oversized_candidates,
@@ -4670,21 +5268,39 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         };
         let err = ImportExportService::execute_import(&mut conn, req).unwrap_err();
         assert!(matches!(err, StorageError::Validation(_)));
-        assert!(err.to_string().contains("exceeds maximum allowed limit of 500 files"));
+        assert!(err
+            .to_string()
+            .contains("exceeds maximum allowed limit of 500 files"));
 
         // 3. Destination atomic write to directory error
         let dir_dest = temp_dir.join("dir_target");
         std::fs::create_dir_all(&dir_dest).unwrap();
-        let atomic_err = ImportExportService::write_file_atomically(&dir_dest, b"test content").unwrap_err();
+        let atomic_err =
+            ImportExportService::write_file_atomically(&dir_dest, b"test content").unwrap_err();
         assert!(matches!(atomic_err, StorageError::Validation(_)));
-        assert!(atomic_err.to_string().contains("is a directory, not a file"));
+        assert!(atomic_err
+            .to_string()
+            .contains("is a directory, not a file"));
 
         // 4. Validate destination path traversal across separators
-        assert!(ImportExportService::validate_destination_path(Path::new("normal/dest/note.txt")).is_ok());
-        assert!(ImportExportService::validate_destination_path(Path::new("..\\outside.txt")).is_err());
-        assert!(ImportExportService::validate_destination_path(Path::new("../outside.txt")).is_err());
-        assert!(ImportExportService::validate_destination_path(Path::new("sub\\..\\outside.txt")).is_err());
-        assert!(ImportExportService::validate_destination_path(Path::new("sub/../outside.txt")).is_err());
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("normal/dest/note.txt"))
+                .is_ok()
+        );
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("..\\outside.txt")).is_err()
+        );
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("../outside.txt")).is_err()
+        );
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("sub\\..\\outside.txt"))
+                .is_err()
+        );
+        assert!(
+            ImportExportService::validate_destination_path(Path::new("sub/../outside.txt"))
+                .is_err()
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

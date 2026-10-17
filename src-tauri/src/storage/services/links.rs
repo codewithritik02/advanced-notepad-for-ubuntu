@@ -1,8 +1,10 @@
-use rusqlite::{params, Connection};
 use crate::storage::crypto::SecretBytes;
 use crate::storage::errors::InternalLinkError;
-use crate::storage::models::{BacklinkItem, LinkTargetLifecycle, ParsedInternalLink, ResolvedLinkTarget};
+use crate::storage::models::{
+    BacklinkItem, LinkTargetLifecycle, ParsedInternalLink, ResolvedLinkTarget,
+};
 use crate::storage::repositories::NoteRepository;
+use rusqlite::{params, Connection};
 
 pub const INTERNAL_LINK_PROTOCOL_PREFIX: &str = "notepad://note/";
 
@@ -49,7 +51,12 @@ impl LinkParser {
     /// Example: `[Meeting Plan](notepad://note/uuid-123)`
     pub fn format_link(target_id: &str, label: Option<&str>) -> String {
         let safe_label = Self::sanitize_label(label.unwrap_or(""));
-        format!("[{}]({}{})", safe_label, INTERNAL_LINK_PROTOCOL_PREFIX, target_id.trim())
+        format!(
+            "[{}]({}{})",
+            safe_label,
+            INTERNAL_LINK_PROTOCOL_PREFIX,
+            target_id.trim()
+        )
     }
 
     /// Parses all valid internal note links within the provided content.
@@ -240,7 +247,11 @@ impl InternalLinkService {
         dek: Option<&SecretBytes>,
     ) -> Result<ResolvedLinkTarget, InternalLinkError> {
         let trimmed_id = target_id.trim();
-        if trimmed_id.is_empty() || trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
+        if trimmed_id.is_empty()
+            || trimmed_id.contains('/')
+            || trimmed_id.contains('\\')
+            || trimmed_id.contains("..")
+        {
             return Ok(ResolvedLinkTarget {
                 target_id: target_id.to_string(),
                 title: None,
@@ -261,8 +272,9 @@ impl InternalLinkService {
         if let Some(row) = rows.next()? {
             let note_id: String = row.get(0)?;
             let raw_title: String = row.get(1)?;
-            let title = NoteRepository::decrypt_field_if_encrypted(&raw_title, &note_id, "title", dek)
-                .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
+            let title =
+                NoteRepository::decrypt_field_if_encrypted(&raw_title, &note_id, "title", dek)
+                    .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
             let notebook_id: Option<String> = row.get(2)?;
             let notebook_name: Option<String> = row.get(3)?;
             let is_deleted: i64 = row.get(4)?;
@@ -319,7 +331,11 @@ impl InternalLinkService {
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
         let trimmed_id = target_note_id.trim();
-        if trimmed_id.is_empty() || trimmed_id.contains('/') || trimmed_id.contains('\\') || trimmed_id.contains("..") {
+        if trimmed_id.is_empty()
+            || trimmed_id.contains('/')
+            || trimmed_id.contains('\\')
+            || trimmed_id.contains("..")
+        {
             return Ok(Vec::new());
         }
 
@@ -344,14 +360,30 @@ impl InternalLinkService {
                 let notebook_name: Option<String> = row.get(4)?;
                 let modified_at: String = row.get(5)?;
 
-                let title = NoteRepository::decrypt_field_if_encrypted(&raw_title, &source_id, "title", Some(key))
-                    .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
-                let content = NoteRepository::decrypt_field_if_encrypted(&raw_content, &source_id, "content", Some(key))
-                    .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
+                let title = NoteRepository::decrypt_field_if_encrypted(
+                    &raw_title,
+                    &source_id,
+                    "title",
+                    Some(key),
+                )
+                .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
+                let content = NoteRepository::decrypt_field_if_encrypted(
+                    &raw_content,
+                    &source_id,
+                    "content",
+                    Some(key),
+                )
+                .map_err(|e| InternalLinkError::Crypto(e.to_string()))?;
 
                 let parsed_links = LinkParser::parse_internal_links(&content);
-                if let Some(matching_link) = parsed_links.into_iter().find(|l| l.target_id == trimmed_id) {
-                    let snippet = Self::extract_snippet(&content, matching_link.start_index, matching_link.end_index);
+                if let Some(matching_link) =
+                    parsed_links.into_iter().find(|l| l.target_id == trimmed_id)
+                {
+                    let snippet = Self::extract_snippet(
+                        &content,
+                        matching_link.start_index,
+                        matching_link.end_index,
+                    );
                     backlinks.push(BacklinkItem {
                         source_note_id: source_id,
                         source_note_title: if title.trim().is_empty() {
@@ -391,8 +423,14 @@ impl InternalLinkService {
 
                 // Verify with canonical LinkParser
                 let parsed_links = LinkParser::parse_internal_links(&content);
-                if let Some(matching_link) = parsed_links.into_iter().find(|l| l.target_id == trimmed_id) {
-                    let snippet = Self::extract_snippet(&content, matching_link.start_index, matching_link.end_index);
+                if let Some(matching_link) =
+                    parsed_links.into_iter().find(|l| l.target_id == trimmed_id)
+                {
+                    let snippet = Self::extract_snippet(
+                        &content,
+                        matching_link.start_index,
+                        matching_link.end_index,
+                    );
                     backlinks.push(BacklinkItem {
                         source_note_id: source_id,
                         source_note_title: if source_title.trim().is_empty() {
@@ -420,15 +458,30 @@ impl InternalLinkService {
             return String::new();
         }
 
-        let start_char_pos = char_indices.iter().position(|&(b, _)| b >= start_idx).unwrap_or(0);
-        let end_char_pos = char_indices.iter().position(|&(b, _)| b >= end_idx).unwrap_or(char_indices.len());
+        let start_char_pos = char_indices
+            .iter()
+            .position(|&(b, _)| b >= start_idx)
+            .unwrap_or(0);
+        let end_char_pos = char_indices
+            .iter()
+            .position(|&(b, _)| b >= end_idx)
+            .unwrap_or(char_indices.len());
 
         let prefix_start = start_char_pos.saturating_sub(SNIPPET_RADIUS);
         let suffix_end = (end_char_pos + SNIPPET_RADIUS).min(char_indices.len());
 
-        let prefix: String = char_indices[prefix_start..start_char_pos].iter().map(|&(_, c)| c).collect();
-        let link_text: String = char_indices[start_char_pos..end_char_pos].iter().map(|&(_, c)| c).collect();
-        let suffix: String = char_indices[end_char_pos..suffix_end].iter().map(|&(_, c)| c).collect();
+        let prefix: String = char_indices[prefix_start..start_char_pos]
+            .iter()
+            .map(|&(_, c)| c)
+            .collect();
+        let link_text: String = char_indices[start_char_pos..end_char_pos]
+            .iter()
+            .map(|&(_, c)| c)
+            .collect();
+        let suffix: String = char_indices[end_char_pos..suffix_end]
+            .iter()
+            .map(|&(_, c)| c)
+            .collect();
 
         let mut snippet = String::new();
         if prefix_start > 0 {
@@ -445,7 +498,6 @@ impl InternalLinkService {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,7 +512,10 @@ mod tests {
         assert_eq!(links[0].raw, "[Project Roadmap](notepad://note/uuid-1234)");
         assert_eq!(links[0].start_index, 10);
         assert_eq!(links[0].end_index, 53);
-        assert_eq!(&content[links[0].start_index..links[0].end_index], links[0].raw);
+        assert_eq!(
+            &content[links[0].start_index..links[0].end_index],
+            links[0].raw
+        );
     }
 
     #[test]
@@ -483,8 +538,14 @@ mod tests {
         assert_eq!(links[0].label, "वार्षिक रिपोर्ट २०२६");
         assert_eq!(links[1].target_id, "uuid-french-2");
         assert_eq!(links[1].label, "Café Études");
-        assert_eq!(&content[links[0].start_index..links[0].end_index], links[0].raw);
-        assert_eq!(&content[links[1].start_index..links[1].end_index], links[1].raw);
+        assert_eq!(
+            &content[links[0].start_index..links[0].end_index],
+            links[0].raw
+        );
+        assert_eq!(
+            &content[links[1].start_index..links[1].end_index],
+            links[1].raw
+        );
     }
 
     #[test]
@@ -523,8 +584,14 @@ mod tests {
         assert!(!LinkParser::is_internal_link_uri("https://example.com"));
         assert!(!LinkParser::is_internal_link_uri(""));
 
-        assert_eq!(LinkParser::extract_target_id_from_uri("notepad://note/abc-123"), Some("abc-123"));
-        assert_eq!(LinkParser::extract_target_id_from_uri("https://notepad://note/123"), None);
+        assert_eq!(
+            LinkParser::extract_target_id_from_uri("notepad://note/abc-123"),
+            Some("abc-123")
+        );
+        assert_eq!(
+            LinkParser::extract_target_id_from_uri("https://notepad://note/123"),
+            None
+        );
     }
 
     #[test]
@@ -552,7 +619,10 @@ mod tests {
             None,
         );
         assert_eq!(token2, "[roadmap](notepad://note/id-200)");
-        assert_eq!(res2, "Check the [roadmap](notepad://note/id-200) for dates.");
+        assert_eq!(
+            res2,
+            "Check the [roadmap](notepad://note/id-200) for dates."
+        );
         assert_eq!(cursor2, 10 + token2.len());
 
         // 3. Insert with custom label
@@ -582,7 +652,8 @@ mod tests {
                 name: "Engineering".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Create active note A in notebook
         let note_a = crate::storage::repositories::NoteRepository::create(
@@ -593,7 +664,8 @@ mod tests {
                 notebook_id: Some(nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Create active note B with duplicate title in unfiled
         let note_b = crate::storage::repositories::NoteRepository::create(
@@ -604,7 +676,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 4. Create active note C to be trashed
         let note_c = crate::storage::repositories::NoteRepository::create(
@@ -614,7 +687,8 @@ mod tests {
                 content: Some("Old guide".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         crate::storage::services::TrashService::soft_delete(&conn, &note_c.id).unwrap();
 
         // Verify Note A resolves as Active with notebook name
@@ -643,14 +717,19 @@ mod tests {
         conn.execute(
             "UPDATE notes SET title = ?1 WHERE id = ?2",
             rusqlite::params!["Modern Cloud Architecture", &note_a.id],
-        ).unwrap();
+        )
+        .unwrap();
         let res_a_renamed = InternalLinkService::resolve_link_target(&conn, &note_a.id).unwrap();
         assert_eq!(res_a_renamed.target_id, note_a.id);
-        assert_eq!(res_a_renamed.title.as_deref(), Some("Modern Cloud Architecture"));
+        assert_eq!(
+            res_a_renamed.title.as_deref(),
+            Some("Modern Cloud Architecture")
+        );
         assert_eq!(res_a_renamed.lifecycle, LinkTargetLifecycle::Active);
 
         // Missing target
-        let res_missing = InternalLinkService::resolve_link_target(&conn, "nonexistent-uuid-999").unwrap();
+        let res_missing =
+            InternalLinkService::resolve_link_target(&conn, "nonexistent-uuid-999").unwrap();
         assert_eq!(res_missing.target_id, "nonexistent-uuid-999");
         assert_eq!(res_missing.lifecycle, LinkTargetLifecycle::Missing);
         assert_eq!(res_missing.title, None);
@@ -665,7 +744,8 @@ mod tests {
 
     #[test]
     fn test_get_backlinks_discovery_and_filtering() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_backlinks_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_backlinks_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -677,7 +757,8 @@ mod tests {
                 name: "Research".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Target note
         let target_note = crate::storage::repositories::NoteRepository::create(
@@ -688,47 +769,65 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Source Note 1 (in Research notebook) linking to target note
         let source_note_1 = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Physics Lecture Notes".to_string()),
-                content: Some(format!("Check out [Quantum Computing](notepad://note/{}) for foundational theory.", target_note.id)),
+                content: Some(format!(
+                    "Check out [Quantum Computing](notepad://note/{}) for foundational theory.",
+                    target_note.id
+                )),
                 notebook_id: Some(nb.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Source Note 2 (unfiled) linking to target note
         let _source_note_2 = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Reading List 2026".to_string()),
-                content: Some(format!("High priority: [Quantum intro](notepad://note/{})", target_note.id)),
+                content: Some(format!(
+                    "High priority: [Quantum intro](notepad://note/{})",
+                    target_note.id
+                )),
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Self-referencing link in target note itself (should be excluded)
         conn.execute(
             "UPDATE notes SET content = ?1 WHERE id = ?2",
-            rusqlite::params![format!("Self reference: [Self](notepad://note/{})", target_note.id), &target_note.id],
-        ).unwrap();
+            rusqlite::params![
+                format!("Self reference: [Self](notepad://note/{})", target_note.id),
+                &target_note.id
+            ],
+        )
+        .unwrap();
 
         // 4. Source Note 3 linking to target note, but trashed (should be excluded)
         let source_note_trashed = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Old Draft".to_string()),
-                content: Some(format!("Old link: [Quantum](notepad://note/{})", target_note.id)),
+                content: Some(format!(
+                    "Old link: [Quantum](notepad://note/{})",
+                    target_note.id
+                )),
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
-        crate::storage::services::TrashService::soft_delete(&conn, &source_note_trashed.id).unwrap();
+        )
+        .unwrap();
+        crate::storage::services::TrashService::soft_delete(&conn, &source_note_trashed.id)
+            .unwrap();
 
         // Query backlinks for target_note.id
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
@@ -737,11 +836,18 @@ mod tests {
         assert_eq!(backlinks.len(), 2);
 
         // Find source 1 in results
-        let backlink_1 = backlinks.iter().find(|b| b.source_note_id == source_note_1.id).expect("Source 1 missing");
+        let backlink_1 = backlinks
+            .iter()
+            .find(|b| b.source_note_id == source_note_1.id)
+            .expect("Source 1 missing");
         assert_eq!(backlink_1.source_note_title, "Physics Lecture Notes");
         assert_eq!(backlink_1.source_notebook_id, Some(nb.id.clone()));
         assert_eq!(backlink_1.source_notebook_name.as_deref(), Some("Research"));
-        assert!(backlink_1.label_snippet.as_ref().unwrap().contains("Quantum Computing"));
+        assert!(backlink_1
+            .label_snippet
+            .as_ref()
+            .unwrap()
+            .contains("Quantum Computing"));
 
         // Verify empty query returns empty list
         let empty_backlinks = InternalLinkService::get_backlinks(&conn, "   ").unwrap();
@@ -770,36 +876,53 @@ mod tests {
                 content: Some("Foundational quantum mechanics".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Note creation with link
         let source_note = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Lecture 1".to_string()),
-                content: Some(format!("Introductory reading: [Quantum](notepad://note/{})", target_note.id)),
+                content: Some(format!(
+                    "Introductory reading: [Quantum](notepad://note/{})",
+                    target_note.id
+                )),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks.len(), 1);
         assert_eq!(backlinks[0].source_note_id, source_note.id);
-        assert!(backlinks[0].label_snippet.as_ref().unwrap().contains("Quantum"));
+        assert!(backlinks[0]
+            .label_snippet
+            .as_ref()
+            .unwrap()
+            .contains("Quantum"));
 
         // 3. Note content update: label changed
         crate::storage::repositories::NoteRepository::update(
             &conn,
             &source_note.id,
             crate::storage::models::UpdateNoteDto {
-                content: Some(format!("Introductory reading: [Advanced Qubits](notepad://note/{})", target_note.id)),
+                content: Some(format!(
+                    "Introductory reading: [Advanced Qubits](notepad://note/{})",
+                    target_note.id
+                )),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks.len(), 1);
-        assert!(backlinks[0].label_snippet.as_ref().unwrap().contains("Advanced Qubits"));
+        assert!(backlinks[0]
+            .label_snippet
+            .as_ref()
+            .unwrap()
+            .contains("Advanced Qubits"));
 
         // 4. Note content update: link removed
         crate::storage::repositories::NoteRepository::update(
@@ -809,20 +932,29 @@ mod tests {
                 content: Some("Introductory reading: general classical physics only.".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(backlinks.len(), 0, "Obsolete link must immediately disappear from backlinks");
+        assert_eq!(
+            backlinks.len(),
+            0,
+            "Obsolete link must immediately disappear from backlinks"
+        );
 
         // 5. Link re-inserted into note content
         crate::storage::repositories::NoteRepository::update(
             &conn,
             &source_note.id,
             crate::storage::models::UpdateNoteDto {
-                content: Some(format!("Reference: [Quantum Mechanics](notepad://note/{})", target_note.id)),
+                content: Some(format!(
+                    "Reference: [Quantum Mechanics](notepad://note/{})",
+                    target_note.id
+                )),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks.len(), 1);
@@ -830,21 +962,38 @@ mod tests {
         // 6. Source note soft deletion (trashed)
         crate::storage::services::TrashService::soft_delete(&conn, &source_note.id).unwrap();
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(backlinks.len(), 0, "Trashed source note must be excluded from backlinks");
+        assert_eq!(
+            backlinks.len(),
+            0,
+            "Trashed source note must be excluded from backlinks"
+        );
 
         // 7. Source note restoration
         crate::storage::services::TrashService::restore(&conn, &source_note.id).unwrap();
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(backlinks.len(), 1, "Restored source note must immediately re-appear in backlinks");
+        assert_eq!(
+            backlinks.len(),
+            1,
+            "Restored source note must immediately re-appear in backlinks"
+        );
 
         // 8. Source note permanent deletion
         let storage_paths = crate::storage::StoragePaths::from_root(temp_dir.clone());
         let storage = crate::storage::attachment_storage::AttachmentStorage::new(storage_paths);
         crate::storage::services::TrashService::soft_delete(&conn, &source_note.id).unwrap();
-        crate::storage::services::TrashService::permanently_delete_note(&conn, &storage, &source_note.id).unwrap();
+        crate::storage::services::TrashService::permanently_delete_note(
+            &conn,
+            &storage,
+            &source_note.id,
+        )
+        .unwrap();
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(backlinks.len(), 0, "Permanently deleted source note must be completely purged");
+        assert_eq!(
+            backlinks.len(),
+            0,
+            "Permanently deleted source note must be completely purged"
+        );
 
         // 9. Responsiveness test across multiple notes
         for i in 0..50 {
@@ -852,10 +1001,14 @@ mod tests {
                 &conn,
                 crate::storage::models::CreateNoteDto {
                     title: Some(format!("Chapter {}", i)),
-                    content: Some(format!("Topic includes [Quantum](notepad://note/{}) in chapter {}.", target_note.id, i)),
+                    content: Some(format!(
+                        "Topic includes [Quantum](notepad://note/{}) in chapter {}.",
+                        target_note.id, i
+                    )),
                     ..Default::default()
                 },
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let start = std::time::Instant::now();
@@ -863,7 +1016,11 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert_eq!(bulk_backlinks.len(), 50);
-        assert!(elapsed.as_millis() < 100, "Query time must remain sub-100ms across 50 candidate notes (actual: {:?})", elapsed);
+        assert!(
+            elapsed.as_millis() < 100,
+            "Query time must remain sub-100ms across 50 candidate notes (actual: {:?})",
+            elapsed
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -871,7 +1028,8 @@ mod tests {
 
     #[test]
     fn test_task_16_broken_links_and_missing_targets_safety() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_broken_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_broken_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -884,7 +1042,8 @@ mod tests {
                 content: Some("Some content".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Also create a second note with the EXACT same title
         let duplicate_title_note = crate::storage::repositories::NoteRepository::create(
@@ -894,12 +1053,18 @@ mod tests {
                 content: Some("Another note with duplicate title".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let storage_paths = crate::storage::StoragePaths::from_root(temp_dir.clone());
         let storage = crate::storage::attachment_storage::AttachmentStorage::new(storage_paths);
         crate::storage::services::TrashService::soft_delete(&conn, &note_to_delete.id).unwrap();
-        crate::storage::services::TrashService::permanently_delete_note(&conn, &storage, &note_to_delete.id).unwrap();
+        crate::storage::services::TrashService::permanently_delete_note(
+            &conn,
+            &storage,
+            &note_to_delete.id,
+        )
+        .unwrap();
 
         // 2. Resolve link to permanently deleted note ID
         let resolved = InternalLinkService::resolve_link_target(&conn, &note_to_delete.id).unwrap();
@@ -910,12 +1075,14 @@ mod tests {
         assert_ne!(resolved.target_id, duplicate_title_note.id);
 
         // 3. Resolve completely arbitrary non-existent UUID
-        let nonexistent = InternalLinkService::resolve_link_target(&conn, "arbitrary-nonexistent-uuid").unwrap();
+        let nonexistent =
+            InternalLinkService::resolve_link_target(&conn, "arbitrary-nonexistent-uuid").unwrap();
         assert_eq!(nonexistent.lifecycle, LinkTargetLifecycle::Missing);
         assert_eq!(nonexistent.title, None);
 
         // 4. Verify duplicate title note still resolves cleanly to its own distinct UUID
-        let duplicate_resolved = InternalLinkService::resolve_link_target(&conn, &duplicate_title_note.id).unwrap();
+        let duplicate_resolved =
+            InternalLinkService::resolve_link_target(&conn, &duplicate_title_note.id).unwrap();
         assert_eq!(duplicate_resolved.lifecycle, LinkTargetLifecycle::Active);
         assert_eq!(duplicate_resolved.target_id, duplicate_title_note.id);
         assert_eq!(duplicate_resolved.title.as_deref(), Some("Temporary Guide"));
@@ -926,7 +1093,8 @@ mod tests {
 
     #[test]
     fn test_task_17_trash_and_recovery_link_lifecycle_integration() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_trash_lifecycle_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_trash_lifecycle_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -939,10 +1107,14 @@ mod tests {
                 content: Some("Milestones and delivery timelines".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Create Source Note S linking to T
-        let initial_source_content = format!("Foundational plan: [Roadmap](notepad://note/{}) - please review.", target_note.id);
+        let initial_source_content = format!(
+            "Foundational plan: [Roadmap](notepad://note/{}) - please review.",
+            target_note.id
+        );
         let source_note = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
@@ -950,37 +1122,53 @@ mod tests {
                 content: Some(initial_source_content.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 3. Move Target Note T into Trash
         crate::storage::services::TrashService::soft_delete(&conn, &target_note.id).unwrap();
 
         // Target resolves as Trashed
-        let resolved_trashed = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        let resolved_trashed =
+            InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(resolved_trashed.lifecycle, LinkTargetLifecycle::Trashed);
-        assert_eq!(resolved_trashed.title.as_deref(), Some("Project Roadmap 2026"));
+        assert_eq!(
+            resolved_trashed.title.as_deref(),
+            Some("Project Roadmap 2026")
+        );
 
         // Crucial invariant: Source note content is completely preserved and never rewritten
-        let fetched_source = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
+        let fetched_source =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
         assert_eq!(fetched_source.content, initial_source_content);
 
         // 4. Restore Target Note T from Trash
         crate::storage::services::TrashService::restore(&conn, &target_note.id).unwrap();
 
         // Target immediately resolves as Active without requiring link re-creation
-        let resolved_restored = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        let resolved_restored =
+            InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(resolved_restored.lifecycle, LinkTargetLifecycle::Active);
-        assert_eq!(resolved_restored.title.as_deref(), Some("Project Roadmap 2026"));
+        assert_eq!(
+            resolved_restored.title.as_deref(),
+            Some("Project Roadmap 2026")
+        );
 
         // 5. Move Source Note S into Trash
         crate::storage::services::TrashService::soft_delete(&conn, &source_note.id).unwrap();
 
         // Trashed source note is safely excluded from incoming backlinks
-        let backlinks_trashed_source = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
+        let backlinks_trashed_source =
+            InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks_trashed_source.len(), 0);
 
         // Source note content is preserved while in trash
-        let source_in_trash = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
+        let source_in_trash =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
         assert!(source_in_trash.is_deleted);
         assert_eq!(source_in_trash.content, initial_source_content);
 
@@ -988,7 +1176,8 @@ mod tests {
         crate::storage::services::TrashService::restore(&conn, &source_note.id).unwrap();
 
         // Restored source note immediately re-appears in target note's backlinks
-        let backlinks_restored_source = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
+        let backlinks_restored_source =
+            InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks_restored_source.len(), 1);
         assert_eq!(backlinks_restored_source[0].source_note_id, source_note.id);
 
@@ -996,15 +1185,27 @@ mod tests {
         let storage_paths = crate::storage::StoragePaths::from_root(temp_dir.clone());
         let storage = crate::storage::attachment_storage::AttachmentStorage::new(storage_paths);
         crate::storage::services::TrashService::soft_delete(&conn, &target_note.id).unwrap();
-        crate::storage::services::TrashService::permanently_delete_note(&conn, &storage, &target_note.id).unwrap();
+        crate::storage::services::TrashService::permanently_delete_note(
+            &conn,
+            &storage,
+            &target_note.id,
+        )
+        .unwrap();
 
         // Target resolves as Missing
-        let resolved_perm_deleted = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
-        assert_eq!(resolved_perm_deleted.lifecycle, LinkTargetLifecycle::Missing);
+        let resolved_perm_deleted =
+            InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        assert_eq!(
+            resolved_perm_deleted.lifecycle,
+            LinkTargetLifecycle::Missing
+        );
         assert_eq!(resolved_perm_deleted.title, None);
 
         // Source note content remains completely intact (no cascade deletion of source content)
-        let source_after_target_deleted = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
+        let source_after_target_deleted =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
         assert_eq!(source_after_target_deleted.content, initial_source_content);
 
         drop(conn);
@@ -1013,7 +1214,8 @@ mod tests {
 
     #[test]
     fn test_task_18_renames_duplicate_titles_unicode_and_moves() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_renames_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_renames_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -1025,7 +1227,8 @@ mod tests {
                 name: "Engineering".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let nb_archive = crate::storage::repositories::NotebookRepository::create(
             &conn,
@@ -1033,7 +1236,8 @@ mod tests {
                 name: "Archive".to_string(),
                 parent_id: None,
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Scenario: Target Note Renamed
         let target_note = crate::storage::repositories::NoteRepository::create(
@@ -1044,16 +1248,21 @@ mod tests {
                 notebook_id: Some(nb_engineering.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let source_note = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Overview".to_string()),
-                content: Some(format!("See [Initial Specs](notepad://note/{}) for details.", target_note.id)),
+                content: Some(format!(
+                    "See [Initial Specs](notepad://note/{}) for details.",
+                    target_note.id
+                )),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Rename the target note in SQLite
         crate::storage::repositories::NoteRepository::update(
@@ -1063,18 +1272,35 @@ mod tests {
                 title: Some("Refactored Distributed Architecture v2".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Resolution continues to work seamlessly by UUID, yielding the updated title
-        let resolved_renamed = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        let resolved_renamed =
+            InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(resolved_renamed.target_id, target_note.id);
         assert_eq!(resolved_renamed.lifecycle, LinkTargetLifecycle::Active);
-        assert_eq!(resolved_renamed.title.as_deref(), Some("Refactored Distributed Architecture v2"));
-        assert_eq!(resolved_renamed.notebook_name.as_deref(), Some("Engineering"));
+        assert_eq!(
+            resolved_renamed.title.as_deref(),
+            Some("Refactored Distributed Architecture v2")
+        );
+        assert_eq!(
+            resolved_renamed.notebook_name.as_deref(),
+            Some("Engineering")
+        );
 
         // Source note was NOT modified or rewritten on target rename
-        let source_unaltered = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
-        assert_eq!(source_unaltered.content, format!("See [Initial Specs](notepad://note/{}) for details.", target_note.id));
+        let source_unaltered =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            source_unaltered.content,
+            format!(
+                "See [Initial Specs](notepad://note/{}) for details.",
+                target_note.id
+            )
+        );
 
         // 2. Scenario: Two notes share the EXACT same title
         let note_a = crate::storage::repositories::NoteRepository::create(
@@ -1085,7 +1311,8 @@ mod tests {
                 notebook_id: Some(nb_engineering.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let note_b = crate::storage::repositories::NoteRepository::create(
             &conn,
@@ -1095,7 +1322,8 @@ mod tests {
                 notebook_id: None,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_ne!(note_a.id, note_b.id);
 
@@ -1115,11 +1343,16 @@ mod tests {
                 content: Some("Unicode research content".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
-        let res_unicode = InternalLinkService::resolve_link_target(&conn, &unicode_note.id).unwrap();
+        let res_unicode =
+            InternalLinkService::resolve_link_target(&conn, &unicode_note.id).unwrap();
         assert_eq!(res_unicode.lifecycle, LinkTargetLifecycle::Active);
-        assert_eq!(res_unicode.title.as_deref(), Some("योजना एवं अनुसंधान २०२६ (Résumé & Café)"));
+        assert_eq!(
+            res_unicode.title.as_deref(),
+            Some("योजना एवं अनुसंधान २०२६ (Résumé & Café)")
+        );
 
         // 4. Scenario: Note title contains Markdown punctuation (*, _, #, -, :, ())
         let punctuated_note = crate::storage::repositories::NoteRepository::create(
@@ -1129,13 +1362,20 @@ mod tests {
                 content: Some("Release notes content".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
-        let formatted_link = LinkParser::format_link(&punctuated_note.id, Some("Release v3.0.0 (Final) - #1: High_Priority*"));
+        let formatted_link = LinkParser::format_link(
+            &punctuated_note.id,
+            Some("Release v3.0.0 (Final) - #1: High_Priority*"),
+        );
         let parsed_links = LinkParser::parse_internal_links(&formatted_link);
         assert_eq!(parsed_links.len(), 1);
         assert_eq!(parsed_links[0].target_id, punctuated_note.id);
-        assert_eq!(parsed_links[0].label, "Release v3.0.0 (Final) - #1: High_Priority*");
+        assert_eq!(
+            parsed_links[0].label,
+            "Release v3.0.0 (Final) - #1: High_Priority*"
+        );
 
         // Empty title handling
         let empty_note = crate::storage::repositories::NoteRepository::create(
@@ -1145,7 +1385,8 @@ mod tests {
                 content: Some("Untitled content".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         let res_empty = InternalLinkService::resolve_link_target(&conn, &empty_note.id).unwrap();
         assert_eq!(res_empty.lifecycle, LinkTargetLifecycle::Active);
         assert_eq!(res_empty.title.as_deref(), Some("Untitled Note"));
@@ -1158,7 +1399,8 @@ mod tests {
                 notebook_id: Some(nb_archive.id.clone()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let res_moved = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(res_moved.target_id, target_note.id);
@@ -1172,7 +1414,8 @@ mod tests {
 
     #[test]
     fn test_task_19_txt_and_md_note_formats() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_links_formats_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_links_formats_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -1182,11 +1425,14 @@ mod tests {
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("System Architecture".to_string()),
-                content: Some("# System Architecture\n\nDetailed breakdown of components.".to_string()),
+                content: Some(
+                    "# System Architecture\n\nDetailed breakdown of components.".to_string(),
+                ),
                 format: Some("md".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(target_note.format, "md");
 
         // Source Note 1: TXT Note linking to target
@@ -1221,7 +1467,11 @@ mod tests {
 
         // Verify backlinks are discovered across both TXT and MD formats
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(backlinks.len(), 2, "Backlinks must discover incoming links from both TXT and MD notes");
+        assert_eq!(
+            backlinks.len(),
+            2,
+            "Backlinks must discover incoming links from both TXT and MD notes"
+        );
 
         // Verify format switching does not affect link integrity
         let updated_txt = crate::storage::repositories::NoteRepository::update(
@@ -1231,20 +1481,30 @@ mod tests {
                 format: Some("md".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(updated_txt.format, "md");
 
-        let backlinks_after_toggle = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
+        let backlinks_after_toggle =
+            InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(backlinks_after_toggle.len(), 2);
 
         // Verify plain-text note parsing does not falsely match brackets [TODO] or code brackets
         let raw_parsed = LinkParser::parse_internal_links(&txt_source.content);
-        assert_eq!(raw_parsed.len(), 1, "Only notepad://note/ URI should be parsed as internal link");
+        assert_eq!(
+            raw_parsed.len(),
+            1,
+            "Only notepad://note/ URI should be parsed as internal link"
+        );
         assert_eq!(raw_parsed[0].target_id, target_note.id);
         assert_eq!(raw_parsed[0].label, "System Architecture");
 
         let md_parsed = LinkParser::parse_internal_links(&md_source.content);
-        assert_eq!(md_parsed.len(), 1, "Markdown images and code brackets must not match as internal links");
+        assert_eq!(
+            md_parsed.len(),
+            1,
+            "Markdown images and code brackets must not match as internal links"
+        );
         assert_eq!(md_parsed[0].target_id, target_note.id);
         assert_eq!(md_parsed[0].label, "Architecture");
 
@@ -1254,7 +1514,8 @@ mod tests {
 
     #[test]
     fn test_task_22_automated_parser_service_and_database_suite() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_task22_suite_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_task22_suite_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).expect("Init failed");
         crate::storage::migrations::run_migrations(&mut conn).expect("Migrations failed");
@@ -1264,7 +1525,10 @@ mod tests {
         for i in 0..1500 {
             large_content.push_str("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt. ");
             if i % 150 == 0 {
-                large_content.push_str(&format!("[Reference Link {}](notepad://note/target-perf-{}) ", i, i));
+                large_content.push_str(&format!(
+                    "[Reference Link {}](notepad://note/target-perf-{}) ",
+                    i, i
+                ));
             }
         }
         assert!(large_content.len() > 100_000, "Content must exceed 100KB");
@@ -1273,8 +1537,16 @@ mod tests {
         let parsed_large = LinkParser::parse_internal_links(&large_content);
         let parse_elapsed = parse_start.elapsed();
 
-        assert_eq!(parsed_large.len(), 10, "Must correctly identify all 10 embedded links in 100KB text");
-        assert!(parse_elapsed.as_millis() < 500, "100KB linear parsing must complete without pathological time (actual: {:?})", parse_elapsed);
+        assert_eq!(
+            parsed_large.len(),
+            10,
+            "Must correctly identify all 10 embedded links in 100KB text"
+        );
+        assert!(
+            parse_elapsed.as_millis() < 500,
+            "100KB linear parsing must complete without pathological time (actual: {:?})",
+            parse_elapsed
+        );
 
         // 2. Parsing: Malformed and boundary cases
         let malformed_content = "\
@@ -1287,7 +1559,11 @@ mod tests {
             [unclosed](notepad://note/valid-target \
             regular text [brackets without scheme] more text";
         let malformed_parsed = LinkParser::parse_internal_links(malformed_content);
-        assert_eq!(malformed_parsed.len(), 1, "Only exact [label](notepad://note/<valid-id>) should be parsed");
+        assert_eq!(
+            malformed_parsed.len(),
+            1,
+            "Only exact [label](notepad://note/<valid-id>) should be parsed"
+        );
         assert_eq!(malformed_parsed[0].target_id, "valid-target-uuid");
         assert_eq!(malformed_parsed[0].label, "valid link");
 
@@ -1324,7 +1600,10 @@ mod tests {
             Some("Default Title"),
             Some("Custom Word"),
         );
-        assert_eq!(res_range, "Select [Custom Word](notepad://note/target-id-word) for link.");
+        assert_eq!(
+            res_range,
+            "Select [Custom Word](notepad://note/target-id-word) for link."
+        );
 
         // 4. Resolution: Security & Malicious Identifier Rejection
         let injection_attempts = vec![
@@ -1338,7 +1617,12 @@ mod tests {
         ];
         for bad_id in injection_attempts {
             let res = InternalLinkService::resolve_link_target(&conn, bad_id).unwrap();
-            assert_eq!(res.lifecycle, LinkTargetLifecycle::Missing, "Bad/missing ID '{}' must safely resolve as Missing", bad_id);
+            assert_eq!(
+                res.lifecycle,
+                LinkTargetLifecycle::Missing,
+                "Bad/missing ID '{}' must safely resolve as Missing",
+                bad_id
+            );
         }
 
         // 5. Database & Service Integration: Target lifecycle and backlink synchronization
@@ -1350,17 +1634,22 @@ mod tests {
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let source_note = crate::storage::repositories::NoteRepository::create(
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Service Layer Architecture".to_string()),
-                content: Some(format!("Depends on [Database Engine](notepad://note/{}) for queries.", target_note.id)),
+                content: Some(format!(
+                    "Depends on [Database Engine](notepad://note/{}) for queries.",
+                    target_note.id
+                )),
                 format: Some("txt".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify active target resolution and initial backlinks
         let res_target = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
@@ -1370,7 +1659,10 @@ mod tests {
         let initial_backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
         assert_eq!(initial_backlinks.len(), 1);
         assert_eq!(initial_backlinks[0].source_note_id, source_note.id);
-        assert_eq!(initial_backlinks[0].source_note_title, "Service Layer Architecture");
+        assert_eq!(
+            initial_backlinks[0].source_note_title,
+            "Service Layer Architecture"
+        );
 
         // Target Rename: Link remains active, title updates, source content untouched
         crate::storage::repositories::NoteRepository::update(
@@ -1380,14 +1672,26 @@ mod tests {
                 title: Some("SQLite Database Engine v2".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let res_renamed = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(res_renamed.lifecycle, LinkTargetLifecycle::Active);
-        assert_eq!(res_renamed.title.as_deref(), Some("SQLite Database Engine v2"));
+        assert_eq!(
+            res_renamed.title.as_deref(),
+            Some("SQLite Database Engine v2")
+        );
 
-        let current_source = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
-        assert!(current_source.content.contains("Depends on [Database Engine](notepad://note/"), "Source note content must remain unchanged");
+        let current_source =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
+        assert!(
+            current_source
+                .content
+                .contains("Depends on [Database Engine](notepad://note/"),
+            "Source note content must remain unchanged"
+        );
 
         // Target Trashed: lifecycle becomes Trashed
         crate::storage::services::TrashService::soft_delete(&conn, &target_note.id).unwrap();
@@ -1396,20 +1700,32 @@ mod tests {
 
         // Target Restored: lifecycle returns to Active
         crate::storage::services::TrashService::restore(&conn, &target_note.id).unwrap();
-        let res_restored = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
+        let res_restored =
+            InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(res_restored.lifecycle, LinkTargetLifecycle::Active);
 
         // Target Permanently Deleted: lifecycle becomes Missing, source note content untouched
         let storage_paths = crate::storage::StoragePaths::from_root(temp_dir.clone());
         let storage = crate::storage::attachment_storage::AttachmentStorage::new(storage_paths);
         crate::storage::services::TrashService::soft_delete(&conn, &target_note.id).unwrap();
-        crate::storage::services::TrashService::permanently_delete_note(&conn, &storage, &target_note.id).unwrap();
+        crate::storage::services::TrashService::permanently_delete_note(
+            &conn,
+            &storage,
+            &target_note.id,
+        )
+        .unwrap();
 
         let res_deleted = InternalLinkService::resolve_link_target(&conn, &target_note.id).unwrap();
         assert_eq!(res_deleted.lifecycle, LinkTargetLifecycle::Missing);
 
-        let final_source = crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id).unwrap().unwrap();
-        assert_eq!(final_source.content, source_note.content, "Source note content must never be corrupted by target deletion");
+        let final_source =
+            crate::storage::repositories::NoteRepository::get_by_id(&conn, &source_note.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            final_source.content, source_note.content,
+            "Source note content must never be corrupted by target deletion"
+        );
 
         // When source note removes the link, backlinks for target note becomes 0
         crate::storage::repositories::NoteRepository::update(
@@ -1419,10 +1735,15 @@ mod tests {
                 content: Some("Architecture notes without links.".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let final_backlinks = InternalLinkService::get_backlinks(&conn, &target_note.id).unwrap();
-        assert_eq!(final_backlinks.len(), 0, "Backlinks must update when source content removes link");
+        assert_eq!(
+            final_backlinks.len(),
+            0,
+            "Backlinks must update when source content removes link"
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1430,7 +1751,8 @@ mod tests {
 
     #[test]
     fn test_task_24_security_reliability_and_performance_verification() {
-        let temp_dir = std::env::temp_dir().join(format!("notepad_test_links_t24_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("notepad_test_links_t24_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test.db");
 
@@ -1467,7 +1789,8 @@ mod tests {
                 content: Some("Target A".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let note_b = crate::storage::repositories::NoteRepository::create(
             &conn,
@@ -1476,7 +1799,8 @@ mod tests {
                 content: Some("Target B".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         // Resolving by ID resolves strictly to correct note
         let res_a = InternalLinkService::resolve_link_target(&conn, &note_a.id).unwrap();
@@ -1491,21 +1815,30 @@ mod tests {
         assert_eq!(res_b_trashed.target_id, note_b.id);
 
         // 4. Reliability & Performance: Zero links note short-circuit
-        let empty_content = "This is a note with no links whatsoever. Just regular text.".repeat(50);
+        let empty_content =
+            "This is a note with no links whatsoever. Just regular text.".repeat(50);
         let parsed_empty = LinkParser::parse_internal_links(&empty_content);
         assert_eq!(parsed_empty.len(), 0);
 
         // 5. Performance: 100KB note with 100 links parses linearly
         let mut large_content = String::with_capacity(120_000);
         for i in 0..100 {
-            large_content.push_str(&format!("Paragraph {} discussing [Note {}](notepad://note/uuid-target-{}) in detail. ", i, i, i));
-            large_content.push_str(&"Filler text without links for performance testing. ".repeat(18));
+            large_content.push_str(&format!(
+                "Paragraph {} discussing [Note {}](notepad://note/uuid-target-{}) in detail. ",
+                i, i, i
+            ));
+            large_content
+                .push_str(&"Filler text without links for performance testing. ".repeat(18));
         }
         let start_time = std::time::Instant::now();
         let parsed_large = LinkParser::parse_internal_links(&large_content);
         let elapsed = start_time.elapsed();
         assert_eq!(parsed_large.len(), 100);
-        assert!(elapsed.as_millis() < 500, "100KB note parsing took too long: {:?}", elapsed);
+        assert!(
+            elapsed.as_millis() < 500,
+            "100KB note parsing took too long: {:?}",
+            elapsed
+        );
 
         // 6. Reliability: Backlink query handles multiple source notes
         let target_shared = crate::storage::repositories::NoteRepository::create(
@@ -1515,21 +1848,30 @@ mod tests {
                 content: Some("Hub body".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         for i in 0..15 {
             crate::storage::repositories::NoteRepository::create(
                 &conn,
                 crate::storage::models::CreateNoteDto {
                     title: Some(format!("Source Note {}", i)),
-                    content: Some(format!("Link to hub: [Hub](notepad://note/{})", target_shared.id)),
+                    content: Some(format!(
+                        "Link to hub: [Hub](notepad://note/{})",
+                        target_shared.id
+                    )),
                     ..Default::default()
                 },
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let backlinks = InternalLinkService::get_backlinks(&conn, &target_shared.id).unwrap();
-        assert_eq!(backlinks.len(), 15, "All 15 source notes must be indexed as backlinks");
+        assert_eq!(
+            backlinks.len(),
+            15,
+            "All 15 source notes must be indexed as backlinks"
+        );
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -1537,7 +1879,8 @@ mod tests {
 
     #[test]
     fn test_internal_links_encrypted_resolution_and_backlinks() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_links_enc_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_links_enc_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = crate::storage::database::init_connection(&db_path).unwrap();
@@ -1554,23 +1897,23 @@ mod tests {
                 ..Default::default()
             },
             Some(&dek),
-        ).unwrap();
+        )
+        .unwrap();
 
         // 2. Resolve link target WITH DEK -> resolves decrypted title
-        let resolved_unlocked = InternalLinkService::resolve_link_target_with_key(
-            &conn,
-            &target_note.id,
-            Some(&dek),
-        ).unwrap();
-        assert_eq!(resolved_unlocked.title.as_deref(), Some("Top Secret Target"));
+        let resolved_unlocked =
+            InternalLinkService::resolve_link_target_with_key(&conn, &target_note.id, Some(&dek))
+                .unwrap();
+        assert_eq!(
+            resolved_unlocked.title.as_deref(),
+            Some("Top Secret Target")
+        );
         assert_eq!(resolved_unlocked.lifecycle, LinkTargetLifecycle::Active);
 
         // 3. Resolve link target WITHOUT DEK -> rejects because note title is encrypted
-        let resolved_locked_err = InternalLinkService::resolve_link_target_with_key(
-            &conn,
-            &target_note.id,
-            None,
-        ).unwrap_err();
+        let resolved_locked_err =
+            InternalLinkService::resolve_link_target_with_key(&conn, &target_note.id, None)
+                .unwrap_err();
         assert!(matches!(resolved_locked_err, InternalLinkError::Crypto(_)));
 
         // 4. Create source note with encrypted content pointing to target
@@ -1579,26 +1922,30 @@ mod tests {
             &conn,
             crate::storage::models::CreateNoteDto {
                 title: Some("Source Document".to_string()),
-                content: Some(format!("Please see confidential document [Target Note]({}) for details.", link_uri)),
+                content: Some(format!(
+                    "Please see confidential document [Target Note]({}) for details.",
+                    link_uri
+                )),
                 ..Default::default()
             },
             Some(&dek),
-        ).unwrap();
+        )
+        .unwrap();
 
         // 5. Discover backlinks WITH DEK -> decrypts content and extracts snippet
-        let backlinks = InternalLinkService::get_backlinks_with_key(
-            &conn,
-            &target_note.id,
-            Some(&dek),
-        ).unwrap();
+        let backlinks =
+            InternalLinkService::get_backlinks_with_key(&conn, &target_note.id, Some(&dek))
+                .unwrap();
         assert_eq!(backlinks.len(), 1);
         assert_eq!(backlinks[0].source_note_title, "Source Document");
         assert!(backlinks[0].label_snippet.is_some());
-        assert!(backlinks[0].label_snippet.as_ref().unwrap().contains("confidential document"));
+        assert!(backlinks[0]
+            .label_snippet
+            .as_ref()
+            .unwrap()
+            .contains("confidential document"));
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-
-

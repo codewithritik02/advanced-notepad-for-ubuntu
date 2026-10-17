@@ -107,7 +107,9 @@ pub fn validate_note_content(content: Option<&str>) -> Result<(), StorageError> 
 pub fn validate_tag_name(name: &str) -> Result<(), StorageError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(StorageError::Validation("Tag name cannot be empty".to_string()));
+        return Err(StorageError::Validation(
+            "Tag name cannot be empty".to_string(),
+        ));
     }
     let char_count = trimmed.chars().count();
     if char_count > MAX_TAG_NAME_CHARS {
@@ -122,7 +124,9 @@ pub fn validate_tag_name(name: &str) -> Result<(), StorageError> {
 pub fn validate_notebook_name(name: &str) -> Result<(), StorageError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(StorageError::Validation("Notebook name cannot be empty".to_string()));
+        return Err(StorageError::Validation(
+            "Notebook name cannot be empty".to_string(),
+        ));
     }
     let char_count = trimmed.chars().count();
     if char_count > MAX_NOTEBOOK_NAME_CHARS {
@@ -136,7 +140,9 @@ pub fn validate_notebook_name(name: &str) -> Result<(), StorageError> {
 /// Validates requested bulk item count.
 pub fn validate_bulk_operation_count(count: usize) -> Result<(), StorageError> {
     if count == 0 {
-        return Err(StorageError::Validation("No items selected for bulk operation.".to_string()));
+        return Err(StorageError::Validation(
+            "No items selected for bulk operation.".to_string(),
+        ));
     }
     if count > MAX_BULK_OPERATION_ITEMS {
         return Err(StorageError::Validation(format!(
@@ -169,7 +175,10 @@ mod tests {
         let exceed_501 = "a".repeat(501);
         let res = validate_note_title(Some(&exceed_501));
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("exceeds the maximum allowed limit of 500 characters"));
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds the maximum allowed limit of 500 characters"));
     }
 
     #[test]
@@ -185,7 +194,10 @@ mod tests {
         let oversized = "x".repeat(MAX_NOTE_CONTENT_BYTES + 1);
         let res = validate_note_content(Some(&oversized));
         assert!(res.is_err());
-        assert!(res.unwrap_err().to_string().contains("exceeds the maximum allowed limit of 10 MB"));
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds the maximum allowed limit of 10 MB"));
     }
 
     #[test]

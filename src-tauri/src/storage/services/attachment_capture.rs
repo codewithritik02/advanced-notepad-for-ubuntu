@@ -1,6 +1,6 @@
+use rusqlite::Connection;
 use std::fs;
 use std::path::{Path, PathBuf};
-use rusqlite::Connection;
 
 use crate::storage::errors::BackupError;
 use crate::storage::models::{BackupAttachmentItem, BackupAttachmentsSummary};
@@ -71,11 +71,13 @@ impl AttachmentCaptureManager {
             }
 
             // 1. Sanitize relative path against directory traversal
-            let sanitized_subpath = StoragePaths::sanitize_subpath(
-                &paths.attachments_dir,
-                Path::new(trimmed_rel),
-            )
-            .map_err(|e| BackupError::ValidationFailed(format!("Unsafe attachment path '{trimmed_rel}': {e}")))?;
+            let sanitized_subpath =
+                StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(trimmed_rel))
+                    .map_err(|e| {
+                        BackupError::ValidationFailed(format!(
+                            "Unsafe attachment path '{trimmed_rel}': {e}"
+                        ))
+                    })?;
 
             // 2. Verify file exists on disk
             if !sanitized_subpath.exists() {
@@ -143,9 +145,9 @@ impl AttachmentCaptureManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use crate::storage::database::init_connection;
     use crate::storage::migrations::run_migrations;
+    use std::io::Write;
     use uuid::Uuid;
 
     #[test]
@@ -165,7 +167,9 @@ mod tests {
             rusqlite::params![note_id, now],
         ).expect("Insert note");
 
-        let note_dir = paths.get_note_attachments_dir(&note_id).expect("Get note dir");
+        let note_dir = paths
+            .get_note_attachments_dir(&note_id)
+            .expect("Get note dir");
         let stored_filename = format!("{}.pdf", Uuid::new_v4());
         let file_path = note_dir.join(&stored_filename);
 
@@ -194,7 +198,10 @@ mod tests {
         assert_eq!(first.item.id, att_id);
         assert_eq!(first.item.file_name, "Sample Report.pdf");
         assert_eq!(first.item.file_size, file_bytes.len() as u64);
-        assert_eq!(first.archive_entry_path, format!("attachments/{note_id}/{stored_filename}"));
+        assert_eq!(
+            first.archive_entry_path,
+            format!("attachments/{note_id}/{stored_filename}")
+        );
         assert!(!first.item.sha256.is_empty());
 
         // 3. Test missing attachment file detection

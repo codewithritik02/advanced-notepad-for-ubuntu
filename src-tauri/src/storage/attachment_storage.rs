@@ -1,7 +1,7 @@
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::storage::errors::AttachmentError;
@@ -32,7 +32,8 @@ impl<'a> Drop for TempFileGuard<'a> {
 }
 
 /// Default maximum allowed file size for attachments: 100 MiB
-pub const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 = crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES;
+pub const DEFAULT_MAX_ATTACHMENT_SIZE_BYTES: u64 =
+    crate::storage::limits::MAX_ATTACHMENT_SIZE_BYTES;
 
 /// Result of storing a source file in managed attachment storage
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,10 +116,12 @@ impl AttachmentStorage {
             .get_note_attachments_dir(trimmed)
             .map_err(|e| match e {
                 crate::storage::errors::StorageError::Io(io_err) => match io_err.kind() {
-                    io::ErrorKind::PermissionDenied => {
-                        AttachmentError::PermissionDenied("Permission denied accessing attachments directory".to_string())
+                    io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
+                        "Permission denied accessing attachments directory".to_string(),
+                    ),
+                    _ if io_err.raw_os_error() == Some(28) => {
+                        AttachmentError::InsufficientDiskSpace
                     }
-                    _ if io_err.raw_os_error() == Some(28) => AttachmentError::InsufficientDiskSpace,
                     _ => AttachmentError::Io(io_err),
                 },
                 other => AttachmentError::FileOperationFailed(other.to_string()),
@@ -146,11 +149,9 @@ impl AttachmentStorage {
             ));
         }
 
-        let full_path = StoragePaths::sanitize_subpath(
-            &self.paths.attachments_dir,
-            Path::new(trimmed),
-        )
-        .map_err(|e| AttachmentError::InvalidRequest(e.to_string()))?;
+        let full_path =
+            StoragePaths::sanitize_subpath(&self.paths.attachments_dir, Path::new(trimmed))
+                .map_err(|e| AttachmentError::InvalidRequest(e.to_string()))?;
 
         // Containment check: prevent symlink escapes if the target exists
         if full_path.exists() {
@@ -180,12 +181,18 @@ impl AttachmentStorage {
     pub fn get_metadata(&self, relative_path: &str) -> Result<fs::Metadata, AttachmentError> {
         let full_path = self.resolve_safe_path(relative_path)?;
         if !full_path.is_file() {
-            return Err(AttachmentError::ManagedFileMissing(relative_path.to_string()));
+            return Err(AttachmentError::ManagedFileMissing(
+                relative_path.to_string(),
+            ));
         }
 
         fs::metadata(&full_path).map_err(|e| match e.kind() {
-            io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(relative_path.to_string()),
-            io::ErrorKind::NotFound => AttachmentError::ManagedFileMissing(relative_path.to_string()),
+            io::ErrorKind::PermissionDenied => {
+                AttachmentError::PermissionDenied(relative_path.to_string())
+            }
+            io::ErrorKind::NotFound => {
+                AttachmentError::ManagedFileMissing(relative_path.to_string())
+            }
             _ => AttachmentError::Io(e),
         })
     }
@@ -226,25 +233,35 @@ impl AttachmentStorage {
 
         if let Some(key) = dek {
             let aad = format!("attachments:{}:{stored_name}", note_id.trim());
-            crate::storage::crypto::encrypt_file_to_file(source_path, &temp_path, key, aad.as_bytes())
-                .map_err(|e| match e {
-                    crate::storage::errors::CryptoError::EncryptionFailed(ref msg)
-                        if msg.contains("Insufficient disk space") =>
-                    {
-                        AttachmentError::InsufficientDiskSpace
-                    }
-                    other => AttachmentError::FileOperationFailed(format!("Failed to encrypt attachment file: {other}")),
-                })?;
+            crate::storage::crypto::encrypt_file_to_file(
+                source_path,
+                &temp_path,
+                key,
+                aad.as_bytes(),
+            )
+            .map_err(|e| match e {
+                crate::storage::errors::CryptoError::EncryptionFailed(ref msg)
+                    if msg.contains("Insufficient disk space") =>
+                {
+                    AttachmentError::InsufficientDiskSpace
+                }
+                other => AttachmentError::FileOperationFailed(format!(
+                    "Failed to encrypt attachment file: {other}"
+                )),
+            })?;
 
             // Verify stored encrypted file size on disk matches expected envelope
             let meta = fs::metadata(&temp_path).map_err(|e| match e.kind() {
-                io::ErrorKind::PermissionDenied => {
-                    AttachmentError::PermissionDenied("Permission denied inspecting staged encrypted attachment".to_string())
-                }
-                _ => AttachmentError::FileOperationFailed(format!("Failed to inspect staged encrypted attachment: {e}")),
+                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
+                    "Permission denied inspecting staged encrypted attachment".to_string(),
+                ),
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to inspect staged encrypted attachment: {e}"
+                )),
             })?;
 
-            let expected_size = validated.file_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
+            let expected_size =
+                validated.file_size + crate::storage::crypto::MIN_ENVELOPE_LEN as u64;
             if meta.len() != expected_size {
                 return Err(AttachmentError::FileOperationFailed(format!(
                     "Encrypted file size mismatch: expected {expected_size} bytes, found {} bytes",
@@ -300,7 +317,9 @@ impl AttachmentStorage {
                 if e.raw_os_error() == Some(28) {
                     AttachmentError::InsufficientDiskSpace
                 } else {
-                    AttachmentError::FileOperationFailed(format!("Error flushing attachment file: {e}"))
+                    AttachmentError::FileOperationFailed(format!(
+                        "Error flushing attachment file: {e}"
+                    ))
                 }
             })?;
             drop(tmp_file);
@@ -315,9 +334,12 @@ impl AttachmentStorage {
             // Stream and compute SHA-256 hash of the written staging file on disk to verify data integrity
             let mut verify_file = File::open(&temp_path).map_err(|e| match e.kind() {
                 io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
-                    "Permission denied reading staged temporary file for hash verification".to_string(),
+                    "Permission denied reading staged temporary file for hash verification"
+                        .to_string(),
                 ),
-                _ => AttachmentError::FileOperationFailed(format!("Failed to open staged file for verification: {e}")),
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to open staged file for verification: {e}"
+                )),
             })?;
 
             let mut dst_hasher = Sha256::new();
@@ -325,7 +347,9 @@ impl AttachmentStorage {
             let mut verify_bytes: u64 = 0;
             loop {
                 let n = verify_file.read(&mut vbuffer).map_err(|e| {
-                    AttachmentError::FileOperationFailed(format!("Error verifying staged attachment copy: {e}"))
+                    AttachmentError::FileOperationFailed(format!(
+                        "Error verifying staged attachment copy: {e}"
+                    ))
                 })?;
                 if n == 0 {
                     break;
@@ -344,15 +368,14 @@ impl AttachmentStorage {
 
             if src_hasher.finalize() != dst_hasher.finalize() {
                 return Err(AttachmentError::FileOperationFailed(
-                    "Attachment content integrity verification failed: SHA-256 digest mismatch".to_string(),
+                    "Attachment content integrity verification failed: SHA-256 digest mismatch"
+                        .to_string(),
                 ));
             }
         }
 
         fs::rename(&temp_path, &final_path).map_err(|e| {
-            AttachmentError::FileOperationFailed(format!(
-                "Failed to finalize attachment file: {e}"
-            ))
+            AttachmentError::FileOperationFailed(format!("Failed to finalize attachment file: {e}"))
         })?;
 
         temp_guard.disarm();
@@ -386,9 +409,9 @@ impl AttachmentStorage {
             io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(
                 "Permission denied while reading source file".to_string(),
             ),
-            io::ErrorKind::NotFound => AttachmentError::SourceUnavailable(
-                "Source file does not exist".to_string(),
-            ),
+            io::ErrorKind::NotFound => {
+                AttachmentError::SourceUnavailable("Source file does not exist".to_string())
+            }
             _ => AttachmentError::SourceUnavailable(e.to_string()),
         })?;
 
@@ -428,7 +451,9 @@ impl AttachmentStorage {
         // Rewind file cursor to start so subsequent reads stream from the beginning
         use std::io::Seek;
         file.rewind().map_err(|e| {
-            AttachmentError::FileOperationFailed(format!("Failed to rewind source file cursor: {e}"))
+            AttachmentError::FileOperationFailed(format!(
+                "Failed to rewind source file cursor: {e}"
+            ))
         })?;
 
         Ok(ValidatedSourceFile {
@@ -493,14 +518,18 @@ impl AttachmentStorage {
                     "Failed to inspect note directory: {e}"
                 )),
             })?;
-            let canonical_root = self.paths.attachments_dir.canonicalize().map_err(|e| match e.kind() {
-                io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
-                    "Permission denied inspecting attachments root: {e}"
-                )),
-                _ => AttachmentError::FileOperationFailed(format!(
-                    "Failed to inspect attachments root: {e}"
-                )),
-            })?;
+            let canonical_root = self
+                .paths
+                .attachments_dir
+                .canonicalize()
+                .map_err(|e| match e.kind() {
+                    io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
+                        "Permission denied inspecting attachments root: {e}"
+                    )),
+                    _ => AttachmentError::FileOperationFailed(format!(
+                        "Failed to inspect attachments root: {e}"
+                    )),
+                })?;
             if canonical.starts_with(&canonical_root) && canonical != canonical_root {
                 fs::remove_dir_all(&canonical).map_err(|e| match e.kind() {
                     io::ErrorKind::PermissionDenied => AttachmentError::PermissionDenied(format!(
@@ -572,7 +601,8 @@ impl AttachmentStorage {
                                 Err(_) => continue,
                             };
 
-                            let note_folder_name = dir_entry.file_name().to_string_lossy().to_string();
+                            let note_folder_name =
+                                dir_entry.file_name().to_string_lossy().to_string();
                             let relative_path = format!("{}/{}", note_folder_name, file_name);
                             let is_temp_file = file_name.contains(".tmp.");
 
@@ -633,7 +663,10 @@ impl AttachmentStorage {
     /// - Only cleans files matching `.tmp.` in attachments directory
     /// - Also cleans up abandoned decrypted files in the temporary directory
     /// - Only removes files older than `older_than_seconds` to never touch active in-flight copies
-    pub fn cleanup_abandoned_temp_files(&self, older_than_seconds: u64) -> Result<usize, AttachmentError> {
+    pub fn cleanup_abandoned_temp_files(
+        &self,
+        older_than_seconds: u64,
+    ) -> Result<usize, AttachmentError> {
         let scanned = self.scan_managed_files()?;
         let now = std::time::SystemTime::now();
         let mut cleaned_count = 0;
@@ -684,11 +717,48 @@ impl AttachmentStorage {
 
 /// Comprehensive blocklist of executable and script extensions that pose execution hazards
 pub const BLOCKED_EXECUTABLE_EXTENSIONS: &[&str] = &[
-    "exe", "bat", "cmd", "com", "vbs", "vbe", "js", "jse", "wsf", "wsh",
-    "ps1", "psm1", "psd1", "ps1xml", "ps2", "ps2xml", "psc1", "psc2",
-    "msc", "msi", "msp", "mst", "scr", "pif", "application", "gadget",
-    "cpl", "inf", "reg", "hta", "sh", "bash", "zsh", "csh", "ksh",
-    "run", "command", "desktop", "app", "action", "workflow", "pkg",
+    "exe",
+    "bat",
+    "cmd",
+    "com",
+    "vbs",
+    "vbe",
+    "js",
+    "jse",
+    "wsf",
+    "wsh",
+    "ps1",
+    "psm1",
+    "psd1",
+    "ps1xml",
+    "ps2",
+    "ps2xml",
+    "psc1",
+    "psc2",
+    "msc",
+    "msi",
+    "msp",
+    "mst",
+    "scr",
+    "pif",
+    "application",
+    "gadget",
+    "cpl",
+    "inf",
+    "reg",
+    "hta",
+    "sh",
+    "bash",
+    "zsh",
+    "csh",
+    "ksh",
+    "run",
+    "command",
+    "desktop",
+    "app",
+    "action",
+    "workflow",
+    "pkg",
     "jar",
 ];
 
@@ -802,10 +872,7 @@ pub fn sanitize_original_filename(raw_name: &str) -> String {
         .next()
         .unwrap_or(trimmed);
 
-    let sanitized: String = base_name
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+    let sanitized: String = base_name.chars().filter(|c| !c.is_control()).collect();
 
     let final_name = sanitized.trim();
     if final_name.is_empty() {
@@ -878,10 +945,22 @@ mod tests {
         assert_eq!(sanitize_extension("too_long.verylongextension123"), None);
         assert_eq!(sanitize_extension("space in.e xt"), None);
 
-        assert_eq!(detect_mime_type("report.pdf"), Some("application/pdf".to_string()));
-        assert_eq!(detect_mime_type("photo.jpg"), Some("image/jpeg".to_string()));
-        assert_eq!(detect_mime_type("notes.md"), Some("text/markdown".to_string()));
-        assert_eq!(detect_mime_type("binary.xyz123"), Some("application/octet-stream".to_string()));
+        assert_eq!(
+            detect_mime_type("report.pdf"),
+            Some("application/pdf".to_string())
+        );
+        assert_eq!(
+            detect_mime_type("photo.jpg"),
+            Some("image/jpeg".to_string())
+        );
+        assert_eq!(
+            detect_mime_type("notes.md"),
+            Some("text/markdown".to_string())
+        );
+        assert_eq!(
+            detect_mime_type("binary.xyz123"),
+            Some("application/octet-stream".to_string())
+        );
         assert_eq!(detect_mime_type("unknown"), None);
     }
 
@@ -968,7 +1047,10 @@ mod tests {
 
         let res = storage.store_file(&note_id, &src_path);
         match res {
-            Err(AttachmentError::FileTooLarge { size_bytes, max_bytes }) => {
+            Err(AttachmentError::FileTooLarge {
+                size_bytes,
+                max_bytes,
+            }) => {
                 assert_eq!(size_bytes, 2048);
                 assert_eq!(max_bytes, 1024);
             }
@@ -1021,7 +1103,9 @@ mod tests {
         // 3. Valid regular file
         let valid_file = temp_dir.join("valid_note.txt");
         fs::write(&valid_file, b"Simple text attachment").expect("Write valid");
-        let validated = storage.validate_source_file(&valid_file).expect("Validate file");
+        let validated = storage
+            .validate_source_file(&valid_file)
+            .expect("Validate file");
         assert_eq!(validated.original_name, "valid_note.txt");
         assert_eq!(validated.file_size, 22);
         assert_eq!(validated.mime_type, Some("text/plain".to_string()));
@@ -1037,7 +1121,10 @@ mod tests {
 
         // Control characters stripped
         let control_chars = "evil\0file\r\nname.txt";
-        assert_eq!(sanitize_original_filename(control_chars), "evilfilename.txt");
+        assert_eq!(
+            sanitize_original_filename(control_chars),
+            "evilfilename.txt"
+        );
 
         // Path stripping
         let path_name = "/some/nested/path/to/my_file.png";
@@ -1099,8 +1186,12 @@ mod tests {
             .expect("Store binary file");
         assert_eq!(stored_bin.file_size, binary_payload.len() as u64);
 
-        let read_back_bin = fs::read(storage.resolve_safe_path(&stored_bin.relative_path).unwrap())
-            .expect("Read stored binary");
+        let read_back_bin = fs::read(
+            storage
+                .resolve_safe_path(&stored_bin.relative_path)
+                .unwrap(),
+        )
+        .expect("Read stored binary");
         assert_eq!(read_back_bin, binary_payload);
 
         // 2. Unicode and spaces: original filename with spaces & Hindi & emojis
@@ -1166,7 +1257,10 @@ mod tests {
         let entries = fs::read_dir(&note_dir).unwrap();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            assert!(!name.contains(".tmp."), "Temporary file was not cleaned up: {name}");
+            assert!(
+                !name.contains(".tmp."),
+                "Temporary file was not cleaned up: {name}"
+            );
         }
 
         // 6. Refuse paths that attempt to escape managed directory
@@ -1210,20 +1304,32 @@ mod tests {
         assert_eq!(disk_bytes.len(), secret_data.len() + 29);
 
         // Verify plaintext is not leaked anywhere in the file
-        let contains_plaintext = disk_bytes.windows(secret_data.len()).any(|w| w == secret_data);
-        assert!(!contains_plaintext, "Raw stored file must NOT contain plaintext bytes!");
+        let contains_plaintext = disk_bytes
+            .windows(secret_data.len())
+            .any(|w| w == secret_data);
+        assert!(
+            !contains_plaintext,
+            "Raw stored file must NOT contain plaintext bytes!"
+        );
 
         // 3. is_encrypted_file
         assert!(AttachmentStorage::is_encrypted_file(&stored_abs));
 
         // 4. Decrypt manually with matching AAD and verify contents
         let aad = format!("attachments:{}:{}", note_id, stored.stored_name);
-        let decrypted = crate::storage::crypto::cipher::decrypt_payload(&disk_bytes, &dek, aad.as_bytes()).unwrap();
+        let decrypted =
+            crate::storage::crypto::cipher::decrypt_payload(&disk_bytes, &dek, aad.as_bytes())
+                .unwrap();
         assert_eq!(decrypted, secret_data);
 
         // Decrypt with tampered AAD must fail
         let bad_aad = format!("attachments:wrong_note:{}", stored.stored_name);
-        assert!(crate::storage::crypto::cipher::decrypt_payload(&disk_bytes, &dek, bad_aad.as_bytes()).is_err());
+        assert!(crate::storage::crypto::cipher::decrypt_payload(
+            &disk_bytes,
+            &dek,
+            bad_aad.as_bytes()
+        )
+        .is_err());
 
         // 5. Store unencrypted file and verify is_encrypted_file returns false
         let unenc_src = temp_dir.join("public.txt");
@@ -1231,7 +1337,9 @@ mod tests {
         let unenc_stored = storage
             .store_file_with_key(&note_id, &unenc_src, None)
             .expect("unencrypted store should succeed");
-        let unenc_abs = storage.resolve_safe_path(&unenc_stored.relative_path).unwrap();
+        let unenc_abs = storage
+            .resolve_safe_path(&unenc_stored.relative_path)
+            .unwrap();
         assert!(!AttachmentStorage::is_encrypted_file(&unenc_abs));
 
         // 6. Test cleanup_decrypted_attachments
@@ -1242,9 +1350,11 @@ mod tests {
         assert!(dummy_dec.exists());
 
         storage.cleanup_decrypted_attachments().unwrap();
-        assert!(!dummy_dec.exists(), "Decrypted temp file should be removed by cleanup_decrypted_attachments");
+        assert!(
+            !dummy_dec.exists(),
+            "Decrypted temp file should be removed by cleanup_decrypted_attachments"
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-

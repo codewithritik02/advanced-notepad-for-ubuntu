@@ -1,5 +1,5 @@
-use std::sync::RwLock;
 use rusqlite::Connection;
+use std::sync::RwLock;
 
 use crate::storage::crypto::kdf::{derive_kek, generate_dek, generate_salt, unwrap_dek, wrap_dek};
 use crate::storage::crypto::metadata::{
@@ -44,7 +44,9 @@ impl CryptoSession {
                 let meta = EncryptionMetadata::from_json(&raw)?;
                 if !meta.enabled {
                     SessionState::Disabled
-                } else if meta.migration_status.is_interrupted() || meta.migration_status.is_failed() {
+                } else if meta.migration_status.is_interrupted()
+                    || meta.migration_status.is_failed()
+                {
                     SessionState::InterruptedMigration(meta)
                 } else {
                     SessionState::Locked(meta)
@@ -61,7 +63,9 @@ impl CryptoSession {
     /// Initializes session state and runs crash-recovery detection at application startup (Phase 12, Task 18, 22).
     pub fn init_and_recover(conn: &Connection, paths: &StoragePaths) -> Result<Self, CryptoError> {
         use crate::storage::crypto::migration::StartupRecoveryDecision;
-        use crate::storage::crypto::{configure_security_log_file, record_security_event, SecurityEventCode, SecurityLogLevel};
+        use crate::storage::crypto::{
+            configure_security_log_file, record_security_event, SecurityEventCode, SecurityLogLevel,
+        };
 
         configure_security_log_file(paths.security_log_file());
 
@@ -103,11 +107,11 @@ impl CryptoSession {
                         m
                     }
                 };
-                Ok(Self::new_with_state(SessionState::InterruptedMigration(meta)))
+                Ok(Self::new_with_state(SessionState::InterruptedMigration(
+                    meta,
+                )))
             }
-            StartupRecoveryDecision::None => {
-                Self::init_from_database(conn)
-            }
+            StartupRecoveryDecision::None => Self::init_from_database(conn),
         }
     }
 
@@ -132,7 +136,10 @@ impl CryptoSession {
     /// Returns whether the application is currently locked or in an interrupted state.
     pub fn is_locked(&self) -> bool {
         let guard = self.state.read().unwrap();
-        matches!(&*guard, SessionState::Locked(_) | SessionState::InterruptedMigration(_))
+        matches!(
+            &*guard,
+            SessionState::Locked(_) | SessionState::InterruptedMigration(_)
+        )
     }
 
     /// Returns whether the application is in an interrupted migration state (Task 17).
@@ -159,7 +166,13 @@ impl CryptoSession {
             MigrationService::read_transition_marker(paths)
                 .ok()
                 .flatten()
-                .and_then(|m| if m.checkpoint_path.is_empty() { None } else { Some(m.checkpoint_path) })
+                .and_then(|m| {
+                    if m.checkpoint_path.is_empty() {
+                        None
+                    } else {
+                        Some(m.checkpoint_path)
+                    }
+                })
         } else {
             None
         }
@@ -210,7 +223,9 @@ impl CryptoSession {
             crate::storage::crypto::record_security_event(
                 crate::storage::crypto::SecurityEventCode::AutoLockTriggered,
                 crate::storage::crypto::SecurityLogLevel::Info,
-                &format!("Application session locked automatically after {idle_seconds}s inactivity"),
+                &format!(
+                    "Application session locked automatically after {idle_seconds}s inactivity"
+                ),
                 None,
             );
         }
@@ -219,7 +234,9 @@ impl CryptoSession {
     /// Unlocks the application using the supplied password (Task 12, 22).
     /// Recovers the DEK and switches state to `Unlocked`.
     pub fn unlock(&self, dto: UnlockDto) -> Result<(), CryptoError> {
-        use crate::storage::crypto::{classify_crypto_failure, record_security_event, SecurityEventCode, SecurityLogLevel};
+        use crate::storage::crypto::{
+            classify_crypto_failure, record_security_event, SecurityEventCode, SecurityLogLevel,
+        };
 
         record_security_event(
             SecurityEventCode::UnlockAttempted,
@@ -253,7 +270,11 @@ impl CryptoSession {
                 let (class, is_corrupt) = classify_crypto_failure(&e);
                 record_security_event(
                     SecurityEventCode::UnlockFailed,
-                    if is_corrupt { SecurityLogLevel::Error } else { SecurityLogLevel::Warning },
+                    if is_corrupt {
+                        SecurityLogLevel::Error
+                    } else {
+                        SecurityLogLevel::Warning
+                    },
                     "Key derivation failed during unlock attempt",
                     Some(class),
                 );
@@ -267,7 +288,11 @@ impl CryptoSession {
                 let (class, is_corrupt) = classify_crypto_failure(&e);
                 record_security_event(
                     SecurityEventCode::UnlockFailed,
-                    if is_corrupt { SecurityLogLevel::Error } else { SecurityLogLevel::Warning },
+                    if is_corrupt {
+                        SecurityLogLevel::Error
+                    } else {
+                        SecurityLogLevel::Warning
+                    },
                     "Unlock failed: credential or metadata validation error",
                     Some(class),
                 );
@@ -321,7 +346,9 @@ impl CryptoSession {
         {
             let guard = self.state.read().unwrap();
             match &*guard {
-                SessionState::Locked(_) | SessionState::Unlocked { .. } | SessionState::InterruptedMigration(_) => {
+                SessionState::Locked(_)
+                | SessionState::Unlocked { .. }
+                | SessionState::InterruptedMigration(_) => {
                     return Err(CryptoError::InvalidMetadata(
                         "Encryption is already enabled or migration is in progress on this application.".to_string(),
                     ));
@@ -369,8 +396,9 @@ impl CryptoSession {
         metadata.migration_status = MigrationStatus::MigrationInProgress;
         let meta_json = metadata.to_json()?;
 
-        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &meta_json)
-            .map_err(|e| CryptoError::InvalidMetadata(format!("Failed to persist encryption metadata: {e}")))?;
+        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &meta_json).map_err(|e| {
+            CryptoError::InvalidMetadata(format!("Failed to persist encryption metadata: {e}"))
+        })?;
 
         marker.stage = MigrationStatus::MigrationInProgress;
         marker.updated_at = chrono::Utc::now().to_rfc3339();
@@ -390,8 +418,12 @@ impl CryptoSession {
             MigrationService::migrate_attachments(conn, paths, &dek)?;
 
             // D. Purge unencrypted plaintext FTS search index and synchronization triggers (Phase 12, Task 11)
-            if let Err(e) = crate::storage::repositories::SearchRepository::purge_plaintext_index(conn) {
-                eprintln!("[Crypto] Warning: Failed to purge unencrypted FTS search index on setup: {e}");
+            if let Err(e) =
+                crate::storage::repositories::SearchRepository::purge_plaintext_index(conn)
+            {
+                eprintln!(
+                    "[Crypto] Warning: Failed to purge unencrypted FTS search index on setup: {e}"
+                );
             }
 
             // E. Post-migration verification: 100% ciphertext envelopes and test-decrypt
@@ -428,8 +460,9 @@ impl CryptoSession {
         // 9. Mark migration Active and persist final metadata
         metadata.migration_status = MigrationStatus::Active;
         let final_json = metadata.to_json()?;
-        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &final_json)
-            .map_err(|e| CryptoError::InvalidMetadata(format!("Failed to finalize encryption metadata: {e}")))?;
+        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &final_json).map_err(|e| {
+            CryptoError::InvalidMetadata(format!("Failed to finalize encryption metadata: {e}"))
+        })?;
 
         MigrationService::remove_transition_marker(paths);
 
@@ -477,7 +510,8 @@ impl CryptoSession {
         paths: &StoragePaths,
         password: &str,
     ) -> Result<EncryptionMetadata, CryptoError> {
-        let (metadata, dek) = MigrationService::resume_interrupted_migration(conn, paths, password)?;
+        let (metadata, dek) =
+            MigrationService::resume_interrupted_migration(conn, paths, password)?;
         crate::storage::crypto::record_security_event(
             crate::storage::crypto::SecurityEventCode::MigrationRecoveryTriggered,
             crate::storage::crypto::SecurityLogLevel::Info,
@@ -596,8 +630,11 @@ impl CryptoSession {
         metadata.updated_at = chrono::Utc::now().to_rfc3339();
 
         let meta_json = metadata.to_json()?;
-        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &meta_json)
-            .map_err(|e| CryptoError::InvalidMetadata(format!("Failed to persist updated encryption metadata: {e}")))?;
+        SettingsRepository::set(conn, ENCRYPTION_METADATA_KEY, &meta_json).map_err(|e| {
+            CryptoError::InvalidMetadata(format!(
+                "Failed to persist updated encryption metadata: {e}"
+            ))
+        })?;
 
         *guard = SessionState::Unlocked { metadata, dek };
         crate::storage::crypto::record_security_event(
@@ -665,7 +702,9 @@ impl CryptoSession {
         let meta_opt = SettingsRepository::get(conn, ENCRYPTION_METADATA_KEY)
             .map_err(|e| CryptoError::InvalidMetadata(e.to_string()))?;
 
-        let marker_opt = MigrationService::read_transition_marker(paths).ok().flatten();
+        let marker_opt = MigrationService::read_transition_marker(paths)
+            .ok()
+            .flatten();
 
         let new_state = match meta_opt {
             Some(raw) => {
@@ -674,7 +713,10 @@ impl CryptoSession {
                     SessionState::Disabled
                 } else if meta.migration_status.is_interrupted()
                     || meta.migration_status.is_failed()
-                    || marker_opt.as_ref().map(|m| m.stage.is_interrupted()).unwrap_or(false)
+                    || marker_opt
+                        .as_ref()
+                        .map(|m| m.stage.is_interrupted())
+                        .unwrap_or(false)
                 {
                     SessionState::InterruptedMigration(meta)
                 } else {
@@ -723,7 +765,8 @@ mod tests {
 
     #[test]
     fn test_encryption_setup_lock_unlock_and_change_password_workflow() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_crypto_session_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_crypto_session_test_{}", uuid::Uuid::new_v4()));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -738,7 +781,8 @@ mod tests {
                 content: Some("Sensitive User Draft 12345".to_string()),
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(unencrypted_note.title, "Pre-Encryption Note");
 
         let session = CryptoSession::init_from_database(&conn).unwrap();
@@ -753,7 +797,9 @@ mod tests {
             confirm_password: password.to_string(),
         };
 
-        let meta = session.setup_encryption(&conn, &paths, setup_dto).expect("Setup should succeed");
+        let meta = session
+            .setup_encryption(&conn, &paths, setup_dto)
+            .expect("Setup should succeed");
         assert!(meta.enabled);
         assert_eq!(meta.migration_status, MigrationStatus::Active);
         assert!(session.is_encryption_enabled());
@@ -762,7 +808,11 @@ mod tests {
 
         // Verify pre-migration checkpoint was created
         let checkpoints = RestoreService::list_recovery_checkpoints(&paths).unwrap();
-        assert_eq!(checkpoints.len(), 1, "Verified pre-migration checkpoint must exist");
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "Verified pre-migration checkpoint must exist"
+        );
 
         // Verify DEK is accessible when unlocked
         let active_dek = session.get_active_dek().unwrap();
@@ -770,13 +820,21 @@ mod tests {
 
         // Verify pre-existing note was safely migrated to ciphertext
         let raw_title: String = conn
-            .query_row("SELECT title FROM notes WHERE id = ?1", [&unencrypted_note.id], |r| r.get(0))
+            .query_row(
+                "SELECT title FROM notes WHERE id = ?1",
+                [&unencrypted_note.id],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert!(raw_title.starts_with("ENC$v1$"), "Pre-existing note title must be migrated to ciphertext envelope");
+        assert!(
+            raw_title.starts_with("ENC$v1$"),
+            "Pre-existing note title must be migrated to ciphertext envelope"
+        );
 
-        let decrypted_note = NoteRepository::get_by_id_with_key(&conn, &unencrypted_note.id, Some(&active_dek))
-            .unwrap()
-            .expect("Note must exist");
+        let decrypted_note =
+            NoteRepository::get_by_id_with_key(&conn, &unencrypted_note.id, Some(&active_dek))
+                .unwrap()
+                .expect("Note must exist");
         assert_eq!(decrypted_note.title, "Pre-Encryption Note");
         assert_eq!(decrypted_note.content, "Sensitive User Draft 12345");
 
@@ -790,23 +848,33 @@ mod tests {
             password: "WrongPassword!".to_string(),
         });
         assert_eq!(wrong_unlock, Err(CryptoError::AuthenticationFailed));
-        assert!(session.is_locked(), "Application must remain locked after wrong password");
+        assert!(
+            session.is_locked(),
+            "Application must remain locked after wrong password"
+        );
 
         // 5. Unlock with correct password
-        session.unlock(UnlockDto {
-            password: password.to_string(),
-        }).expect("Unlocking with correct password must succeed");
+        session
+            .unlock(UnlockDto {
+                password: password.to_string(),
+            })
+            .expect("Unlocking with correct password must succeed");
         assert!(!session.is_locked());
         let unlocked_dek = session.get_active_dek().unwrap();
         assert_eq!(unlocked_dek.as_slice(), active_dek.as_slice());
 
         // 6. Change password
         let new_password = "BrandNewSuperSecurePassword!";
-        session.change_password(&conn, ChangePasswordDto {
-            current_password: password.to_string(),
-            new_password: new_password.to_string(),
-            confirm_new_password: new_password.to_string(),
-        }).expect("Password change should succeed");
+        session
+            .change_password(
+                &conn,
+                ChangePasswordDto {
+                    current_password: password.to_string(),
+                    new_password: new_password.to_string(),
+                    confirm_new_password: new_password.to_string(),
+                },
+            )
+            .expect("Password change should succeed");
 
         // 7. Lock again and verify old password fails and new password succeeds
         session.lock();
@@ -817,9 +885,11 @@ mod tests {
         });
         assert_eq!(old_pwd_res, Err(CryptoError::AuthenticationFailed));
 
-        session.unlock(UnlockDto {
-            password: new_password.to_string(),
-        }).expect("New password must unlock");
+        session
+            .unlock(UnlockDto {
+                password: new_password.to_string(),
+            })
+            .expect("New password must unlock");
         assert!(!session.is_locked());
 
         // Clean up
@@ -829,7 +899,10 @@ mod tests {
 
     #[test]
     fn test_interrupted_migration_detection_and_lockout() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_crypto_interrupted_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "pn_crypto_interrupted_test_{}",
+            uuid::Uuid::new_v4()
+        ));
         let paths = StoragePaths::from_root(temp_dir.clone());
         paths.ensure_directories().unwrap();
 
@@ -853,7 +926,10 @@ mod tests {
         assert!(session.is_encryption_enabled());
         assert!(session.is_locked());
         assert!(session.is_interrupted());
-        assert_eq!(session.get_migration_status(), Some(MigrationStatus::MigrationInProgress));
+        assert_eq!(
+            session.get_migration_status(),
+            Some(MigrationStatus::MigrationInProgress)
+        );
 
         // Attempting to unlock must fail with MigrationError
         let unlock_res = session.unlock(UnlockDto {

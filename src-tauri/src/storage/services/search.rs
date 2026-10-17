@@ -1,7 +1,7 @@
-use rusqlite::Connection;
 use crate::storage::errors::StorageError;
 use crate::storage::models::SearchResult;
 use crate::storage::repositories::SearchRepository;
+use rusqlite::Connection;
 
 /// High-level SearchService that coordinates search requests between
 /// Tauri IPC commands and the low-level SearchRepository.
@@ -46,7 +46,9 @@ impl SearchService {
     }
 
     /// Diagnoses search index health, trigger status, and consistency (Phase 13, Task 10).
-    pub fn diagnose_index(conn: &Connection) -> Result<crate::storage::models::SearchIndexDiagnostic, StorageError> {
+    pub fn diagnose_index(
+        conn: &Connection,
+    ) -> Result<crate::storage::models::SearchIndexDiagnostic, StorageError> {
         SearchRepository::diagnose_index(conn)
     }
 }
@@ -61,7 +63,8 @@ mod tests {
 
     #[test]
     fn test_search_service_pipeline() {
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_svc_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_srch_svc_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).unwrap();
         run_migrations(&mut conn).unwrap();
@@ -86,10 +89,14 @@ mod tests {
 
     #[test]
     fn test_search_service_encrypted_pipeline() {
-        use crate::storage::crypto::{KdfConfig, EncryptionMetadata, SecretBytes, WrappedKey, generate_salt, ENCRYPTION_METADATA_KEY};
+        use crate::storage::crypto::{
+            generate_salt, EncryptionMetadata, KdfConfig, SecretBytes, WrappedKey,
+            ENCRYPTION_METADATA_KEY,
+        };
         use crate::storage::repositories::SettingsRepository;
 
-        let temp_dir = std::env::temp_dir().join(format!("pn_test_srch_svc_enc_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pn_test_srch_svc_enc_{}", uuid::Uuid::new_v4()));
         let db_path = temp_dir.join("database.sqlite");
         let mut conn = init_connection(&db_path).unwrap();
         run_migrations(&mut conn).unwrap();
@@ -97,7 +104,12 @@ mod tests {
         let dummy_kdf = KdfConfig::default_profile(generate_salt());
         let dummy_wrapped = WrappedKey::new(&[0u8; 12], &[0u8; 32], &[0u8; 16]);
         let dummy_meta = EncryptionMetadata::new(dummy_kdf, dummy_wrapped);
-        SettingsRepository::set(&conn, ENCRYPTION_METADATA_KEY, &dummy_meta.to_json().unwrap()).unwrap();
+        SettingsRepository::set(
+            &conn,
+            ENCRYPTION_METADATA_KEY,
+            &dummy_meta.to_json().unwrap(),
+        )
+        .unwrap();
 
         SearchService::purge_plaintext_index(&conn).unwrap();
 
@@ -106,18 +118,24 @@ mod tests {
             &conn,
             CreateNoteDto {
                 title: Some("Service Encrypted Note".to_string()),
-                content: Some("SearchService safely coordinates encrypted in-memory full text search.".to_string()),
+                content: Some(
+                    "SearchService safely coordinates encrypted in-memory full text search."
+                        .to_string(),
+                ),
                 ..Default::default()
             },
             Some(&dek),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Locked search rejects
         let locked_res = SearchService::search_with_key(&conn, "SearchService", None, None);
         assert!(locked_res.is_err());
 
         // Unlocked search returns decrypted match
-        let unlocked_res = SearchService::search_with_key(&conn, "coordinates encrypted", None, Some(&dek)).unwrap();
+        let unlocked_res =
+            SearchService::search_with_key(&conn, "coordinates encrypted", None, Some(&dek))
+                .unwrap();
         assert_eq!(unlocked_res.len(), 1);
         assert_eq!(unlocked_res[0].title, "Service Encrypted Note");
 

@@ -1,14 +1,17 @@
-use std::io::Write;
-use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 use crate::storage::attachment_storage::AttachmentStorage;
 use crate::storage::crypto::kdf::{derive_kek, unwrap_dek};
-use crate::storage::crypto::metadata::{EncryptionMetadata, MigrationStatus, ENCRYPTION_METADATA_KEY};
+use crate::storage::crypto::metadata::{
+    EncryptionMetadata, MigrationStatus, ENCRYPTION_METADATA_KEY,
+};
 use crate::storage::crypto::{
-    decrypt_file_to_file, decrypt_string, encrypt_file_to_file, encrypt_string, is_encrypted_string, SecretBytes,
+    decrypt_file_to_file, decrypt_string, encrypt_file_to_file, encrypt_string,
+    is_encrypted_string, SecretBytes,
 };
 use crate::storage::errors::CryptoError;
 use crate::storage::models::BackupRestoreRequest;
@@ -70,10 +73,15 @@ pub struct MigrationService;
 
 impl MigrationService {
     /// Validates pre-migration database health and attachments accessibility.
-    pub fn validate_pre_migration(conn: &Connection, paths: &StoragePaths) -> Result<(), CryptoError> {
+    pub fn validate_pre_migration(
+        conn: &Connection,
+        paths: &StoragePaths,
+    ) -> Result<(), CryptoError> {
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))
-            .map_err(|e| CryptoError::MigrationError(format!("Pre-migration integrity check failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Pre-migration integrity check failed: {e}"))
+            })?;
 
         if integrity != "ok" {
             return Err(CryptoError::MigrationError(format!(
@@ -93,8 +101,9 @@ impl MigrationService {
         conn: &Connection,
         paths: &StoragePaths,
     ) -> Result<PathBuf, CryptoError> {
-        let checkpoint = RestoreService::create_recovery_checkpoint(conn, paths)
-            .map_err(|e| CryptoError::MigrationError(format!("Pre-migration recovery checkpoint failed: {e}")))?;
+        let checkpoint = RestoreService::create_recovery_checkpoint(conn, paths).map_err(|e| {
+            CryptoError::MigrationError(format!("Pre-migration recovery checkpoint failed: {e}"))
+        })?;
 
         let checkpoint_path = PathBuf::from(checkpoint.file_path);
         if !checkpoint_path.is_file() {
@@ -117,7 +126,9 @@ impl MigrationService {
 
         let note_rows: Vec<(String, String, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to query unencrypted notes: {e}")))?
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to query unencrypted notes: {e}"))
+            })?
             .filter_map(|res| res.ok())
             .collect();
 
@@ -141,7 +152,9 @@ impl MigrationService {
                 "UPDATE notes SET title = ?1, content = ?2 WHERE id = ?3",
                 params![enc_title, enc_content, id],
             )
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to update encrypted note {id}: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to update encrypted note {id}: {e}"))
+            })?;
 
             count += 1;
         }
@@ -157,7 +170,9 @@ impl MigrationService {
     ) -> Result<usize, CryptoError> {
         let mut stmt = conn
             .prepare("SELECT id, note_id, file_name, relative_path, mime_type FROM attachments")
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to prepare attachments query: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to prepare attachments query: {e}"))
+            })?;
 
         let att_rows: Vec<(String, String, String, String, String)> = stmt
             .query_map([], |r| {
@@ -189,19 +204,27 @@ impl MigrationService {
                 params![enc_file_name, enc_mime_type, att_id],
             )
             .map_err(|e| {
-                CryptoError::MigrationError(format!("Failed to update attachment metadata {att_id}: {e}"))
+                CryptoError::MigrationError(format!(
+                    "Failed to update attachment metadata {att_id}: {e}"
+                ))
             })?;
 
             // 2. Encrypt disk file if unencrypted
-            let disk_path = StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&relative_path))
-                .map_err(|e| CryptoError::MigrationError(format!("Invalid attachment path {relative_path}: {e}")))?;
+            let disk_path =
+                StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&relative_path))
+                    .map_err(|e| {
+                    CryptoError::MigrationError(format!(
+                        "Invalid attachment path {relative_path}: {e}"
+                    ))
+                })?;
 
             if disk_path.is_file() && !AttachmentStorage::is_encrypted_file(&disk_path) {
                 let stored_name = relative_path.split('/').last().unwrap_or(&relative_path);
                 let aad = format!("attachments:{}:{stored_name}", note_id.trim());
 
                 let staging_path = disk_path.with_extension(format!("mig_tmp.{}", Uuid::new_v4()));
-                if let Err(e) = encrypt_file_to_file(&disk_path, &staging_path, dek, aad.as_bytes()) {
+                if let Err(e) = encrypt_file_to_file(&disk_path, &staging_path, dek, aad.as_bytes())
+                {
                     let _ = std::fs::remove_file(&staging_path);
                     return Err(e);
                 }
@@ -255,7 +278,9 @@ impl MigrationService {
         // 2. Test decrypting all notes with DEK
         let mut note_stmt = conn
             .prepare("SELECT id, title, content FROM notes")
-            .map_err(|e| CryptoError::MigrationError(format!("Prepare verify notes query failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Prepare verify notes query failed: {e}"))
+            })?;
 
         let note_rows: Vec<(String, String, String)> = note_stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
@@ -266,12 +291,16 @@ impl MigrationService {
         for (id, enc_title, enc_content) in note_rows {
             let title_aad = format!("notes:{id}:title");
             decrypt_string(&enc_title, dek, title_aad.as_bytes()).map_err(|e| {
-                CryptoError::MigrationError(format!("Post-migration decryption failed for note {id} title: {e}"))
+                CryptoError::MigrationError(format!(
+                    "Post-migration decryption failed for note {id} title: {e}"
+                ))
             })?;
 
             let content_aad = format!("notes:{id}:content");
             decrypt_string(&enc_content, dek, content_aad.as_bytes()).map_err(|e| {
-                CryptoError::MigrationError(format!("Post-migration decryption failed for note {id} content: {e}"))
+                CryptoError::MigrationError(format!(
+                    "Post-migration decryption failed for note {id} content: {e}"
+                ))
             })?;
         }
 
@@ -282,7 +311,9 @@ impl MigrationService {
                 [],
                 |r| r.get(0),
             )
-            .map_err(|e| CryptoError::MigrationError(format!("Post-migration attachment check failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Post-migration attachment check failed: {e}"))
+            })?;
 
         if unencrypted_att_count != 0 {
             return Err(CryptoError::MigrationError(format!(
@@ -293,7 +324,9 @@ impl MigrationService {
         // 4. Verify all attachment files on disk are authenticated envelopes
         let mut att_stmt = conn
             .prepare("SELECT relative_path FROM attachments")
-            .map_err(|e| CryptoError::MigrationError(format!("Prepare verify att disk query failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Prepare verify att disk query failed: {e}"))
+            })?;
 
         let att_paths: Vec<String> = att_stmt
             .query_map([], |r| r.get(0))
@@ -302,8 +335,9 @@ impl MigrationService {
             .collect();
 
         for rel_path in att_paths {
-            let disk_path = StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&rel_path))
-                .map_err(|e| CryptoError::MigrationError(e.to_string()))?;
+            let disk_path =
+                StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&rel_path))
+                    .map_err(|e| CryptoError::MigrationError(e.to_string()))?;
             if disk_path.is_file() && !AttachmentStorage::is_encrypted_file(&disk_path) {
                 return Err(CryptoError::MigrationError(format!(
                     "Verification failed: attachment file '{rel_path}' on disk is not encrypted"
@@ -353,7 +387,9 @@ impl MigrationService {
         marker: &EncryptionTransitionMarker,
     ) -> Result<(), CryptoError> {
         let marker_file = paths.encryption_migration_marker_file();
-        let tmp_file = paths.root.join(format!(".encryption_marker_{}.tmp", Uuid::new_v4()));
+        let tmp_file = paths
+            .root
+            .join(format!(".encryption_marker_{}.tmp", Uuid::new_v4()));
 
         let json = serde_json::to_string_pretty(marker).map_err(|e| {
             CryptoError::MigrationError(format!("Failed to serialize transition marker: {e}"))
@@ -361,7 +397,9 @@ impl MigrationService {
 
         {
             let mut file = std::fs::File::create(&tmp_file).map_err(|e| {
-                CryptoError::MigrationError(format!("Failed to create transition marker temp file: {e}"))
+                CryptoError::MigrationError(format!(
+                    "Failed to create transition marker temp file: {e}"
+                ))
             })?;
             file.write_all(json.as_bytes()).map_err(|e| {
                 CryptoError::MigrationError(format!("Failed to write transition marker: {e}"))
@@ -370,13 +408,17 @@ impl MigrationService {
                 CryptoError::MigrationError(format!("Failed to flush transition marker: {e}"))
             })?;
             file.sync_all().map_err(|e| {
-                CryptoError::MigrationError(format!("Failed to sync transition marker to disk: {e}"))
+                CryptoError::MigrationError(format!(
+                    "Failed to sync transition marker to disk: {e}"
+                ))
             })?;
         }
 
         std::fs::rename(&tmp_file, &marker_file).map_err(|e| {
             let _ = std::fs::remove_file(&tmp_file);
-            CryptoError::MigrationError(format!("Failed to atomically commit transition marker: {e}"))
+            CryptoError::MigrationError(format!(
+                "Failed to atomically commit transition marker: {e}"
+            ))
         })?;
 
         Ok(())
@@ -489,11 +531,13 @@ impl MigrationService {
         let checkpoint_path = if let Some(ref m) = marker {
             PathBuf::from(&m.checkpoint_path)
         } else {
-            let checkpoints = RestoreService::list_recovery_checkpoints(paths)
-                .map_err(|e| CryptoError::MigrationError(format!("Failed to list checkpoints: {e}")))?;
+            let checkpoints = RestoreService::list_recovery_checkpoints(paths).map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to list checkpoints: {e}"))
+            })?;
             if checkpoints.is_empty() {
                 return Err(CryptoError::MigrationError(
-                    "Cannot roll back: no pre-migration recovery checkpoint found on disk.".to_string(),
+                    "Cannot roll back: no pre-migration recovery checkpoint found on disk."
+                        .to_string(),
                 ));
             }
             PathBuf::from(&checkpoints[0].file_path)
@@ -512,10 +556,7 @@ impl MigrationService {
         };
 
         RestoreService::execute_restore::<fn(crate::storage::models::BackupProgressEvent)>(
-            conn,
-            paths,
-            request,
-            None,
+            conn, paths, request, None,
         )
         .map_err(|e| CryptoError::MigrationError(format!("Rollback restore failed: {e}")))?;
 
@@ -581,7 +622,9 @@ impl MigrationService {
 
         let note_rows: Vec<(String, String, String)> = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to query encrypted notes: {e}")))?
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to query encrypted notes: {e}"))
+            })?
             .filter_map(|res| res.ok())
             .collect();
 
@@ -605,7 +648,9 @@ impl MigrationService {
                 "UPDATE notes SET title = ?1, content = ?2 WHERE id = ?3",
                 params![plain_title, plain_content, id],
             )
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to update decrypted note {id}: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to update decrypted note {id}: {e}"))
+            })?;
 
             count += 1;
         }
@@ -625,7 +670,14 @@ impl MigrationService {
 
         let att_rows: Vec<(String, String, String, String, String, i64)> = stmt
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
             })
             .map_err(|e| CryptoError::MigrationError(format!("Failed to query attachments: {e}")))?
             .filter_map(|res| res.ok())
@@ -649,15 +701,21 @@ impl MigrationService {
             };
 
             // 2. Decrypt disk file if encrypted (starts with 0x01)
-            let disk_path = StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&relative_path))
-                .map_err(|e| CryptoError::MigrationError(format!("Invalid attachment path {relative_path}: {e}")))?;
+            let disk_path =
+                StoragePaths::sanitize_subpath(&paths.attachments_dir, Path::new(&relative_path))
+                    .map_err(|e| {
+                    CryptoError::MigrationError(format!(
+                        "Invalid attachment path {relative_path}: {e}"
+                    ))
+                })?;
 
             if disk_path.is_file() && AttachmentStorage::is_encrypted_file(&disk_path) {
                 let stored_name = relative_path.split('/').last().unwrap_or(&relative_path);
                 let aad = format!("attachments:{}:{stored_name}", note_id.trim());
 
                 let staging_path = disk_path.with_extension(format!("dec_tmp.{}", Uuid::new_v4()));
-                if let Err(e) = decrypt_file_to_file(&disk_path, &staging_path, dek, aad.as_bytes()) {
+                if let Err(e) = decrypt_file_to_file(&disk_path, &staging_path, dek, aad.as_bytes())
+                {
                     let _ = std::fs::remove_file(&staging_path);
                     return Err(e);
                 }
@@ -710,7 +768,9 @@ impl MigrationService {
                 [],
                 |r| r.get(0),
             )
-            .map_err(|e| CryptoError::MigrationError(format!("Post-decryption note check failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Post-decryption note check failed: {e}"))
+            })?;
 
         if enc_notes_count != 0 {
             return Err(CryptoError::MigrationError(format!(
@@ -720,7 +780,9 @@ impl MigrationService {
 
         let mut stmt = conn
             .prepare("SELECT relative_path FROM attachments")
-            .map_err(|e| CryptoError::MigrationError(format!("Prepare verify attachments failed: {e}")))?;
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Prepare verify attachments failed: {e}"))
+            })?;
 
         let rel_paths: Vec<String> = stmt
             .query_map([], |r| r.get(0))
@@ -749,7 +811,9 @@ impl MigrationService {
     ) -> Result<DisableEncryptionReport, CryptoError> {
         // 1. Authenticate credential and recover DEK
         let meta_json = SettingsRepository::get(conn, ENCRYPTION_METADATA_KEY)
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to query encryption metadata: {e}")))?
+            .map_err(|e| {
+                CryptoError::MigrationError(format!("Failed to query encryption metadata: {e}"))
+            })?
             .ok_or(CryptoError::NotEnabled)?;
 
         let metadata = EncryptionMetadata::from_json(&meta_json)?;
@@ -798,12 +862,14 @@ impl MigrationService {
         Self::verify_post_decryption(conn, paths)?;
 
         // 7. Remove encryption metadata from settings table
-        SettingsRepository::delete(conn, ENCRYPTION_METADATA_KEY)
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to delete encryption metadata: {e}")))?;
+        SettingsRepository::delete(conn, ENCRYPTION_METADATA_KEY).map_err(|e| {
+            CryptoError::MigrationError(format!("Failed to delete encryption metadata: {e}"))
+        })?;
 
         // 8. Rebuild plaintext FTS index and triggers
-        SearchRepository::rebuild_search_index(conn)
-            .map_err(|e| CryptoError::MigrationError(format!("Failed to rebuild search index: {e}")))?;
+        SearchRepository::rebuild_search_index(conn).map_err(|e| {
+            CryptoError::MigrationError(format!("Failed to rebuild search index: {e}"))
+        })?;
 
         // 9. Remove transition marker
         Self::remove_transition_marker(paths);
