@@ -92,13 +92,9 @@ impl ImportExportService {
         }
     }
 
-    /// Whether a file found while expanding a folder is offered for import (txt/md/markdown only).
+    /// Whether a file found while expanding a folder is offered for import.
     fn is_folder_import_candidate(path: &Path) -> bool {
-        !path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
-            && Self::detect_format_from_path(path).is_some()
+        Self::detect_format_from_path(path).is_some()
     }
 
     /// Sanitizes an arbitrary title string by stripping control characters and trimming whitespace,
@@ -690,7 +686,7 @@ impl ImportExportService {
                         validation_status: ValidationStatus::Invalid,
                         warnings: Vec::new(),
                         error_message: Some(
-                            "Unsupported file extension. Only .txt and .md are supported."
+                            "Unsupported file extension. Only .txt, .md and .json are supported."
                                 .to_string(),
                         ),
                         is_duplicate: false,
@@ -3576,12 +3572,11 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             .unwrap()
             .is_empty());
 
-        // Folder import never picks .json files up
+        // Folder import picks .json files up too, as plain text documents
         std::fs::write(dir.join("keep.md"), "# hi").unwrap();
         let expanded =
             ImportExportService::expand_and_validate_paths(&[dir.to_string_lossy().to_string()]);
-        assert_eq!(expanded.len(), 1);
-        assert!(expanded[0].ends_with("keep.md"));
+        assert_eq!(expanded.len(), 3);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

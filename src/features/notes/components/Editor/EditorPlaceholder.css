@@ -617,7 +617,5 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-  direction: rtl;
-  text-align: left;
   color: var(--color-text-primary);
 }

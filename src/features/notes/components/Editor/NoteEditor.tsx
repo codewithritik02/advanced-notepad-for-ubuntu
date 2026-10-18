@@ -44,6 +44,9 @@ export interface NoteEditorProps {
   externalPath?: string | null;
   /** Open straight in edit mode (a note that was just created). Everything else opens as a preview. */
   startInEditMode?: boolean;
+  /** Whether the open external file is pinned in the sidebar, and the action to toggle that. */
+  externalPinned?: boolean;
+  onTogglePinExternal?: () => void;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -61,6 +64,20 @@ const ImageInsertIcon = () => (
     <path d="m21 15-5-5L5 21" />
   </svg>
 );
+
+const PinFileIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="12" y1="17" x2="12" y2="22" />
+    <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z" />
+  </svg>
+);
+
+/** "/home/me/Downloads/a/b.txt" -> ".../Downloads/a/b.txt" (the last three parts are enough). */
+function shortenPath(path: string | null): string {
+  if (!path) return "";
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 3 ? `.../${parts.slice(-3).join("/")}` : path;
+}
 
 const CloseNoteIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -258,6 +275,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onCloseNote,
   externalPath = null,
   startInEditMode = false,
+  externalPinned = false,
+  onTogglePinExternal,
 }) => {
   // A file opened from outside the notebook: saved back to the file, no notebook/tags/attachments
   const isExternal = isExternalId(noteId);
@@ -1404,7 +1423,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         <div className="external-note-banner" role="status">
           <strong>External file</strong>
           <span className="external-note-banner-path" title={externalPath ?? undefined}>
-            {externalPath ?? loadedNote.title}
+            {shortenPath(externalPath) || loadedNote.title}
           </span>
           <span>Edits are saved straight to this file. It is not part of your notes.</span>
         </div>
@@ -1628,6 +1647,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         >
           {viewMode === "preview" ? <EditIcon /> : <EyeIcon />}
         </button>
+
+        {isExternal && onTogglePinExternal && (
+          <button
+            type="button"
+            className={`toolbar-btn ${externalPinned ? "is-active" : ""}`}
+            title={externalPinned ? "Unpin from the sidebar" : "Pin to the sidebar (keep it for next time)"}
+            aria-label={externalPinned ? "Unpin file" : "Pin file"}
+            aria-pressed={externalPinned}
+            onClick={onTogglePinExternal}
+          >
+            <PinFileIcon />
+          </button>
+        )}
 
         {onCloseNote && (
           <button

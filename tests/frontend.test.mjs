@@ -29392,12 +29392,12 @@ describe("External documents, closing notes and plain-text JSON", () => {
     assert.match(storage, /save_external_note/);
   });
 
-  it("does not offer JSON (or All Files) in the import picker", () => {
+  it("offers JSON in the import picker, but only as plain text (no All Files)", () => {
     const dialog = read("src/features/importExport/services/fileDialog.ts");
     const picker = dialog.slice(dialog.indexOf("pickImportFiles"), dialog.indexOf("pickImportFolder"));
-    assert.doesNotMatch(picker, /json/i);
+    assert.match(picker, /extensions: \["txt", "md", "markdown", "json"\]/);
+    assert.doesNotMatch(picker, /Interchange/);
     assert.doesNotMatch(picker, /All Files/);
-    assert.match(picker, /extensions: \["txt", "md", "markdown"\]/);
     const rust = read("src-tauri/src/storage/services/import_export.rs");
     assert.match(rust, /"json" => Some\(ImportFormat::Txt\)/, "a .json file is only ever plain text");
   });
@@ -29424,5 +29424,16 @@ describe("Preview by default, pinned external files", () => {
     assert.match(lib, /commands::set_external_pinned/);
     assert.match(lib, /prune_unpinned_external/);
     assert.match(lib, /set_always_on_top\(true\)/);
+  });
+});
+
+describe("Pin button in the external file toolbar", () => {
+  it("offers pin/unpin next to the close button", () => {
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.match(editor, /aria-label=\{externalPinned \? "Unpin file" : "Pin file"\}/);
+    assert.ok(editor.indexOf('"Unpin file"') < editor.indexOf('"Close file"'), "pin sits before the close button");
+    assert.doesNotMatch(editor, /direction: rtl/);
+    const app = fs.readFileSync("src/app/App.tsx", "utf8");
+    assert.match(app, /onTogglePinExternal=\{/);
   });
 });

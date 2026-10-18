@@ -2459,6 +2459,10 @@ export function App() {
             onActivateLink={handleActivateInternalLink}
             isTrash={activeNavId === "trash" && !selectedExternalId}
             onCloseNote={handleCloseNote}
+            externalPinned={externalDocs.find((d) => d.id === selectedExternalId)?.pinned ?? false}
+            onTogglePinExternal={
+              selectedExternalId ? () => void handleTogglePinExternal(selectedExternalId) : undefined
+            }
             externalPath={externalDocs.find((d) => d.id === selectedExternalId)?.path ?? null}
             onDeleteNote={activeNavId === "trash" ? undefined : requestDeleteNote}
             onRestoreNote={requestRestoreNote}

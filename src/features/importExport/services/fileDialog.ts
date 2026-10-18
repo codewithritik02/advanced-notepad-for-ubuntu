@@ -13,7 +13,7 @@ export interface SavePickerResult {
 
 /**
  * Native file picker for selecting one or multiple notes to import.
- * Only plain text and Markdown files are offered (JSON is never imported as notes).
+ * Plain text, Markdown and JSON files are offered. JSON is imported as plain text only, never parsed.
  * Handles user cancellation gracefully without throwing.
  */
 export async function pickImportFiles(): Promise<FilePickerResult> {
@@ -24,8 +24,8 @@ export async function pickImportFiles(): Promise<FilePickerResult> {
       directory: false,
       filters: [
         {
-          name: "Notes (*.txt, *.md, *.markdown)",
-          extensions: ["txt", "md", "markdown"],
+          name: "Notes (*.txt, *.md, *.markdown, *.json)",
+          extensions: ["txt", "md", "markdown", "json"],
         },
         {
           name: "Markdown Files (*.md, *.markdown)",
@@ -34,6 +34,10 @@ export async function pickImportFiles(): Promise<FilePickerResult> {
         {
           name: "Plain Text Files (*.txt)",
           extensions: ["txt"],
+        },
+        {
+          name: "JSON as text (*.json)",
+          extensions: ["json"],
         },
       ],
     });
