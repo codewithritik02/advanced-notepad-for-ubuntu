@@ -10,6 +10,7 @@ import { linksStorage } from "./links";
 import { importExportStorage } from "./importExport";
 import { backupStorage } from "./backup";
 import { cryptoStorage } from "./crypto";
+import { openFilesStorage } from "./openFiles";
 
 export const storageService = {
   /**
@@ -29,6 +30,7 @@ export const storageService = {
   importExport: importExportStorage,
   backup: backupStorage,
   crypto: cryptoStorage,
+  openFiles: openFilesStorage,
 };
 
 export * from "./types";
@@ -45,5 +47,7 @@ export { linksStorage } from "./links";
 export { importExportStorage } from "./importExport";
 export { backupStorage } from "./backup";
 export { cryptoStorage } from "./crypto";
+export { openFilesStorage } from "./openFiles";
+export * from "./openFiles";
 export default storageService;
 

@@ -1,5 +1,7 @@
 import React, { useRef } from "react";
 import { ThemeMode } from "../../types";
+import { RecentMenu } from "./RecentMenu";
+import type { RecentNote } from "../../utils/recentNotes";
 import "./TopBar.css";
 
 export interface TopBarProps {
@@ -20,6 +22,10 @@ export interface TopBarProps {
   onNavigateForward?: () => void;
   isEncryptionEnabled?: boolean;
   onLockClick?: () => void;
+  recentNotes?: RecentNote[];
+  onOpenRecent?: (noteId: string) => void;
+  onRemoveRecent?: (noteId: string) => void;
+  onClearRecent?: () => void;
 }
 
 // Lightweight inline SVG icons
@@ -123,6 +129,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onNavigateForward,
   isEncryptionEnabled = false,
   onLockClick,
+  recentNotes,
+  onOpenRecent,
+  onRemoveRecent,
+  onClearRecent,
 }) => {
   const internalSearchRef = useRef<HTMLInputElement>(null);
   const searchInputRef = externalSearchRef ?? internalSearchRef;
@@ -249,6 +259,15 @@ export const TopBar: React.FC<TopBarProps> = ({
           <PlusIcon />
           <span className="btn-label">New Note</span>
         </button>
+
+        {recentNotes && onOpenRecent && (
+          <RecentMenu
+            items={recentNotes}
+            onOpen={onOpenRecent}
+            onRemove={onRemoveRecent}
+            onClear={onClearRecent}
+          />
+        )}
 
         {isEncryptionEnabled && (
           <button

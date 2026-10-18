@@ -1,15 +1,28 @@
 pub mod commands;
+pub mod open_files;
 pub mod storage;
 
 use storage::Database;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Files passed by the desktop ("Open with", double click, or `personal-notepad file.md`)
+    let working_dir = std::env::current_dir().unwrap_or_default();
+    let launch_paths = open_files::parse_launch_paths(std::env::args(), &working_dir);
+
+    // Already running? Hand the files to that window and quit instead of failing on the data lock.
+    #[cfg(unix)]
+    if let Some(data_dir) = open_files::default_data_dir() {
+        if open_files::forward_launch(&data_dir, &launch_paths) {
+            return;
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             let platform_app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let app_data_dir = storage::paths::resolve_app_data_root(platform_app_data_dir)
                 .map_err(|e| e.to_string())?;
@@ -17,10 +30,37 @@ pub fn run() {
             let initialized = storage::initialize_application_storage(storage_paths)
                 .map_err(|error| error.to_string())?;
 
+            let data_root = initialized.paths.root.clone();
             app.manage(initialized.paths);
             app.manage(initialized.crypto_session);
             app.manage(initialized.database);
             app.manage(initialized.instance_lock);
+            app.manage(open_files::PendingOpenFiles::new(launch_paths.clone()));
+
+            // Later launches deliver their files here; bring the window forward and tell it.
+            #[cfg(unix)]
+            {
+                let handle = app.handle().clone();
+                if let Err(error) = open_files::ipc::start_listener(&data_root, move |paths| {
+                    if !paths.is_empty() {
+                        if let Some(queue) = handle.try_state::<open_files::PendingOpenFiles>() {
+                            queue.push_all(paths);
+                        }
+                    }
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                    let _ = handle.emit(open_files::OPEN_FILES_QUEUED_EVENT, ());
+                }) {
+                    eprintln!("[Open Files] Could not start the file listener: {error}");
+                } else {
+                    open_files::remember_socket_for_cleanup(open_files::socket_path(&data_root));
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = data_root;
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -28,6 +68,7 @@ pub fn run() {
             // Checkpoint only after destruction, and never block the native event loop on a busy
             // database mutex; SQLite's WAL is recoverable if background work still owns it.
             if let tauri::WindowEvent::Destroyed = event {
+                open_files::remove_socket_file();
                 if let Some(db) = window.try_state::<Database>() {
                     match storage::try_checkpoint_database_for_shutdown(&db) {
                         Ok(true) => {}
@@ -91,6 +132,7 @@ pub fn run() {
             commands::open_attachment,
             commands::get_attachment_count,
             commands::read_attachment_image,
+            commands::process_pending_open_files,
             commands::check_attachment_consistency,
             commands::cleanup_abandoned_temp_files,
             commands::retry_note_attachment_cleanup,

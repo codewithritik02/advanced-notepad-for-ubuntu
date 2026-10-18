@@ -9,6 +9,9 @@ import { SettingsModal } from "../features/settings/components/SettingsModal/Set
 import { useTheme } from "../hooks/useTheme";
 import { useDisplaySettings } from "../hooks/useDisplaySettings";
 import { useSidebarPin } from "../hooks/useSidebarPin";
+import { useOpenFiles } from "../hooks/useOpenFiles";
+import { useRecentNotes } from "../hooks/useRecentNotes";
+import type { OpenFilesReport } from "../services/storage/openFiles";
 import { markdownToPlainText } from "../utils/markdown";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import {
@@ -135,6 +138,7 @@ export function App() {
   const { theme, setTheme, toggleTheme } = useTheme();
   const display = useDisplaySettings();
   const sidebarPin = useSidebarPin();
+  const recents = useRecentNotes();
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -1306,6 +1310,96 @@ export function App() {
     ]
   );
 
+  // ---- Files opened from the desktop ("Open with Personal Notepad") and the Recent list ----------
+  const handleFilesOpened = useCallback(
+    async (report: OpenFilesReport) => {
+      let message = "";
+      if (report.opened.length > 0) {
+        try {
+          await handleFlushPendingSave();
+        } catch {
+          // The editor keeps unsaved text safe; opening the file must not be blocked by it
+        }
+        if (isSearchActive) clearSearch();
+        selectAllNotes();
+        setActiveNavId("all-notes");
+        await loadNotes("all-notes", null, null);
+        await refreshNoteCounts();
+
+        const last = report.opened[report.opened.length - 1];
+        navigationHistory.recordNavigation(last.noteId, selectedNoteId);
+        setSelectedNoteId(last.noteId);
+        for (const file of report.opened) {
+          recents.record({ id: file.noteId, title: file.title, file: file.path });
+        }
+        message =
+          report.opened.length === 1
+            ? `Opened "${last.fileName}" as a note${last.created ? "" : " (it was already open)"}.`
+            : `Opened ${report.opened.length} files as notes.`;
+      }
+      if (report.failed.length > 0) {
+        const first = report.failed[0];
+        const more = report.failed.length > 1 ? ` (+${report.failed.length - 1} more)` : "";
+        setRestoreFeedback({
+          type: "error",
+          message: `Could not open "${first.fileName}": ${first.message}${more}`,
+        });
+      } else if (message) {
+        setRestoreFeedback({ type: "success", message });
+      }
+    },
+    [
+      handleFlushPendingSave,
+      isSearchActive,
+      clearSearch,
+      selectAllNotes,
+      loadNotes,
+      refreshNoteCounts,
+      navigationHistory,
+      selectedNoteId,
+      recents,
+    ]
+  );
+  useOpenFiles(isStorageReady && !isAppLocked, handleFilesOpened);
+
+  // Remember the notes the user opens (the note that was selected automatically at startup is
+  // not counted, only later choices) and keep the remembered titles current.
+  const sawFirstSelectionRef = useRef(false);
+  useEffect(() => {
+    if (!selectedNoteId || activeNavId === "trash") return;
+    if (!sawFirstSelectionRef.current) {
+      sawFirstSelectionRef.current = true;
+      return;
+    }
+    const note = notes.find((n) => n.id === selectedNoteId);
+    recents.record({ id: selectedNoteId, title: note?.title });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the selection changes
+  }, [selectedNoteId]);
+  useEffect(() => {
+    recents.syncTitles(notes);
+  }, [notes, recents]);
+
+  const handleOpenRecent = useCallback(
+    async (noteId: string) => {
+      let note = null;
+      try {
+        note = await storageService.notes.get(noteId);
+      } catch {
+        note = null;
+      }
+      if (!note) {
+        recents.remove(noteId);
+        setRestoreFeedback({
+          type: "error",
+          message: "That note no longer exists, so it was removed from the recent list.",
+        });
+        return;
+      }
+      await handleActivateInternalLink(noteId);
+    },
+    [recents, handleActivateInternalLink]
+  );
+
   const handleConfirmViewInTrash = useCallback(async () => {
     if (!linkNavigationTarget) return;
     const targetId = linkNavigationTarget.targetId;
@@ -2030,6 +2124,10 @@ export function App() {
             onNavigateForward={handleNavigateForward}
             isEncryptionEnabled={isEncryptionEnabled}
             onLockClick={handleLockApp}
+            recentNotes={recents.recent}
+            onOpenRecent={handleOpenRecent}
+            onRemoveRecent={recents.remove}
+            onClearRecent={recents.clear}
           />
         }
         sidebar={

@@ -29256,3 +29256,92 @@ describe("Images in plain-text (TXT) notes", () => {
     assert.match(css, /\.editor-preview-area \.plain-note-image \{[^}]*display:\s*block/);
   });
 });
+
+describe("Open with Personal Notepad and the Recent list", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("moves the newest note to the front, keeps what it knew, and caps the list", async () => {
+    const m = await import("../src/utils/recentNotes.ts");
+    let list = [];
+    list = m.addRecent(list, { id: "a", title: "Alpha" }, 1000);
+    list = m.addRecent(list, { id: "b", title: "Beta", file: "/home/me/docs/beta.md" }, 2000);
+    list = m.addRecent(list, { id: "a" }, 3000); // reopened, title and age updated
+    assert.deepEqual(list.map((i) => i.id), ["a", "b"]);
+    assert.equal(list[0].title, "Alpha");
+    assert.equal(list[0].openedAt, 3000);
+    list = m.addRecent(list, { id: "b" }, 4000);
+    assert.equal(list[0].file, "/home/me/docs/beta.md", "the file a note came from is remembered");
+    assert.equal(m.addRecent([], { id: "x", title: "   " }, 1)[0].title, "Untitled Note");
+
+    let many = [];
+    for (let i = 0; i < 40; i += 1) many = m.addRecent(many, { id: `n${i}`, title: `Note ${i}` }, i);
+    assert.equal(many.length, m.MAX_RECENT_NOTES);
+    assert.equal(many[0].id, "n39");
+    assert.deepEqual(m.removeRecent(list, "a").map((i) => i.id), ["b"]);
+  });
+
+  it("refreshes renamed titles and survives corrupt stored data", async () => {
+    const m = await import("../src/utils/recentNotes.ts");
+    const list = [{ id: "a", title: "Old", openedAt: 5 }, { id: "b", title: "Same", openedAt: 4 }];
+    const synced = m.syncRecentTitles(list, [{ id: "a", title: "New name" }, { id: "b", title: "Same" }]);
+    assert.equal(synced[0].title, "New name");
+    assert.equal(m.syncRecentTitles(list, [{ id: "b", title: "Same" }]), list, "unchanged list is returned as is");
+
+    assert.deepEqual(m.parseRecent(null), []);
+    assert.deepEqual(m.parseRecent("not json"), []);
+    assert.deepEqual(m.parseRecent('{"a":1}'), []);
+    const parsed = m.parseRecent(JSON.stringify([
+      { id: "ok", title: "Fine", openedAt: 10 },
+      { id: "ok", title: "Duplicate", openedAt: 99 },
+      { title: "no id" },
+      42,
+      { id: "newer", title: "", openedAt: 20, file: "/a/b.txt" },
+    ]));
+    assert.deepEqual(parsed.map((i) => i.id), ["newer", "ok"], "bad and duplicate entries are dropped, newest first");
+    assert.equal(parsed[0].title, "Untitled Note");
+  });
+
+  it("formats times and file locations for display", async () => {
+    const m = await import("../src/utils/recentNotes.ts");
+    const now = 1_000_000_000_000;
+    assert.equal(m.formatRelativeTime(now - 10_000, now), "just now");
+    assert.equal(m.formatRelativeTime(now - 5 * 60_000, now), "5 min ago");
+    assert.equal(m.formatRelativeTime(now - 3 * 3_600_000, now), "3 h ago");
+    assert.equal(m.formatRelativeTime(now - 24 * 3_600_000, now), "yesterday");
+    assert.equal(m.formatRelativeTime(now - 4 * 86_400_000, now), "4 d ago");
+    assert.deepEqual(m.describeFilePath("/home/me/Documents/report.md"), { name: "report.md", folder: "Documents" });
+    assert.deepEqual(m.describeFilePath("/lonely.txt"), { name: "lonely.txt", folder: "" });
+  });
+
+  it("wires the backend command, the queued-files event, and the Recent menu into the app", () => {
+    const hook = read("src/hooks/useOpenFiles.ts");
+    assert.match(hook, /OPEN_FILES_QUEUED_EVENT = "open-files-queued"/);
+    assert.match(hook, /storageService\.openFiles\.processPending\(\)/);
+    assert.match(read("src/services/storage/openFiles.ts"), /invoke<OpenFilesReport>\("process_pending_open_files"\)/);
+
+    const app = read("src/app/App.tsx");
+    assert.match(app, /useOpenFiles\(isStorageReady && !isAppLocked, handleFilesOpened\)/, "files wait until the app is ready and unlocked");
+    assert.match(app, /recentNotes=\{recents\.recent\}/);
+    assert.match(app, /onOpenRecent=\{handleOpenRecent\}/);
+    assert.match(app, /That note no longer exists/);
+
+    const menu = read("src/components/TopBar/RecentMenu.tsx");
+    assert.match(menu, /aria-label="Recently opened"/);
+    assert.match(menu, /aria-haspopup="menu"/);
+    assert.match(menu, /Notes and files you open will appear here\./);
+  });
+
+  it("registers the Rust side: argument parsing, second-launch forwarding, command, event", () => {
+    const lib = read("src-tauri/src/lib.rs");
+    assert.match(lib, /parse_launch_paths\(std::env::args\(\)/);
+    assert.match(lib, /open_files::forward_launch\(&data_dir, &launch_paths\)/);
+    assert.match(lib, /commands::process_pending_open_files/);
+    assert.match(lib, /open_files::ipc::start_listener/);
+    const rust = read("src-tauri/src/open_files.rs");
+    assert.match(rust, /set_permissions\(&socket, std::fs::Permissions::from_mode\(0o600\)\)/, "the socket is owner-only");
+    assert.match(rust, /MAX_MESSAGE_BYTES/);
+    // the desktop entry already hands files to the app and advertises text/markdown types
+    const config = read("src-tauri/tauri.conf.json");
+    assert.match(config, /"identifier": "com\.personalnotepad\.app"/);
+  });
+});
