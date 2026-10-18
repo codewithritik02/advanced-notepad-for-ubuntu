@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { Modal, Button } from "../../../components/ui";
 import "./ConfirmNoteActionDialog.css";
 
-export type NoteConfirmAction = "trash" | "restore";
+export type NoteConfirmAction = "trash" | "restore" | "removeExternal";
 
 export interface NoteConfirmTarget {
   action: NoteConfirmAction;
@@ -25,6 +25,13 @@ const COPY: Record<
     body: "This note will be moved to the Trash.",
     hint: "You can restore it from the Trash any time until you delete it permanently.",
     confirmLabel: "Move to Trash",
+    variant: "danger",
+  },
+  removeExternal: {
+    heading: "Remove from External?",
+    body: "This file will be removed from the External list.",
+    hint: "The file itself stays on your computer; you can open it again with Open with or from Recent.",
+    confirmLabel: "Remove",
     variant: "danger",
   },
   restore: {

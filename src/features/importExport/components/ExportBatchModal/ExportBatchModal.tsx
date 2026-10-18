@@ -37,7 +37,7 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
   onSuccess,
 }) => {
   const [includeNested, setIncludeNested] = useState(true);
-  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("json");
+  const [selectedFormat, setSelectedFormat] = useState<ExportFormat>("zip");
   const [preview, setPreview] = useState<ExportSelectionPreview | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -144,10 +144,10 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
       let destinationDir = "";
       let destinationFile: string | null = null;
 
-      if (selectedFormat === "json") {
-        // Structured interchange: pick single target JSON file
-        const defaultFileName = `${defaultBaseName}.json`;
-        const pickerRes = await pickExportDestinationFile(defaultFileName, "json");
+      if (selectedFormat === "json" || selectedFormat === "zip") {
+        // One target file: the ZIP archive or the structured JSON document
+        const defaultFileName = `${defaultBaseName}.${selectedFormat}`;
+        const pickerRes = await pickExportDestinationFile(defaultFileName, selectedFormat);
         if (pickerRes.cancelled || !pickerRes.path) {
           return;
         }
@@ -182,7 +182,7 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
         destinationDir,
         destinationFile,
         includeMetadata: true,
-        overwrite: selectedFormat === "json",
+        overwrite: selectedFormat === "json" || selectedFormat === "zip",
       };
 
       try {
@@ -321,6 +321,22 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
           <div className="export-batch-section">
             <span className="export-batch-section-label">Export Format</span>
             <div className="export-batch-format-chips">
+              <button
+                type="button"
+                className={`export-format-chip ${selectedFormat === "zip" ? "is-selected" : ""}`}
+                onClick={() => setSelectedFormat("zip")}
+                disabled={isExporting}
+              >
+                <div className="format-chip-header">
+                  <span className="format-chip-ext">.zip</span>
+                  <span className="format-chip-name">ZIP with images &amp; files</span>
+                </div>
+                <span className="format-chip-desc">
+                  One folder per note (in its own .md/.txt format) with its images and attachments
+                  inside an assets folder.
+                </span>
+              </button>
+
               <button
                 type="button"
                 className={`export-format-chip ${selectedFormat === "json" ? "is-selected" : ""}`}

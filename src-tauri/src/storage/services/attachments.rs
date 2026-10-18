@@ -383,6 +383,90 @@ impl AttachmentService {
         Ok(bytes)
     }
 
+    /// Reads any attachment into memory (used by the ZIP export). Encrypted files are decrypted in
+    /// memory only; files larger than `max_bytes` are refused.
+    ///
+    /// Safety rules:
+    /// - only real images are returned (PNG, JPEG, GIF, WebP, SVG); the type is detected from the
+    ///   file *content*, never from the file name alone;
+    /// - encrypted attachments are decrypted in memory only (no plaintext temp file);
+    /// - files larger than `max_bytes` are refused so a preview can never exhaust memory.
+    pub fn read_attachment_bytes_with_key(
+        conn: &Connection,
+        storage: &AttachmentStorage,
+        id: &str,
+        dek: Option<&SecretBytes>,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, AttachmentError> {
+        let trimmed_id = id.trim();
+        if trimmed_id.is_empty() {
+            return Err(AttachmentError::InvalidRequest(
+                "Attachment ID cannot be empty".to_string(),
+            ));
+        }
+
+        let attachment = AttachmentRepository::get_by_id_with_key(conn, trimmed_id, dek)?
+            .ok_or_else(|| {
+                AttachmentError::AttachmentNotFound(format!(
+                    "Attachment with id '{trimmed_id}' not found"
+                ))
+            })?;
+
+        if attachment.file_size < 0 || attachment.file_size as u64 > max_bytes {
+            return Err(AttachmentError::FileTooLarge {
+                size_bytes: attachment.file_size.max(0) as u64,
+                max_bytes,
+            });
+        }
+
+        let safe_path = storage.resolve_safe_path(&attachment.relative_path)?;
+        if !safe_path.exists() {
+            return Err(AttachmentError::ManagedFileMissing(
+                attachment.relative_path,
+            ));
+        }
+
+        let bytes = if AttachmentStorage::is_encrypted_file(&safe_path) {
+            let key = dek.ok_or_else(|| {
+                AttachmentError::InvalidRequest(
+                    "Application is locked. Cannot read encrypted attachment without active key."
+                        .to_string(),
+                )
+            })?;
+            let stored_name = attachment
+                .relative_path
+                .split('/')
+                .next_back()
+                .unwrap_or(&attachment.relative_path);
+            let aad = format!("attachments:{}:{stored_name}", attachment.note_id.trim());
+            crate::storage::crypto::decrypt_file_to_vec(&safe_path, key, aad.as_bytes()).map_err(
+                |e| {
+                    AttachmentError::FileOperationFailed(format!(
+                        "Attachment decryption failed: {e}"
+                    ))
+                },
+            )?
+        } else {
+            std::fs::read(&safe_path).map_err(|e| match e.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    AttachmentError::PermissionDenied(attachment.relative_path.clone())
+                }
+                _ => AttachmentError::FileOperationFailed(format!(
+                    "Failed to read attachment file: {e}"
+                )),
+            })?
+        };
+
+        if bytes.len() as u64 > max_bytes {
+            return Err(AttachmentError::FileTooLarge {
+                size_bytes: bytes.len() as u64,
+                max_bytes,
+            });
+        }
+
+        Ok(bytes)
+    }
+
     /// Checks storage consistency across database attachment records and managed disk files (Phase 7, Task 21).
     pub fn check_consistency(
         conn: &Connection,

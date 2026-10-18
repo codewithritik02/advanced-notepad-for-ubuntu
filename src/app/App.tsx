@@ -1152,10 +1152,14 @@ export function App() {
     [notes]
   );
 
+  const closeExternalRef = useRef<((id: string) => Promise<void>) | null>(null);
+
   const handleConfirmNoteAction = useCallback(
     async (target: NoteConfirmTarget) => {
       if (target.action === "trash") {
         await handleDeleteNote(target.id);
+      } else if (target.action === "removeExternal") {
+        await closeExternalRef.current?.(target.id);
       } else {
         await handleRestoreNote(target.id);
       }
@@ -1486,6 +1490,8 @@ export function App() {
     },
     [selectedNoteId, refreshExternalDocs]
   );
+
+  closeExternalRef.current = handleCloseExternal;
 
   // Ctrl+W closes the open note / file
   useEffect(() => {
@@ -2287,7 +2293,10 @@ export function App() {
             selectedExternalId={selectedExternalId}
             onSelectExternal={handleSelectExternal}
             onTogglePinExternal={handleTogglePinExternal}
-            onCloseExternal={handleCloseExternal}
+            onCloseExternal={(id) => {
+              const doc = externalDocs.find((d) => d.id === id);
+              setNoteActionConfirm({ action: "removeExternal", id, title: doc?.fileName ?? "" });
+            }}
             activeNavId={activeNavId}
             onSelectNav={async (navId) => {
               if (editorSaveRef.current) {

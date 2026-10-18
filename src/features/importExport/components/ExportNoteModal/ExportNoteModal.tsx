@@ -3,6 +3,7 @@ import { ExportFormat } from "../../../../services/storage/types";
 import { importExportStorage } from "../../../../services/storage/importExport";
 import { cryptoStorage } from "../../../../services/storage/crypto";
 import { pickExportDestinationFile } from "../../services/fileDialog";
+import { storageService } from "../../../../services/storage";
 import "./ExportNoteModal.css";
 
 export interface ExportNoteModalProps {
@@ -34,6 +35,21 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isEncryptionActive, setIsEncryptionActive] = useState(false);
 
+  // A note with attachments is offered as a ZIP (note + assets folder) by default
+  useEffect(() => {
+    if (!isOpen) return;
+    let current = true;
+    storageService.attachments
+      .getAttachmentCount(note.id)
+      .then((count) => {
+        if (current && count > 0) setSelectedFormat("zip");
+      })
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [isOpen, note.id]);
+
   useEffect(() => {
     if (isOpen) {
       cryptoStorage
@@ -46,7 +62,14 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
   if (!isOpen) return null;
 
   const baseFileName = sanitizeExportFilename(note.title);
-  const extension = selectedFormat === "md" ? ".md" : selectedFormat === "json" ? ".json" : ".txt";
+  const extension =
+    selectedFormat === "zip"
+      ? ".zip"
+      : selectedFormat === "md"
+      ? ".md"
+      : selectedFormat === "json"
+      ? ".json"
+      : ".txt";
   const defaultFileName = `${baseFileName}${extension}`;
 
   const handleExport = async () => {
@@ -68,6 +91,23 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
       }
 
       // 3. Execute backend export
+      if (selectedFormat === "zip") {
+        const summary = await importExportStorage.exportNotesBatch({
+          scope: { type: "single_note", note_id: note.id },
+          format: "zip",
+          destinationDir: "",
+          destinationFile: pickerResult.path,
+          includeMetadata: true,
+          overwrite: true,
+        });
+        if (summary.exportedCount === 0) {
+          throw new Error(summary.results[0]?.message || "The note could not be exported.");
+        }
+        setIsExporting(false);
+        onClose();
+        onSuccess?.(pickerResult.path);
+        return;
+      }
       const result = await importExportStorage.exportSingleNote({
         noteId: note.id,
         format: selectedFormat,
@@ -112,6 +152,22 @@ export const ExportNoteModal: React.FC<ExportNoteModalProps> = ({
           <div className="export-note-info-row">
             <span className="export-note-info-label">Choose Export Format</span>
             <div className="export-format-options-group" role="radiogroup" aria-label="Export format selection">
+              <label className={`export-format-card ${selectedFormat === "zip" ? "is-selected" : ""}`}>
+                <input
+                  type="radio"
+                  name="exportFormat"
+                  value="zip"
+                  checked={selectedFormat === "zip"}
+                  onChange={() => setSelectedFormat("zip")}
+                />
+                <div className="export-format-details">
+                  <span className="export-format-title">ZIP with images &amp; files (.zip)</span>
+                  <span className="export-format-desc">
+                    The note in its own format plus an assets folder with its attached images and files.
+                  </span>
+                </div>
+              </label>
+
               <label className={`export-format-card ${selectedFormat === "md" ? "is-selected" : ""}`}>
                 <input
                   type="radio"

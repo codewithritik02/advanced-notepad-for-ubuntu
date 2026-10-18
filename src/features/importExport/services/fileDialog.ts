@@ -94,14 +94,16 @@ export async function pickExportDestinationFile(
 ): Promise<SavePickerResult> {
   try {
     const filter =
-      format === "md"
+      format === "zip"
+        ? [{ name: "ZIP archive (*.zip)", extensions: ["zip"] }]
+        : format === "md"
         ? [{ name: "Markdown (*.md)", extensions: ["md"] }]
         : format === "json"
         ? [{ name: "Interchange JSON (*.json)", extensions: ["json"] }]
         : [{ name: "Plain Text (*.txt)", extensions: ["txt"] }];
 
     const selected = await save({
-      title: "Export Note",
+      title: format === "zip" ? "Export as ZIP" : "Export Note",
       defaultPath: defaultName,
       filters: filter,
     });

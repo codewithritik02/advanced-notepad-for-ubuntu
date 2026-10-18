@@ -446,6 +446,8 @@ pub enum ExportFormat {
     Txt,
     Md,
     Json,
+    /// One ZIP archive: a folder per note with its attachments in `assets/`
+    Zip,
 }
 
 /// Duplicate resolution policy during import

@@ -11,6 +11,7 @@ pub mod backup_validation;
 pub mod import_export;
 pub mod links;
 pub mod manifest;
+pub mod notes_zip;
 pub mod restore;
 pub mod search;
 pub mod snapshot;

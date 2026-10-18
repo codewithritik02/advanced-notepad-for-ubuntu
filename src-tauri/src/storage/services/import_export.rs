@@ -1682,6 +1682,11 @@ impl ImportExportService {
         }
 
         let content_bytes: Vec<u8> = match request.format {
+            ExportFormat::Zip => {
+                return Err(StorageError::Validation(
+                    "ZIP export is only available through the batch export.".to_string(),
+                ));
+            }
             ExportFormat::Txt | ExportFormat::Md => {
                 // Export note content verbatim as UTF-8
                 note.content.as_bytes().to_vec()
@@ -2129,6 +2134,13 @@ impl ImportExportService {
         let mut cancelled_count = 0;
 
         match request.format {
+            ExportFormat::Zip => {
+                Self::clear_operation(operation_id.as_deref());
+                return Err(StorageError::Validation(
+                    "ZIP export needs the attachment storage; use the ZIP export entry point."
+                        .to_string(),
+                ));
+            }
             ExportFormat::Json => {
                 // Structured JSON: export all notes into a single InterchangeDocument
                 let exported_ids: std::collections::HashSet<String> =

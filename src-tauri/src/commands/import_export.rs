@@ -98,6 +98,7 @@ pub fn preview_export_selection(
 pub fn export_notes_batch(
     app: AppHandle,
     state: State<'_, Database>,
+    paths: State<'_, crate::storage::StoragePaths>,
     session: State<'_, CryptoSession>,
     request: ExportBatchRequest,
 ) -> Result<ExportSummary, String> {
@@ -105,6 +106,19 @@ pub fn export_notes_batch(
         .map_err(|e| e.user_friendly_message())?;
     let dek = get_active_dek(&session)?;
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    if request.format == crate::storage::models::ExportFormat::Zip {
+        let storage = crate::storage::AttachmentStorage::new((*paths).clone());
+        return ImportExportService::export_notes_zip_with_key(
+            &conn,
+            &storage,
+            request,
+            dek.as_ref(),
+            |prog| {
+                let _ = app.emit("export-progress", prog);
+            },
+        )
+        .map_err(|e| e.user_friendly_message());
+    }
     ImportExportService::export_notes_batch_with_progress_and_key(
         &conn,
         request,
