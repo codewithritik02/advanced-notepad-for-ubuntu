@@ -29450,3 +29450,30 @@ describe("Pin a regular note from the toolbar", () => {
     assert.match(fs.readFileSync("src/features/notes/components/NotesList/NoteCard.tsx", "utf8"), /note-card-pinned-indicator/);
   });
 });
+
+describe("Pinned external files stay when closed", () => {
+  it("closing a pinned file only closes the editor; the sidebar x always unlists", () => {
+    const app = fs.readFileSync("src/app/App.tsx", "utf8");
+    assert.match(app, /isExternalId\(closingId\) && !closingDoc\?\.pinned/);
+    const css = fs.readFileSync("src/components/Sidebar/Sidebar.css", "utf8");
+    assert.doesNotMatch(css, /\.sidebar-external-pin \{[^}]*opacity: 0;/, "the sidebar pin is always visible");
+    assert.doesNotMatch(css, /is-compact \.sidebar-section--external,/, "External stays visible in the collapsed rail");
+  });
+});
+
+describe("Note card action icons are always visible", () => {
+  it("star and delete icons are dimmed, not hidden, when the card is not hovered", () => {
+    const css = fs.readFileSync("src/features/notes/components/NotesList/NotesList.css", "utf8");
+    const rule = (name) => css.match(new RegExp("\\.note-card-" + name + "-btn \\{[^}]*\\}"))[0];
+    assert.doesNotMatch(rule("favorite"), /opacity:\s*0;/);
+    assert.doesNotMatch(rule("delete"), /opacity:\s*0;/);
+  });
+});
+
+describe("Note card icons share one size", () => {
+  it("pin, star and delete use the same 24px box in one centered row", () => {
+    const css = fs.readFileSync("src/features/notes/components/NotesList/NotesList.css", "utf8");
+    assert.match(css, /\.note-card-favorite-btn,\s*\.note-card-delete-btn,\s*\.note-card-pinned-indicator \{[^}]*width: 24px;[^}]*height: 24px;/);
+    assert.match(css, /\.note-card-header \{[^}]*align-items: center;/);
+  });
+});

@@ -324,7 +324,6 @@
 .sidebar-container.is-compact .btn-import-notes,
 .sidebar-container.is-compact .sidebar-section--notebooks,
 .sidebar-container.is-compact .sidebar-section--tags,
-.sidebar-container.is-compact .sidebar-section--external,
 .sidebar-container.is-compact .sidebar-section-title {
   display: none;
 }
@@ -432,7 +431,7 @@
   background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.6;
 }
 
 .sidebar-external-row:hover .sidebar-external-pin,
@@ -447,4 +446,18 @@
 
 .sidebar-external-pin:hover {
   background-color: var(--color-surface-hover);
+}
+
+/* In the collapsed rail the External files show as icons only */
+.sidebar-container.is-compact .sidebar-external-pin,
+.sidebar-container.is-compact .sidebar-external-close {
+  display: none;
+}
+
+.sidebar-container.is-compact .sidebar-external-row .sidebar-nav-item {
+  padding-right: 0;
+}
+
+.sidebar-external-pin.is-pinned svg {
+  fill: currentColor;
 }

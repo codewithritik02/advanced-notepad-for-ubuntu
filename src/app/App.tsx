@@ -1438,7 +1438,9 @@ export function App() {
     }
     const closingId = selectedNoteId;
     setSelectedNoteId(null);
-    if (isExternalId(closingId)) {
+    // A pinned file stays in the sidebar so it can be reopened from there; others are unlisted
+    const closingDoc = externalDocs.find((d) => d.id === closingId);
+    if (isExternalId(closingId) && !closingDoc?.pinned) {
       try {
         await storageService.openFiles.closeExternal(closingId);
       } catch (err) {
@@ -1446,7 +1448,7 @@ export function App() {
       }
       await refreshExternalDocs();
     }
-  }, [selectedNoteId, cancelPendingDebounce, refreshExternalDocs]);
+  }, [selectedNoteId, externalDocs, cancelPendingDebounce, refreshExternalDocs]);
 
   const handleTogglePinExternal = useCallback(
     async (id: string) => {
@@ -1462,11 +1464,18 @@ export function App() {
     [externalDocs, refreshExternalDocs]
   );
 
+  /** The x in the sidebar: always removes the file from the list (pinned or not). */
   const handleCloseExternal = useCallback(
     async (id: string) => {
       if (id === selectedNoteId) {
-        await handleCloseNote();
-        return;
+        if (editorSaveRef.current) {
+          try {
+            await editorSaveRef.current();
+          } catch {
+            return;
+          }
+        }
+        setSelectedNoteId(null);
       }
       try {
         await storageService.openFiles.closeExternal(id);
@@ -1475,7 +1484,7 @@ export function App() {
       }
       await refreshExternalDocs();
     },
-    [selectedNoteId, handleCloseNote, refreshExternalDocs]
+    [selectedNoteId, refreshExternalDocs]
   );
 
   // Ctrl+W closes the open note / file

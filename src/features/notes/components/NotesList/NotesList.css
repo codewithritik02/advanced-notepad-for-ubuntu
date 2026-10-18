@@ -159,7 +159,7 @@
 
 .note-card-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--spacing-sm);
   margin-bottom: var(--spacing-xs);
@@ -198,8 +198,20 @@
 }
 
 .note-card-favorite-btn {
-  opacity: 0;
+  /* always visible (dimmed); full strength on hover/focus */
+  opacity: 0.55;
   color: var(--color-text-muted);
+}
+
+/* Pin, star and delete share one 24px box so they sit in a single, evenly sized row */
+.note-card-favorite-btn,
+.note-card-delete-btn,
+.note-card-pinned-indicator {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
 }
 
 .note-card:hover .note-card-favorite-btn,
@@ -234,7 +246,7 @@
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.55;
   color: var(--color-text-muted);
   flex-shrink: 0;
   transition: opacity var(--transition-fast), color var(--transition-fast), background-color var(--transition-fast);
@@ -604,6 +616,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   color: var(--color-accent-default);
   opacity: 0.85;
 }
