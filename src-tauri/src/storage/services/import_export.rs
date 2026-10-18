@@ -86,9 +86,19 @@ impl ImportExportService {
         match ext.as_str() {
             "txt" => Some(ImportFormat::Txt),
             "md" | "markdown" => Some(ImportFormat::Md),
-            "json" => Some(ImportFormat::Json),
+            // JSON is never interpreted as structured data: it is only ever a plain text document
+            "json" => Some(ImportFormat::Txt),
             _ => None,
         }
+    }
+
+    /// Whether a file found while expanding a folder is offered for import (txt/md/markdown only).
+    fn is_folder_import_candidate(path: &Path) -> bool {
+        !path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+            && Self::detect_format_from_path(path).is_some()
     }
 
     /// Sanitizes an arbitrary title string by stripping control characters and trimming whitespace,
@@ -253,7 +263,7 @@ impl ImportExportService {
                             if let Some(file_name) = child_path.file_name().and_then(|n| n.to_str())
                             {
                                 if !file_name.starts_with('.')
-                                    && Self::detect_format_from_path(&child_path).is_some()
+                                    && Self::is_folder_import_candidate(&child_path)
                                 {
                                     resolved.push(child_path);
                                     if resolved.len() >= MAX_BATCH_FILE_COUNT {
@@ -680,7 +690,7 @@ impl ImportExportService {
                         validation_status: ValidationStatus::Invalid,
                         warnings: Vec::new(),
                         error_message: Some(
-                            "Unsupported file extension. Only .txt, .md, and .json are supported."
+                            "Unsupported file extension. Only .txt and .md are supported."
                                 .to_string(),
                         ),
                         is_duplicate: false,
@@ -2786,10 +2796,8 @@ mod tests {
             ImportExportService::scan_candidates(&conn, &[json_path.to_string_lossy().to_string()])
                 .unwrap();
         assert_eq!(preview.candidates.len(), 1);
-        assert_eq!(
-            preview.candidates[0].proposed_title,
-            "Document Title From Structured Interchange"
-        );
+        // JSON is a plain document: the title comes from the file name, never from its content
+        assert_eq!(preview.candidates[0].proposed_title, "random_filename");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3121,26 +3129,17 @@ mod tests {
         let json_note = NoteRepository::get_by_id(&conn, created_json_id)
             .unwrap()
             .unwrap();
-        assert_eq!(json_note.title, "Tagged Note From JSON");
-        assert_eq!(
-            json_note.content,
-            "Content inside structured interchange package."
-        );
-        assert_eq!(json_note.format, "md");
-        assert!(json_note.is_favorite);
+        // A .json file is only a plain text document: its text is kept verbatim and none of its
+        // fields (title, tags, favorite flag) are interpreted
+        assert_eq!(json_note.title, "Structured Package");
+        assert!(json_note.content.contains("Tagged Note From JSON"));
+        assert_eq!(json_note.format, "txt");
+        assert!(!json_note.is_favorite);
         assert_eq!(json_note.notebook_id, Some(nb.id.clone()));
-        // Invariant: external export_id was NOT used as note primary key
-        assert_ne!(json_note.id, "external-export-uuid-999");
-
-        // Verify tags were properly created and linked
         let note_tags =
             crate::storage::repositories::TagRepository::get_tags_for_note(&conn, created_json_id)
                 .unwrap();
-        assert_eq!(note_tags.len(), 3);
-        let tag_names: Vec<String> = note_tags.into_iter().map(|t| t.name).collect();
-        assert!(tag_names.contains(&"rust".to_string()));
-        assert!(tag_names.contains(&"tauri".to_string()));
-        assert!(tag_names.contains(&"sqlite".to_string()));
+        assert!(note_tags.is_empty());
 
         // 5. Verify target notebook validation error
         let invalid_nb_request = ImportRequest {
@@ -3278,7 +3277,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(updated_note.title, "Preserved Architecture Spec (Edited)");
         assert!(updated_note.content.contains("## 2. Updated Appendix"));
 
-        // 6. Verify structured JSON import with "markdown" / "md" also sets format="md"
+        // 6. A .json file is imported as a plain text document, never parsed as a structured package
         let json_file = dir.join("Structured_Markdown.json");
         let sample_json_content = r#"# Headings & Fences
 
@@ -3327,8 +3326,8 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         let struct_note = NoteRepository::get_by_id(&conn, struct_note_id)
             .unwrap()
             .unwrap();
-        assert_eq!(struct_note.format, "md");
-        assert_eq!(struct_note.content, sample_json_content);
+        assert_eq!(struct_note.format, "txt");
+        assert!(struct_note.content.contains("Structured Markdown Note"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3496,181 +3495,93 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
     }
 
     #[test]
-    fn test_task_13_notebook_and_metadata_handling_for_structured_imports_suite() {
+    fn test_task_13_json_files_import_as_plain_documents_suite() {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::storage::migrations::run_migrations(&mut conn).unwrap();
         let dir =
-            std::env::temp_dir().join(format!("test_t13_struct_import_{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("test_t13_json_plain_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // 1. Version rejection test: version 2.0 must be rejected with actionable error
-        let v2_file = dir.join("Unsupported_v2.json");
-        let v2_doc = serde_json::json!({
+        // A file that merely looks like an interchange package (even an unsupported version) is
+        // never parsed: it is valid plain text and creates no notebooks, tags or links
+        let package_file = dir.join("Full_Interchange_Package.json");
+        let package_text = serde_json::to_string(&serde_json::json!({
             "app": "personal-notepad",
             "version": "2.0",
-            "exported_at": "2026-10-12T10:00:00Z",
-            "notes": []
-        });
-        std::fs::write(&v2_file, serde_json::to_string(&v2_doc).unwrap()).unwrap();
-        let v2_preview =
-            ImportExportService::scan_candidates(&conn, &[v2_file.to_string_lossy().to_string()])
-                .unwrap();
-        assert_eq!(
-            v2_preview.candidates[0].validation_status,
-            ValidationStatus::Invalid
-        );
-        assert!(v2_preview.candidates[0]
-            .error_message
-            .as_ref()
-            .unwrap()
-            .contains("Unsupported interchange version '2.0'"));
+            "notes": [{
+                "export_id": "ext-arch-100",
+                "title": "Architecture Overview",
+                "content": "Refer to [Storage](notepad://note/ext-store-200)",
+                "format": "md",
+                "notebook_path": "Engineering/Backend/Storage",
+                "tags": ["rust"],
+                "is_favorite": true
+            }]
+        }))
+        .unwrap();
+        std::fs::write(&package_file, &package_text).unwrap();
+        let broken_file = dir.join("broken.json");
+        std::fs::write(&broken_file, "{ not even json").unwrap();
 
-        // 2. Structured JSON package with:
-        // - 2 notes linking to each other via internal links (canonical + shorthand)
-        // - Nested notebook hierarchy "Engineering / Backend / Storage"
-        // - Duplicate and case-insensitive tags
-        // - Explicit RFC 3339 timestamps
-        // - Forward compatible missing optional fields
-        let package_file = dir.join("Full_Interchange_Package.json");
-        let package_doc = serde_json::json!({
-            "app": "personal-notepad",
-            "version": "1.0",
-            "exported_at": "2026-10-12T12:00:00Z",
-            "note_count": 2,
-            "notes": [
-                {
-                    "export_id": "ext-arch-100",
-                    "title": "Architecture Overview",
-                    "content": "Refer to [Storage Engine](notepad://note/ext-store-200) and [Legacy Ref](note:ext-store-200). External: [Docs](notepad://note/external-unimported-id)",
-                    "format": "md",
-                    "notebook_path": "Engineering/Backend/Storage",
-                    "tags": ["rust", "database", "Rust", "DATABASE"],
-                    "is_favorite": true,
-                    "is_pinned": true,
-                    "created_at": "2026-01-01T08:00:00Z",
-                    "modified_at": "2026-06-01T12:00:00Z"
-                },
-                {
-                    "export_id": "ext-store-200",
-                    "title": "Storage Engine",
-                    "content": "Backlink to [Architecture Overview](notepad://note/ext-arch-100).",
-                    "format": "md",
-                    "notebook_path": "Engineering/Backend/Storage",
-                    "tags": ["database"],
-                    "is_favorite": false,
-                    "is_pinned": false
-                }
-            ]
-        });
-        std::fs::write(&package_file, serde_json::to_string(&package_doc).unwrap()).unwrap();
-
-        // 3. Scan candidate
         let preview = ImportExportService::scan_candidates(
             &conn,
-            &[package_file.to_string_lossy().to_string()],
+            &[
+                package_file.to_string_lossy().to_string(),
+                broken_file.to_string_lossy().to_string(),
+            ],
         )
         .unwrap();
-        assert_eq!(preview.candidates.len(), 1);
-        assert_eq!(
-            preview.candidates[0].validation_status,
-            ValidationStatus::Warning
-        );
-        assert!(preview.candidates[0]
-            .warnings
-            .iter()
-            .any(|w| w.contains("Structured package containing 2 note(s)")));
+        assert_eq!(preview.candidates.len(), 2);
+        for candidate in &preview.candidates {
+            assert_eq!(candidate.validation_status, ValidationStatus::Valid);
+            assert!(candidate.error_message.is_none());
+            assert!(candidate.warnings.is_empty(), "{:?}", candidate.warnings);
+        }
 
-        // 4. Execute import without target_notebook_id override (should preserve notebook_path hierarchy)
         let request = ImportRequest {
             operation_id: None,
-            candidates: vec![ImportCandidateOverride {
-                id: preview.candidates[0].id.clone(),
-                file_path: package_file.to_string_lossy().to_string(),
-                selected: true,
-                custom_title: None,
-            }],
+            candidates: preview
+                .candidates
+                .iter()
+                .map(|c| ImportCandidateOverride {
+                    id: c.id.clone(),
+                    file_path: c.file_path.clone(),
+                    selected: true,
+                    custom_title: None,
+                })
+                .collect(),
             options: ImportOptions {
                 target_notebook_id: None,
                 duplicate_policy: DuplicatePolicy::ImportAsNew,
             },
         };
-
         let summary = ImportExportService::execute_import(&mut conn, request).unwrap();
-        assert_eq!(summary.imported_count, 1);
-        assert_eq!(summary.results[0].status, ImportItemStatus::Imported);
+        assert_eq!(summary.imported_count, 2);
 
-        // 5. Verify database records
-        // Check created notebook hierarchy
-        let all_notebooks = NotebookRepository::list(&conn).unwrap();
-        let eng_nb = all_notebooks
-            .iter()
-            .find(|n| n.name == "Engineering")
-            .expect("Engineering notebook");
-        assert!(eng_nb.parent_id.is_none());
+        let note =
+            NoteRepository::get_by_id(&conn, summary.results[0].created_note_id.as_ref().unwrap())
+                .unwrap()
+                .unwrap();
+        assert_eq!(note.title, "Full_Interchange_Package");
+        assert_eq!(note.format, "txt");
+        assert_eq!(note.content, package_text, "text kept exactly as written");
+        assert!(!note.is_favorite);
+        assert!(note.notebook_id.is_none());
+        assert!(
+            crate::storage::repositories::NotebookRepository::list(&conn)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(crate::storage::repositories::TagRepository::list(&conn)
+            .unwrap()
+            .is_empty());
 
-        let backend_nb = all_notebooks
-            .iter()
-            .find(|n| n.name == "Backend")
-            .expect("Backend notebook");
-        assert_eq!(backend_nb.parent_id, Some(eng_nb.id.clone()));
-
-        let storage_nb = all_notebooks
-            .iter()
-            .find(|n| n.name == "Storage")
-            .expect("Storage notebook");
-        assert_eq!(storage_nb.parent_id, Some(backend_nb.id.clone()));
-
-        // Hierarchy path check
-        let path = NotebookRepository::get_hierarchy_path(&conn, &storage_nb.id).unwrap();
-        assert_eq!(path, "Engineering / Backend / Storage");
-
-        // Verify notes created
-        let all_notes = NoteRepository::list_active(&conn).unwrap();
-        assert_eq!(all_notes.len(), 2);
-
-        let arch_note = all_notes
-            .iter()
-            .find(|n| n.title == "Architecture Overview")
-            .expect("Arch note");
-        let store_note = all_notes
-            .iter()
-            .find(|n| n.title == "Storage Engine")
-            .expect("Store note");
-
-        // Verify assigned notebook
-        assert_eq!(arch_note.notebook_id, Some(storage_nb.id.clone()));
-        assert_eq!(store_note.notebook_id, Some(storage_nb.id.clone()));
-
-        // Invariant: External IDs were NEVER used as SQLite primary keys
-        assert_ne!(arch_note.id, "ext-arch-100");
-        assert_ne!(store_note.id, "ext-store-200");
-
-        // Invariant: Internal links remapped accurately to new local UUIDs
-        let expected_canonical_link = format!("notepad://note/{}", store_note.id);
-        let expected_shorthand_link = format!("note:{}", store_note.id);
-        assert!(arch_note.content.contains(&expected_canonical_link));
-        assert!(arch_note.content.contains(&expected_shorthand_link));
-        // External reference not in package remained untouched
-        assert!(arch_note
-            .content
-            .contains("notepad://note/external-unimported-id"));
-
-        let expected_backlink = format!("notepad://note/{}", arch_note.id);
-        assert!(store_note.content.contains(&expected_backlink));
-
-        // Invariant: Timestamps preserved when valid RFC 3339
-        assert_eq!(arch_note.created_at, "2026-01-01T08:00:00Z");
-        assert_eq!(arch_note.modified_at, "2026-06-01T12:00:00Z");
-
-        // Invariant: Flags preserved
-        assert!(arch_note.is_favorite);
-        assert!(arch_note.is_pinned);
-        assert!(!store_note.is_favorite);
-        assert!(!store_note.is_pinned);
-
-        // Invariant: Tags deduplicated and case-insensitively resolved
-        let arch_tags = TagRepository::get_tags_for_note(&conn, &arch_note.id).unwrap();
-        assert_eq!(arch_tags.len(), 2); // "rust" and "database" (duplicates discarded)
+        // Folder import never picks .json files up
+        std::fs::write(dir.join("keep.md"), "# hi").unwrap();
+        let expanded =
+            ImportExportService::expand_and_validate_paths(&[dir.to_string_lossy().to_string()]);
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded[0].ends_with("keep.md"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -4332,35 +4243,22 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 .unwrap();
         assert!(validated.interchange_doc.is_some());
 
+        // Importing the exported .json again no longer rebuilds notes from it: it is plain text
         let raw_paths = vec![json_dest_file.to_string_lossy().to_string()];
         let preview = ImportExportService::scan_candidates(&fresh_conn, &raw_paths).unwrap();
         assert_eq!(preview.candidates.len(), 1);
-        // Candidate preview should reflect warnings about omitted attachments and external links
-        assert!(preview.candidates[0]
-            .warnings
-            .iter()
-            .any(|w| w.contains("omit 2 attachment(s)")));
-        assert!(preview.candidates[0]
-            .warnings
-            .iter()
-            .any(|w| w.contains("1 link(s) to notes outside")));
-
-        let candidate_overrides: Vec<ImportCandidateOverride> = preview
-            .candidates
-            .iter()
-            .map(|c| ImportCandidateOverride {
-                id: c.id.clone(),
-                file_path: c.file_path.clone(),
-                selected: true,
-                custom_title: None,
-            })
-            .collect();
+        assert!(preview.candidates[0].warnings.is_empty());
 
         let import_summary = ImportExportService::execute_import(
             &mut fresh_conn,
             ImportRequest {
                 operation_id: None,
-                candidates: candidate_overrides,
+                candidates: vec![ImportCandidateOverride {
+                    id: preview.candidates[0].id.clone(),
+                    file_path: preview.candidates[0].file_path.clone(),
+                    selected: true,
+                    custom_title: None,
+                }],
                 options: ImportOptions {
                     target_notebook_id: None,
                     duplicate_policy: DuplicatePolicy::ImportAsNew,
@@ -4368,29 +4266,11 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             },
         )
         .unwrap();
-
         assert_eq!(import_summary.imported_count, 1);
         let imported_notes = NoteRepository::list(&fresh_conn, false).unwrap();
-        assert_eq!(imported_notes.len(), 2);
-
-        // Find re-imported notes in fresh database
-        let fresh_sys = imported_notes
-            .iter()
-            .find(|n| n.title == "System Design")
-            .unwrap();
-        let fresh_db = imported_notes
-            .iter()
-            .find(|n| n.title == "Database Engine")
-            .unwrap();
-
-        // Check internal link rewriting: link to Note 2 rewritten to fresh_db.id!
-        assert!(fresh_sys
-            .content
-            .contains(&format!("notepad://note/{}", fresh_db.id)));
-        // External link remains unmapped:
-        assert!(fresh_sys
-            .content
-            .contains(&format!("notepad://note/{}", external_uuid)));
+        assert_eq!(imported_notes.len(), 1);
+        assert_eq!(imported_notes[0].format, "txt");
+        assert!(imported_notes[0].content.contains("System Design"));
 
         // 12. Verify Nesting Depth Enforcement (Max 3 levels)
         let deep_json = temp_dir.join("deep_nesting.json");

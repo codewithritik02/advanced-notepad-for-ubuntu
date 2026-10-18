@@ -64,6 +64,8 @@ import { BrokenLinkDialog } from "../features/notes/components/Links";
 import { NotePickerModal } from "../features/notes/components/NotePicker";
 import { replaceInternalLinkTarget, removeInternalLink } from "../utils/linkParser";
 import { useNoteNavigationHistory } from "../hooks/useNoteNavigationHistory";
+import { isExternalId } from "../utils/externalDocuments";
+import type { ExternalDocument } from "../services/storage/openFiles";
 import {
   ExportBatchModal,
   ImportPreviewModal,
@@ -172,6 +174,11 @@ export function App() {
   const [hasMoreNotes, setHasMoreNotes] = useState(false);
   const [isLoadingMoreNotes, setIsLoadingMoreNotes] = useState(false);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  // Files opened from outside the notebook ("Open with"); kept apart from the notes list
+  const [externalDocs, setExternalDocs] = useState<ExternalDocument[]>([]);
+  // The note created a moment ago opens in edit mode; every other note opens as a preview
+  const [newNoteId, setNewNoteId] = useState<string | null>(null);
+  const selectedExternalId = isExternalId(selectedNoteId) ? selectedNoteId : null;
   const navigationHistory = useNoteNavigationHistory(selectedNoteId);
   const [isStorageReady, setIsStorageReady] = useState(false);
   const [isAppLocked, setIsAppLocked] = useState<boolean>(false);
@@ -246,6 +253,7 @@ export function App() {
     // 5. Clear sensitive in-memory note selection and cached notes
     setSelectedNoteId(null);
     setNotes([]);
+    setExternalDocs([]);
 
     // 6. Transition to dedicated UnlockScreen
     setIsAppLocked(true);
@@ -351,7 +359,7 @@ export function App() {
     loadNoteTags,
     addTag: addTagToSelectedNote,
     removeTag: removeTagFromSelectedNote,
-  } = useNoteTags(selectedNoteId);
+  } = useNoteTags(selectedExternalId ? null : selectedNoteId);
 
   // Rename Tag Modal State
   const [renamingTag, setRenamingTag] = useState<Tag | null>(null);
@@ -651,13 +659,10 @@ export function App() {
         notePageContextRef.current = context;
         setHasMoreNotes(fetchedNotes.length === DEFAULT_PAGE_SIZE);
 
-        if (fetchedNotes.length > 0) {
-          setSelectedNoteId((prev) =>
-            prev && fetchedNotes.some((n) => n.id === prev) ? prev : fetchedNotes[0].id
-          );
-        } else {
-          setSelectedNoteId(null);
-        }
+        // Nothing is opened automatically: only a note the user already had open stays open
+        setSelectedNoteId((prev) =>
+          prev && (isExternalId(prev) || fetchedNotes.some((n) => n.id === prev)) ? prev : null
+        );
         setStatus(fetchedNotes.length === 0 ? "empty" : "idle");
       } catch (err) {
         if (activeLoadRequestIdRef.current !== requestId) return;
@@ -798,6 +803,7 @@ export function App() {
       }
 
       setNotes((prev) => [created, ...prev]);
+      setNewNoteId(created.id);
       setSelectedNoteId(created.id);
       setStatus("idle");
       refreshNoteCounts();
@@ -1170,7 +1176,7 @@ export function App() {
       editorSaveRef.current?.();
     },
     onDeleteNote: () => {
-      if (selectedNoteId && activeNavId !== "trash") {
+      if (selectedNoteId && !isExternalId(selectedNoteId) && activeNavId !== "trash") {
         requestDeleteNote(selectedNoteId);
       }
     },
@@ -1311,6 +1317,18 @@ export function App() {
   );
 
   // ---- Files opened from the desktop ("Open with Personal Notepad") and the Recent list ----------
+  const refreshExternalDocs = useCallback(async () => {
+    try {
+      setExternalDocs(await storageService.openFiles.listExternal());
+    } catch {
+      // Locked or not ready: the list is loaded again once the app is usable
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isStorageReady && !isAppLocked) void refreshExternalDocs();
+  }, [isStorageReady, isAppLocked, refreshExternalDocs]);
+
   const handleFilesOpened = useCallback(
     async (report: OpenFilesReport) => {
       let message = "";
@@ -1320,22 +1338,24 @@ export function App() {
         } catch {
           // The editor keeps unsaved text safe; opening the file must not be blocked by it
         }
-        if (isSearchActive) clearSearch();
-        selectAllNotes();
-        setActiveNavId("all-notes");
-        await loadNotes("all-notes", null, null);
-        await refreshNoteCounts();
+        await refreshExternalDocs();
+        // Trash is read-only: leave it so the file can be edited
+        if (activeNavId === "trash") {
+          selectAllNotes();
+          setActiveNavId("all-notes");
+          await loadNotes("all-notes", null, null);
+        }
 
         const last = report.opened[report.opened.length - 1];
         navigationHistory.recordNavigation(last.noteId, selectedNoteId);
         setSelectedNoteId(last.noteId);
         for (const file of report.opened) {
-          recents.record({ id: file.noteId, title: file.title, file: file.path });
+          recents.record({ id: file.path, title: file.title, file: file.path });
         }
         message =
           report.opened.length === 1
-            ? `Opened "${last.fileName}" as a note${last.created ? "" : " (it was already open)"}.`
-            : `Opened ${report.opened.length} files as notes.`;
+            ? `Opened "${last.fileName}" under External.`
+            : `Opened ${report.opened.length} files under External.`;
       }
       if (report.failed.length > 0) {
         const first = report.failed[0];
@@ -1350,11 +1370,10 @@ export function App() {
     },
     [
       handleFlushPendingSave,
-      isSearchActive,
-      clearSearch,
+      refreshExternalDocs,
+      activeNavId,
       selectAllNotes,
       loadNotes,
-      refreshNoteCounts,
       navigationHistory,
       selectedNoteId,
       recents,
@@ -1362,15 +1381,9 @@ export function App() {
   );
   useOpenFiles(isStorageReady && !isAppLocked, handleFilesOpened);
 
-  // Remember the notes the user opens (the note that was selected automatically at startup is
-  // not counted, only later choices) and keep the remembered titles current.
-  const sawFirstSelectionRef = useRef(false);
+  // Remember the notes the user opens (external files are remembered by their path when opened)
   useEffect(() => {
-    if (!selectedNoteId || activeNavId === "trash") return;
-    if (!sawFirstSelectionRef.current) {
-      sawFirstSelectionRef.current = true;
-      return;
-    }
+    if (!selectedNoteId || isExternalId(selectedNoteId) || activeNavId === "trash") return;
     const note = notes.find((n) => n.id === selectedNoteId);
     recents.record({ id: selectedNoteId, title: note?.title });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the selection changes
@@ -1379,25 +1392,153 @@ export function App() {
     recents.syncTitles(notes);
   }, [notes, recents]);
 
+  const handleSelectExternal = useCallback(
+    async (id: string) => {
+      if (id === selectedNoteId) return;
+      cancelPendingDebounce();
+      if (editorSaveRef.current) {
+        try {
+          await editorSaveRef.current();
+        } catch {
+          return; // keep the unsaved edits in the editor
+        }
+      }
+      navigationHistory.recordNavigation(id, selectedNoteId);
+      if (activeNavId === "trash") {
+        selectAllNotes();
+        setActiveNavId("all-notes");
+        await loadNotes("all-notes", null, null);
+      }
+      setSelectedNoteId(id);
+      const doc = externalDocs.find((d) => d.id === id);
+      if (doc) recents.record({ id: doc.path, title: doc.fileName, file: doc.path });
+    },
+    [
+      selectedNoteId,
+      cancelPendingDebounce,
+      navigationHistory,
+      activeNavId,
+      selectAllNotes,
+      loadNotes,
+      externalDocs,
+      recents,
+    ]
+  );
+
+  /** Closes the open note (the editor goes back to its empty state). */
+  const handleCloseNote = useCallback(async () => {
+    if (!selectedNoteId) return;
+    cancelPendingDebounce();
+    if (editorSaveRef.current) {
+      try {
+        await editorSaveRef.current();
+      } catch {
+        return; // saving failed: keep the note open so nothing is lost
+      }
+    }
+    const closingId = selectedNoteId;
+    setSelectedNoteId(null);
+    if (isExternalId(closingId)) {
+      try {
+        await storageService.openFiles.closeExternal(closingId);
+      } catch (err) {
+        logger.error("Failed to close external document", err);
+      }
+      await refreshExternalDocs();
+    }
+  }, [selectedNoteId, cancelPendingDebounce, refreshExternalDocs]);
+
+  const handleTogglePinExternal = useCallback(
+    async (id: string) => {
+      const doc = externalDocs.find((d) => d.id === id);
+      if (!doc) return;
+      try {
+        await storageService.openFiles.setExternalPinned(id, !doc.pinned);
+      } catch (err) {
+        logger.error("Failed to pin external document", err);
+      }
+      await refreshExternalDocs();
+    },
+    [externalDocs, refreshExternalDocs]
+  );
+
+  const handleCloseExternal = useCallback(
+    async (id: string) => {
+      if (id === selectedNoteId) {
+        await handleCloseNote();
+        return;
+      }
+      try {
+        await storageService.openFiles.closeExternal(id);
+      } catch (err) {
+        logger.error("Failed to close external document", err);
+      }
+      await refreshExternalDocs();
+    },
+    [selectedNoteId, handleCloseNote, refreshExternalDocs]
+  );
+
+  // Ctrl+W closes the open note / file
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "w" &&
+        selectedNoteId
+      ) {
+        event.preventDefault();
+        void handleCloseNote();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedNoteId, handleCloseNote]);
+
   const handleOpenRecent = useCallback(
-    async (noteId: string) => {
+    async (recentId: string) => {
+      const entry = recents.recent.find((item) => item.id === recentId);
+      if (entry?.file) {
+        // A file opened from outside: open it again (it may have been closed since)
+        try {
+          const report = await storageService.openFiles.openPath(entry.file);
+          if (report.opened.length > 0) {
+            await handleFilesOpened(report);
+            return;
+          }
+          recents.remove(recentId);
+          setRestoreFeedback({
+            type: "error",
+            message: report.failed[0]
+              ? `Could not open "${report.failed[0].fileName}": ${report.failed[0].message}`
+              : "That file could not be opened.",
+          });
+        } catch (err) {
+          setRestoreFeedback({
+            type: "error",
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+        return;
+      }
       let note = null;
       try {
-        note = await storageService.notes.get(noteId);
+        note = await storageService.notes.get(recentId);
       } catch {
         note = null;
       }
       if (!note) {
-        recents.remove(noteId);
+        recents.remove(recentId);
         setRestoreFeedback({
           type: "error",
           message: "That note no longer exists, so it was removed from the recent list.",
         });
         return;
       }
-      await handleActivateInternalLink(noteId);
+      await handleActivateInternalLink(recentId);
     },
-    [recents, handleActivateInternalLink]
+    [recents, handleActivateInternalLink, handleFilesOpened]
   );
 
   const handleConfirmViewInTrash = useCallback(async () => {
@@ -1921,10 +2062,10 @@ export function App() {
    */
   useEffect(() => {
     if (isSearchActive) return; // Only run when search has just been cleared
-    if (!selectedNoteId) return;
+    if (!selectedNoteId || isExternalId(selectedNoteId)) return;
     const stillVisible = filteredNotes.some((n) => n.id === selectedNoteId);
     if (!stillVisible) {
-      setSelectedNoteId(filteredNotes.length > 0 ? filteredNotes[0].id : null);
+      setSelectedNoteId(null);
     }
   }, [isSearchActive, filteredNotes, selectedNoteId]);
 
@@ -2132,6 +2273,11 @@ export function App() {
         }
         sidebar={
           <Sidebar
+            externalDocuments={externalDocs}
+            selectedExternalId={selectedExternalId}
+            onSelectExternal={handleSelectExternal}
+            onTogglePinExternal={handleTogglePinExternal}
+            onCloseExternal={handleCloseExternal}
             activeNavId={activeNavId}
             onSelectNav={async (navId) => {
               if (editorSaveRef.current) {
@@ -2306,11 +2452,14 @@ export function App() {
           <NoteEditor
             key={`${selectedNoteId || "empty"}-${noteRefreshKey}`}
             noteId={selectedNoteId}
+            startInEditMode={selectedNoteId !== null && selectedNoteId === newNoteId}
             showMinimap={display.showMinimap}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
             onActivateLink={handleActivateInternalLink}
-            isTrash={activeNavId === "trash"}
+            isTrash={activeNavId === "trash" && !selectedExternalId}
+            onCloseNote={handleCloseNote}
+            externalPath={externalDocs.find((d) => d.id === selectedExternalId)?.path ?? null}
             onDeleteNote={activeNavId === "trash" ? undefined : requestDeleteNote}
             onRestoreNote={requestRestoreNote}
             onPermanentlyDeleteNote={handlePermanentlyDeleteNote}
@@ -2332,6 +2481,7 @@ export function App() {
             }}
             onCreateTag={createTag}
             onNoteUpdated={(updated) => {
+              if (isExternalId(updated.id)) return;
               setNotes((prev) => {
                 const exists = prev.some((n) => n.id === updated.id);
                 if (exists) {

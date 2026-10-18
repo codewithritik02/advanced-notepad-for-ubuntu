@@ -586,3 +586,38 @@
 }
 
 
+
+/* Banner shown above the toolbar while a file opened from outside the notebook is edited */
+.external-note-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-base);
+  background-color: var(--color-surface-selected);
+  border-bottom: 1px solid var(--color-border-default, var(--color-border));
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.external-note-banner > span:last-child {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.external-note-banner strong {
+  color: var(--color-accent-default);
+  white-space: nowrap;
+}
+
+.external-note-banner-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  direction: rtl;
+  text-align: left;
+  color: var(--color-text-primary);
+}

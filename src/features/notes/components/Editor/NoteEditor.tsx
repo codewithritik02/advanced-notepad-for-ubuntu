@@ -13,6 +13,7 @@ import { NoteMinimap } from "./NoteMinimap";
 import { RenderedNoteContent, NoteLinksBar, BacklinksSection } from "../Links";
 import { ExportNoteModal } from "../../../importExport";
 import { logger } from "../../../../utils/logger";
+import { isExternalId } from "../../../../utils/externalDocuments";
 import { closeAfterPendingWrites } from "../../services/closeGuard";
 import "./EditorPlaceholder.css";
 
@@ -37,6 +38,12 @@ export interface NoteEditorProps {
   onPermanentlyDeleteNote?: (noteId: string) => void;
   onActivateLink?: (targetNoteId: string) => void;
   onNavigateToNote?: (noteId: string) => void;
+  /** Closes the open note (back to the empty editor). For an external file it also unlists it. */
+  onCloseNote?: () => void;
+  /** Location of the file when the open document is an external file. */
+  externalPath?: string | null;
+  /** Open straight in edit mode (a note that was just created). Everything else opens as a preview. */
+  startInEditMode?: boolean;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -52,6 +59,13 @@ const ImageInsertIcon = () => (
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <circle cx="8.5" cy="8.5" r="1.5" />
     <path d="m21 15-5-5L5 21" />
+  </svg>
+);
+
+const CloseNoteIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
   </svg>
 );
 
@@ -241,7 +255,12 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onPermanentlyDeleteNote,
   onActivateLink,
   onNavigateToNote,
+  onCloseNote,
+  externalPath = null,
+  startInEditMode = false,
 }) => {
+  // A file opened from outside the notebook: saved back to the file, no notebook/tags/attachments
+  const isExternal = isExternalId(noteId);
   const [loadedNote, setLoadedNote] = useState<Note | null>(null);
   const isReadOnly = isTrash || !!loadedNote?.is_deleted;
   const [editorStatus, setEditorStatus] = useState<EditorStatus>("idle");
@@ -257,7 +276,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   // One attachment state shared by the Attachments list and the "Insert image" panel
-  const attachmentsController = useAttachments(noteId);
+  const attachmentsController = useAttachments(isExternal ? null : noteId);
   const [isImagePanelOpen, setIsImagePanelOpen] = useState(false);
   const imageInsertSelectionRef = useRef<{ start: number; end: number } | null>(null);
   // True once the user has placed the cursor in the text (click, key, selection)
@@ -266,7 +285,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   // Fetch targeted attachment count for metadata panel (Phase 7, Task 19)
   useEffect(() => {
     let isCurrent = true;
-    if (!noteId) {
+    if (!noteId || isExternal) {
       setAttachmentCount(0);
       return;
     }
@@ -281,7 +300,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     return () => {
       isCurrent = false;
     };
-  }, [noteId]);
+  }, [noteId, isExternal]);
 
   // In-memory editing state
   const [title, setTitle] = useState("");
@@ -393,6 +412,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setIsDirty(false);
       setEditorStatus("saved");
       setLastSavedAt(note.modified_at);
+      // An empty note has nothing to preview
+      if (!note.content.trim()) setViewMode("edit");
 
       // Restore session cursor and scroll position if returning to a note during this session
       requestAnimationFrame(() => {
@@ -432,7 +453,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, []);
 
   useEffect(() => {
-    setViewMode("edit");
+    setViewMode(startInEditMode ? "edit" : "preview");
 
     if (!noteId) {
       setLoadedNote(null);
@@ -1379,6 +1400,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
       )}
 
+      {isExternal && loadedNote && (
+        <div className="external-note-banner" role="status">
+          <strong>External file</strong>
+          <span className="external-note-banner-path" title={externalPath ?? undefined}>
+            {externalPath ?? loadedNote.title}
+          </span>
+          <span>Edits are saved straight to this file. It is not part of your notes.</span>
+        </div>
+      )}
+
       {/* Editor Toolbar */}
       <div className="editor-toolbar" role="toolbar" aria-label="Formatting toolbar">
         <div className="toolbar-group">
@@ -1439,7 +1470,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             className="toolbar-btn"
             title="Insert link (Ctrl+K)"
             aria-label="Insert link"
-            disabled={isReadOnly || !noteId}
+            disabled={isReadOnly || !noteId || isExternal}
             onMouseDown={(e) => {
               // Keep textarea selection intact when clicking button
               e.preventDefault();
@@ -1458,7 +1489,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               aria-haspopup="dialog"
               aria-expanded={isImagePanelOpen}
               data-insert-image-toggle
-              disabled={isReadOnly || !noteId}
+              disabled={isReadOnly || !noteId || isExternal}
               onMouseDown={(e) => {
                 // Keep textarea selection intact when clicking button
                 e.preventDefault();
@@ -1482,7 +1513,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
         <div className="toolbar-spacer" />
 
-        {!isReadOnly && onMoveNote && loadedNote && (
+        {!isReadOnly && !isExternal && onMoveNote && loadedNote && (
           <button
             type="button"
             className="toolbar-notebook-badge"
@@ -1494,7 +1525,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
-        {!isReadOnly && loadedNote && (
+        {!isReadOnly && !isExternal && loadedNote && (
           <button
             type="button"
             className={`toolbar-btn-favorite ${loadedNote.is_favorite ? "is-favorite" : ""}`}
@@ -1508,7 +1539,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
-        {!isReadOnly && loadedNote && onDeleteNote && (
+        {!isReadOnly && !isExternal && loadedNote && onDeleteNote && (
           <button
             type="button"
             className="toolbar-btn toolbar-btn-delete"
@@ -1556,7 +1587,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
-        {loadedNote && !isTrash && (
+        {loadedNote && !isTrash && !isExternal && (
           <button
             type="button"
             className="toolbar-btn"
@@ -1572,6 +1603,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           type="button"
           className="toolbar-format-btn"
           title={`Click to switch format (current: ${format.toUpperCase() === "MD" ? "Markdown" : "Plain Text"}). Format switch updates note metadata without altering raw content.`}
+          disabled={isExternal}
           onClick={handleToggleFormat}
         >
           <span>{format.toUpperCase()}</span>
@@ -1596,6 +1628,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         >
           {viewMode === "preview" ? <EditIcon /> : <EyeIcon />}
         </button>
+
+        {onCloseNote && (
+          <button
+            type="button"
+            className="toolbar-btn toolbar-btn-close-note"
+            title={isExternal ? "Close this file (Ctrl+W)" : "Close note (Ctrl+W)"}
+            aria-label={isExternal ? "Close file" : "Close note"}
+            onClick={onCloseNote}
+          >
+            <CloseNoteIcon />
+          </button>
+        )}
       </div>
 
       {/* Save Error Banner (non-intrusive alert with retry action) */}
@@ -1630,7 +1674,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               className="editor-title-input selectable-text"
               placeholder={isReadOnly ? "Untitled Note" : "Note title..."}
               value={title}
-              readOnly={isReadOnly}
+              readOnly={isReadOnly || isExternal}
               onChange={handleTitleChange}
               onKeyDown={handleTitleKeyDown}
               aria-label="Note title"
@@ -1654,6 +1698,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </div>
 
           {/* Note Tags Strip & Picker (Task 17) */}
+          {!isExternal && (
           <TagPicker
             noteTags={noteTags}
             availableTags={availableTags}
@@ -1662,12 +1707,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onCreateTag={onCreateTag}
             disabled={!noteId || isReadOnly}
           />
+          )}
 
           {/* Note Metadata Details Panel (Task 30) */}
           <NoteMetadataPanel
             isOpen={isMetadataOpen}
             onToggle={() => setIsMetadataOpen((prev) => !prev)}
-            notebookPath={notebookPath || notebookName || "Unfiled"}
+            notebookPath={isExternal ? "External file" : notebookPath || notebookName || "Unfiled"}
             noteTags={noteTags}
             createdAt={loadedNote?.created_at}
             modifiedAt={loadedNote?.modified_at}
@@ -1677,12 +1723,13 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             characterCount={content.length}
             byteSize={byteSize}
             attachmentCount={attachmentCount}
-            onMoveNote={!isReadOnly && onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
-            onToggleFavorite={!isReadOnly ? handleToggleFavorite : undefined}
+            onMoveNote={!isReadOnly && !isExternal && onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
+            onToggleFavorite={!isReadOnly && !isExternal ? handleToggleFavorite : undefined}
           />
 
           {/* Note File Attachments (Phase 7, Tasks 11-19) */}
           {/* <AttachmentList noteId={noteId} /> */}
+          {!isExternal && (
           <AttachmentList
             noteId={noteId}
             isReadOnly={isReadOnly}
@@ -1692,6 +1739,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               requestInsertImages([attachment]);
             }}
           />
+          )}
 
           {/* Outgoing Internal Links Strip (Phase 9, Task 8) */}
           <NoteLinksBar links={parsedLinks} onActivateLink={handleActivateLink} />

@@ -5,6 +5,7 @@ import type { Notebook, NotebooksStatus } from "../../features/notebooks/types";
 import { TagList } from "../../features/tags/components/TagList";
 import type { Tag } from "../../features/tags/types";
 import { useSidebarState } from "../../layouts/sidebarState";
+import type { ExternalDocument } from "../../services/storage/openFiles";
 
 export type NavItemId =
   | "all-notes"
@@ -43,6 +44,12 @@ export interface SidebarProps {
   onDeleteTag?: (tag: Tag) => void;
   tagCounts?: Record<string, number>;
   onManageTags?: () => void;
+  // Files opened from outside the notebook ("Open with"); kept apart from the notes
+  externalDocuments?: ExternalDocument[];
+  selectedExternalId?: string | null;
+  onSelectExternal?: (id: string) => void;
+  onCloseExternal?: (id: string) => void;
+  onTogglePinExternal?: (id: string) => void;
 }
 
 // Inline lightweight SVG icons for zero external dependencies
@@ -106,6 +113,21 @@ const TrashIcon = () => (
   </svg>
 );
 
+const ExternalFileIcon = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    <polyline points="15 3 21 3 21 9" />
+    <line x1="10" y1="14" x2="21" y2="3" />
+  </svg>
+);
+
+const CloseIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <line x1="18" y1="6" x2="6" y2="18" />
+    <line x1="6" y1="6" x2="18" y2="18" />
+  </svg>
+);
+
 export const Sidebar: React.FC<SidebarProps> = ({
   activeNavId = "all-notes",
   onSelectNav,
@@ -133,6 +155,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onDeleteTag,
   tagCounts,
   onManageTags,
+  externalDocuments = [],
+  selectedExternalId = null,
+  onSelectExternal,
+  onCloseExternal,
+  onTogglePinExternal,
 }) => {
   const [isUnfiledDragOver, setIsUnfiledDragOver] = React.useState(false);
   const { isCompact, isPinned, togglePin } = useSidebarState();
@@ -277,6 +304,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </li>
           </ul>
         </div>
+
+        {/* Section: External (files opened with "Open with", not part of the notes list) */}
+        {externalDocuments.length > 0 && (
+          <div className="sidebar-section sidebar-section--external">
+            <div className="sidebar-section-title">External</div>
+            <ul className="sidebar-nav-list sidebar-external-list">
+              {externalDocuments.map((doc) => (
+                <li key={doc.id} className="sidebar-external-row">
+                  <button
+                    type="button"
+                    className={`sidebar-nav-item ${selectedExternalId === doc.id ? "is-active" : ""}`}
+                    onClick={() => onSelectExternal?.(doc.id)}
+                    title={doc.path}
+                    aria-current={selectedExternalId === doc.id ? "true" : undefined}
+                  >
+                    <span className="nav-item-icon"><ExternalFileIcon /></span>
+                    <span className="nav-item-label">{doc.fileName}</span>
+                  </button>
+                  {onTogglePinExternal && (
+                    <button
+                      type="button"
+                      className={`sidebar-external-pin ${doc.pinned ? "is-pinned" : ""}`}
+                      onClick={() => onTogglePinExternal(doc.id)}
+                      aria-pressed={doc.pinned}
+                      aria-label={doc.pinned ? `Unpin ${doc.fileName}` : `Pin ${doc.fileName}`}
+                      title={doc.pinned ? "Unpin (it will be cleared on restart)" : "Pin (keep it here for next time)"}
+                    >
+                      <PinIcon />
+                    </button>
+                  )}
+                  {onCloseExternal && (
+                    <button
+                      type="button"
+                      className="sidebar-external-close"
+                      onClick={() => onCloseExternal(doc.id)}
+                      aria-label={`Close ${doc.fileName}`}
+                      title="Close (the file stays on disk)"
+                    >
+                      <CloseIcon />
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Section: Notebooks Tree */}
         <div className="sidebar-section sidebar-section--notebooks">

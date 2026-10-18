@@ -33,6 +33,10 @@ pub fn run() {
             let data_root = initialized.paths.root.clone();
             app.manage(initialized.paths);
             app.manage(initialized.crypto_session);
+            // Files opened last time stay only if they were pinned
+            if let Ok(conn) = initialized.database.conn.lock() {
+                open_files::prune_unpinned_external(&conn);
+            }
             app.manage(initialized.database);
             app.manage(initialized.instance_lock);
             app.manage(open_files::PendingOpenFiles::new(launch_paths.clone()));
@@ -51,6 +55,10 @@ pub fn run() {
                         let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
+                        // Some desktops ignore a plain focus request from a background process;
+                        // a short always-on-top pulse brings the window in front
+                        let _ = window.set_always_on_top(true);
+                        let _ = window.set_always_on_top(false);
                     }
                     let _ = handle.emit(open_files::OPEN_FILES_QUEUED_EVENT, ());
                 }) {
@@ -133,6 +141,10 @@ pub fn run() {
             commands::get_attachment_count,
             commands::read_attachment_image,
             commands::process_pending_open_files,
+            commands::list_external_documents,
+            commands::open_external_file,
+            commands::set_external_pinned,
+            commands::close_external_document,
             commands::check_attachment_consistency,
             commands::cleanup_abandoned_temp_files,
             commands::retry_note_attachment_cleanup,

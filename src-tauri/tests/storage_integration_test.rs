@@ -9866,7 +9866,7 @@ fn test_phase10_task_22_structured_json_roundtrip_with_internal_links_and_hierar
     TagRepository::add_tag_to_note(&conn_source, &note1.id, &tag.id).unwrap();
 
     // 4. Create Note 2 linking to Note 1
-    let note2 = NoteRepository::create(
+    let _note2 = NoteRepository::create(
         &conn_source,
         CreateNoteDto {
             title: Some("Storage Architecture Spec".to_string()),
@@ -9920,7 +9920,8 @@ fn test_phase10_task_22_structured_json_roundtrip_with_internal_links_and_hierar
     )
     .unwrap();
     assert_eq!(scan_res.total_files, 1);
-    assert_eq!(scan_res.candidates[0].detected_format, ImportFormat::Json);
+    // A .json file is only a plain text document, never parsed as an interchange package
+    assert_eq!(scan_res.candidates[0].detected_format, ImportFormat::Txt);
 
     let import_summary = ImportExportService::execute_import(
         &mut conn_dest,
@@ -9943,40 +9944,13 @@ fn test_phase10_task_22_structured_json_roundtrip_with_internal_links_and_hierar
     assert_eq!(import_summary.imported_count, 1); // 1 JSON file candidate successfully processed
     assert_eq!(import_summary.outcome, Some(OperationOutcome::FullSuccess));
 
-    // Verify recreated notes in fresh database (contains 2 notes from the package)
+    // The package was imported as one plain text note: nothing was rebuilt from its contents
     let fresh_notes = NoteRepository::list(&conn_dest, false).unwrap();
-    assert_eq!(fresh_notes.len(), 2);
-
-    let fresh_note1 = fresh_notes
-        .iter()
-        .find(|n| n.title == "Core Database Engine")
-        .unwrap();
-    let fresh_note2 = fresh_notes
-        .iter()
-        .find(|n| n.title == "Storage Architecture Spec")
-        .unwrap();
-
-    // Verify IDs are newly generated local UUIDs (never reusing original IDs)
-    assert_ne!(fresh_note1.id, note1.id);
-    assert_ne!(fresh_note2.id, note2.id);
-
-    // Verify internal link in fresh_note2 was remapped to fresh_note1.id!
-    let expected_link = format!("notepad://note/{}", fresh_note1.id);
-    assert!(
-        fresh_note2.content.contains(&expected_link),
-        "Internal link must be rewritten to match new local UUID: content is: {}",
-        fresh_note2.content
-    );
-
-    // Verify recreated notebook hierarchy
-    let all_notebooks = NotebookRepository::list(&conn_dest).unwrap();
-    assert!(all_notebooks.iter().any(|nb| nb.name == "Engineering"));
-    assert!(all_notebooks.iter().any(|nb| nb.name == "Specs"));
-
-    // Verify recreated tag
-    let note1_tags = TagRepository::get_tags_for_note(&conn_dest, &fresh_note1.id).unwrap();
-    assert_eq!(note1_tags.len(), 1);
-    assert_eq!(note1_tags[0].name, "sqlite");
+    assert_eq!(fresh_notes.len(), 1);
+    assert_eq!(fresh_notes[0].format, "txt");
+    assert!(fresh_notes[0].content.contains("Core Database Engine"));
+    assert!(NotebookRepository::list(&conn_dest).unwrap().is_empty());
+    assert!(TagRepository::list(&conn_dest).unwrap().is_empty());
 }
 
 #[test]
@@ -10232,10 +10206,10 @@ fn test_phase10_task_24_security_data_integrity_and_performance_verification() {
     let imported_untrusted_note = NoteRepository::get_by_id(&conn, created_note_id)
         .unwrap()
         .unwrap();
-    assert_eq!(
-        imported_untrusted_note.content,
-        "<script>alert('pwn')</script>"
-    );
+    // The whole file is kept as inert plain text (it is not parsed as an interchange package)
+    assert!(imported_untrusted_note
+        .content
+        .contains("<script>alert('pwn')</script>"));
 
     // =========================================================================
     // 2. Data Integrity Verification Suite
@@ -16000,18 +15974,22 @@ fn test_phase13_task_12_failure_safe_import_export_operations() {
         .expect("Batch import executed");
 
     assert_eq!(summary.total_processed, 4);
-    assert_eq!(summary.imported_count, 2, "Both valid files imported");
-    assert_eq!(summary.failed_count, 2, "Both invalid files failed safely");
+    // bad_schema.json is no longer parsed as a package: it imports as a plain text document
+    assert_eq!(
+        summary.imported_count, 3,
+        "Valid files and the plain JSON text imported"
+    );
+    assert_eq!(summary.failed_count, 1, "The binary file failed safely");
     assert_eq!(summary.outcome, Some(OperationOutcome::PartialSuccess));
 
     assert_eq!(summary.results[0].status, ImportItemStatus::Imported);
     assert_eq!(summary.results[1].status, ImportItemStatus::Rejected);
     assert_eq!(summary.results[2].status, ImportItemStatus::Imported);
-    assert_eq!(summary.results[3].status, ImportItemStatus::Rejected);
+    assert_eq!(summary.results[3].status, ImportItemStatus::Imported);
 
-    // Database verification: only the 2 valid notes exist in DB
+    // Database verification: the 2 valid notes and the plain JSON text exist in DB
     let notes = NoteRepository::list(&conn, false).unwrap();
-    assert_eq!(notes.len(), 2);
+    assert_eq!(notes.len(), 3);
     let titles: Vec<_> = notes.iter().map(|n| n.title.as_str()).collect();
     assert!(titles.contains(&"Valid Markdown Title"));
     assert!(titles.contains(&"Valid Plain Text Title"));

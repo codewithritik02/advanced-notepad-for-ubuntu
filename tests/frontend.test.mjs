@@ -9469,8 +9469,8 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
           "App.tsx must check if selected note is still visible after clearing search"
         );
         assert.ok(
-          appCode.includes("setSelectedNoteId(filteredNotes.length > 0 ? filteredNotes[0].id : null);"),
-          "App.tsx must fall back to first note if selected note is not visible in restored context"
+          appCode.includes("if (!stillVisible) {\n      setSelectedNoteId(null);"),
+          "App.tsx must close the note (not open another) if the selected note is not visible in restored context"
         );
 
         // 2. Verify clearSearch wiring to TopBar and escape handler
@@ -15512,7 +15512,7 @@ describe("Phase 9 - Task 7: Link Insertion Entry Point Tests", () => {
 
     assert.ok(editorContent.includes("aria-label=\"Insert link\""), "Must have aria-label for accessibility");
     assert.ok(editorContent.includes("title=\"Insert link (Ctrl+K)\""), "Must have keyboard shortcut in tooltip");
-    assert.ok(editorContent.includes("disabled={isReadOnly || !noteId}"), "Must be disabled when read-only or no note loaded");
+    assert.ok(editorContent.includes("disabled={isReadOnly || !noteId || isExternal}"), "Must be disabled when read-only, external or no note loaded");
     assert.ok(editorContent.includes("<LinkIcon />"), "Must render LinkIcon inside button");
     assert.ok(editorContent.includes("onMouseDown={(e) => {"), "Must have onMouseDown to preserve textarea selection");
     assert.ok(editorContent.includes("e.preventDefault()"), "Must preventDefault on mouse down to retain focus/selection");
@@ -29343,5 +29343,86 @@ describe("Open with Personal Notepad and the Recent list", () => {
     // the desktop entry already hands files to the app and advertises text/markdown types
     const config = read("src-tauri/tauri.conf.json");
     assert.match(config, /"identifier": "com\.personalnotepad\.app"/);
+  });
+});
+
+describe("External documents, closing notes and plain-text JSON", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("recognises external document ids", async () => {
+    const m = await import("../src/utils/externalDocuments.ts");
+    assert.equal(m.isExternalId("ext-1234"), true);
+    assert.equal(m.isExternalId("3f2a-uuid"), false);
+    assert.equal(m.isExternalId(null), false);
+    assert.equal(m.isExternalId(undefined), false);
+    assert.match(read("src-tauri/src/open_files.rs"), /EXTERNAL_ID_PREFIX: &str = "ext-"/, "frontend and backend use the same prefix");
+  });
+
+  it("never opens a note automatically and keeps external files out of the notes list", () => {
+    const app = read("src/app/App.tsx");
+    assert.doesNotMatch(app, /fetchedNotes\[0\]/, "loadNotes must not pick the first note");
+    assert.match(app, /isExternalId\(prev\) \|\| fetchedNotes\.some\(\(n\) => n\.id === prev\)\) \? prev : null/);
+    assert.match(app, /if \(isExternalId\(updated\.id\)\) return;/, "saving an external file never inserts it in the list");
+    assert.match(app, /useNoteTags\(selectedExternalId \? null : selectedNoteId\)/);
+  });
+
+  it("offers a close action: toolbar button, Ctrl+W, and the sidebar External list", () => {
+    const app = read("src/app/App.tsx");
+    assert.match(app, /event\.key\.toLowerCase\(\) === "w"/);
+    assert.match(app, /onCloseNote=\{handleCloseNote\}/);
+    assert.match(app, /storageService\.openFiles\.closeExternal\(closingId\)/);
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /aria-label=\{isExternal \? "Close file" : "Close note"\}/);
+    assert.match(editor, /Edits are saved straight to this file/);
+    assert.match(editor, /useAttachments\(isExternal \? null : noteId\)/);
+    const sidebar = read("src/components/Sidebar/Sidebar.tsx");
+    assert.match(sidebar, /sidebar-section--external/);
+    assert.match(sidebar, />External<\/div>/);
+    assert.match(sidebar, /Close \$\{doc\.fileName\}/);
+    assert.match(read("src/services/storage/openFiles.ts"), /invoke<boolean>\("close_external_document"/);
+  });
+
+  it("registers the external-document commands on the Rust side", () => {
+    const lib = read("src-tauri/src/lib.rs");
+    for (const name of ["list_external_documents", "close_external_document", "open_external_file"]) {
+      assert.ok(lib.includes(`commands::${name}`), name);
+    }
+    const storage = read("src-tauri/src/commands/storage.rs");
+    assert.match(storage, /is_external_id\(&id\)/);
+    assert.match(storage, /save_external_note/);
+  });
+
+  it("does not offer JSON (or All Files) in the import picker", () => {
+    const dialog = read("src/features/importExport/services/fileDialog.ts");
+    const picker = dialog.slice(dialog.indexOf("pickImportFiles"), dialog.indexOf("pickImportFolder"));
+    assert.doesNotMatch(picker, /json/i);
+    assert.doesNotMatch(picker, /All Files/);
+    assert.match(picker, /extensions: \["txt", "md", "markdown"\]/);
+    const rust = read("src-tauri/src/storage/services/import_export.rs");
+    assert.match(rust, /"json" => Some\(ImportFormat::Txt\)/, "a .json file is only ever plain text");
+  });
+});
+
+describe("Preview by default, pinned external files", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("opens existing notes as a preview and only new notes in edit mode", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /setViewMode\(startInEditMode \? "edit" : "preview"\)/);
+    assert.match(editor, /if \(!note\.content\.trim\(\)\) setViewMode\("edit"\)/, "an empty note has nothing to preview");
+    const app = read("src/app/App.tsx");
+    assert.match(app, /setNewNoteId\(created\.id\)/);
+    assert.match(app, /startInEditMode=\{selectedNoteId !== null && selectedNoteId === newNoteId\}/);
+  });
+
+  it("lets external files be pinned from the sidebar and brings the window forward", () => {
+    const sidebar = read("src/components/Sidebar/Sidebar.tsx");
+    assert.match(sidebar, /sidebar-external-pin/);
+    assert.match(sidebar, /onTogglePinExternal\(doc\.id\)/);
+    assert.match(read("src/services/storage/openFiles.ts"), /invoke<boolean>\("set_external_pinned"/);
+    const lib = read("src-tauri/src/lib.rs");
+    assert.match(lib, /commands::set_external_pinned/);
+    assert.match(lib, /prune_unpinned_external/);
+    assert.match(lib, /set_always_on_top\(true\)/);
   });
 });

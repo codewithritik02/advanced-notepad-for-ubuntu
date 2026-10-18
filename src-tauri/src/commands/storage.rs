@@ -92,6 +92,9 @@ pub fn get_note(
 ) -> Result<Option<Note>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    if crate::open_files::is_external_id(&id) {
+        return crate::open_files::load_external_note(&conn, &id);
+    }
     NoteRepository::get_by_id_with_key(&conn, &id, dek.as_ref()).map_err(|e| e.to_string())
 }
 
@@ -115,6 +118,13 @@ pub fn update_note(
 ) -> Result<Note, String> {
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    if crate::open_files::is_external_id(&id) {
+        return match dto.content {
+            Some(content) => crate::open_files::save_external_note(&conn, &id, &content),
+            None => crate::open_files::load_external_note(&conn, &id)?
+                .ok_or_else(|| "This document is no longer open.".to_string()),
+        };
+    }
     NoteRepository::update_with_key(&conn, &id, dto, dek.as_ref()).map_err(|e| e.to_string())
 }
 

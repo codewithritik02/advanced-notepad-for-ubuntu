@@ -5,7 +5,8 @@
 //! * A second launch while the app is already running forwards its paths to the running instance
 //!   over a private Unix socket and exits, so the file opens in the existing window.
 //! * Paths wait in [`PendingOpenFiles`] until the frontend is ready (and unlocked), then each file
-//!   becomes a note. Opening the same, unchanged file again returns the note it already created.
+//!   becomes an *external document*: it is listed in the sidebar's External section, never in the
+//!   notes list, and edits are written back to the file itself.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,11 +14,8 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::storage::crypto::SecretBytes;
-use crate::storage::models::{CreateNoteDto, DuplicateMatch, ImportFormat};
-use crate::storage::repositories::NoteRepository;
+use crate::storage::models::{ImportFormat, Note};
 use crate::storage::services::ImportExportService;
-use crate::storage::MAX_NOTE_TITLE_CHARS;
 
 /// Must match `identifier` in `tauri.conf.json` (checked by a test) so a second launch can find
 /// the data directory of the running instance before any Tauri code has started.
@@ -230,82 +228,265 @@ fn friendly_error(message: &str) -> String {
         .replace("can be imported", "can be opened")
 }
 
-fn open_one(
+/// Prefix of the ids of external documents, so they can never be mistaken for a note id.
+pub const EXTERNAL_ID_PREFIX: &str = "ext-";
+
+pub fn is_external_id(id: &str) -> bool {
+    id.starts_with(EXTERNAL_ID_PREFIX)
+}
+
+/// A file opened from outside the notebook ("Open with"). The file itself stays the single source
+/// of truth: only its location is remembered, nothing is copied into the notes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalDocument {
+    pub id: String,
+    pub path: String,
+    pub file_name: String,
+    pub format: String,
+    pub opened_at: String,
+    /// Pinned documents stay in the External list after a restart; the others are session-only.
+    pub pinned: bool,
+}
+
+fn format_for(path: &Path) -> &'static str {
+    // .md/.markdown are Markdown; every other text file (.txt, .log, .json, ...) is plain text
+    match ImportExportService::detect_format_from_path(path) {
+        Some(ImportFormat::Md) => "md",
+        _ => "txt",
+    }
+}
+
+pub fn ensure_external_table(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS external_documents (
+            id TEXT PRIMARY KEY NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            opened_at TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0
+        );",
+    )?;
+    // Lists created before pinning existed
+    let has_pinned = conn
+        .prepare("SELECT 1 FROM pragma_table_info('external_documents') WHERE name = 'pinned'")?
+        .exists([])?;
+    if !has_pinned {
+        conn.execute(
+            "ALTER TABLE external_documents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+/// Forgets the external documents that were not pinned (called once at startup).
+pub fn prune_unpinned_external(conn: &Connection) {
+    if ensure_external_table(conn).is_ok() {
+        let _ = conn.execute("DELETE FROM external_documents WHERE pinned = 0", []);
+    }
+}
+
+pub fn set_external_pinned(conn: &Connection, id: &str, pinned: bool) -> Result<bool, String> {
+    ensure_external_table(conn).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE external_documents SET pinned = ?1 WHERE id = ?2",
+        rusqlite::params![pinned as i64, id],
+    )
+    .map(|n| n > 0)
+    .map_err(|e| e.to_string())
+}
+
+fn external_from_row(
+    id: String,
+    path: String,
+    opened_at: String,
+    pinned: bool,
+) -> ExternalDocument {
+    let path_buf = PathBuf::from(&path);
+    ExternalDocument {
+        id,
+        file_name: display_name(&path_buf),
+        format: format_for(&path_buf).to_string(),
+        path,
+        opened_at,
+        pinned,
+    }
+}
+
+pub fn list_external_documents(conn: &Connection) -> Result<Vec<ExternalDocument>, String> {
+    ensure_external_table(conn).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, path, opened_at, pinned FROM external_documents ORDER BY pinned DESC, opened_at DESC, rowid DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(external_from_row(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
+}
+
+pub fn get_external_document(
     conn: &Connection,
-    dek: Option<&SecretBytes>,
-    path: &Path,
-) -> Result<OpenedFile, String> {
+    id: &str,
+) -> Result<Option<ExternalDocument>, String> {
+    ensure_external_table(conn).map_err(|e| e.to_string())?;
+    match conn.query_row(
+        "SELECT id, path, opened_at, pinned FROM external_documents WHERE id = ?1",
+        [id],
+        |row| {
+            Ok(external_from_row(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        },
+    ) {
+        Ok(doc) => Ok(Some(doc)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Forgets the document. The file on disk is never touched.
+pub fn close_external_document(conn: &Connection, id: &str) -> Result<bool, String> {
+    ensure_external_table(conn).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM external_documents WHERE id = ?1", [id])
+        .map(|n| n > 0)
+        .map_err(|e| e.to_string())
+}
+
+fn register_external(conn: &Connection, canonical: &Path) -> Result<ExternalDocument, String> {
+    ensure_external_table(conn).map_err(|e| e.to_string())?;
+    let path = canonical.to_string_lossy().into_owned();
+    let now = chrono::Utc::now().to_rfc3339();
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id FROM external_documents WHERE path = ?1",
+            [&path],
+            |row| row.get(0),
+        )
+        .ok();
+    let id = match existing {
+        Some(id) => {
+            conn.execute(
+                "UPDATE external_documents SET opened_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, id],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        }
+        None => {
+            let id = format!("{EXTERNAL_ID_PREFIX}{}", uuid::Uuid::new_v4());
+            conn.execute(
+                "INSERT INTO external_documents (id, path, opened_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![id, path, now],
+            )
+            .map_err(|e| e.to_string())?;
+            id
+        }
+    };
+    let pinned = conn
+        .query_row(
+            "SELECT pinned FROM external_documents WHERE id = ?1",
+            [&id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        != 0;
+    Ok(external_from_row(id, path, now, pinned))
+}
+
+fn read_external_text(path: &Path) -> Result<String, String> {
+    let validated = ImportExportService::read_and_validate_file(path, ImportFormat::Txt)
+        .map_err(|error| friendly_error(&error.to_string()))?;
+    Ok(validated.text)
+}
+
+/// The document as a note, so the editor can show it like any other note. Read fresh from disk.
+pub fn load_external_note(conn: &Connection, id: &str) -> Result<Option<Note>, String> {
+    let Some(doc) = get_external_document(conn, id)? else {
+        return Ok(None);
+    };
+    let content = read_external_text(Path::new(&doc.path))?;
+    Ok(Some(external_note(&doc, content)))
+}
+
+fn external_note(doc: &ExternalDocument, content: String) -> Note {
+    let modified = std::fs::metadata(&doc.path)
+        .and_then(|m| m.modified())
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+        .unwrap_or_else(|_| doc.opened_at.clone());
+    Note {
+        id: doc.id.clone(),
+        title: ImportExportService::derive_proposed_title(&doc.file_name),
+        content,
+        format: doc.format.clone(),
+        notebook_id: None,
+        created_at: doc.opened_at.clone(),
+        modified_at: modified,
+        is_favorite: false,
+        is_pinned: false,
+        is_deleted: false,
+        deleted_at: None,
+    }
+}
+
+/// Saves edited content back into the file, keeping its BOM and Windows line endings.
+pub fn save_external_note(conn: &Connection, id: &str, content: &str) -> Result<Note, String> {
+    let doc = get_external_document(conn, id)?
+        .ok_or_else(|| "This document is no longer open.".to_string())?;
+    let path = PathBuf::from(&doc.path);
+    let existing = std::fs::read(&path).map_err(|_| {
+        "The file was moved or deleted, so it cannot be saved. Close it and reopen the file."
+            .to_string()
+    })?;
+    let had_bom = existing.starts_with(&[0xEF, 0xBB, 0xBF]);
+    let crlf = existing.windows(2).any(|w| w == b"\r\n");
+
+    let normalized = content.replace("\r\n", "\n");
+    let mut bytes: Vec<u8> = Vec::with_capacity(normalized.len() + 3);
+    if had_bom {
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    if crlf {
+        bytes.extend_from_slice(normalized.replace('\n', "\r\n").as_bytes());
+    } else {
+        bytes.extend_from_slice(normalized.as_bytes());
+    }
+    ImportExportService::write_file_atomically(&path, &bytes)
+        .map_err(|error| format!("Could not save the file: {error}"))?;
+    Ok(external_note(&doc, normalized))
+}
+
+fn open_one(conn: &Connection, path: &Path) -> Result<OpenedFile, String> {
     let canonical = std::fs::canonicalize(path)
         .map_err(|_| "The file does not exist or cannot be reached.".to_string())?;
-    let file_name = display_name(&canonical);
-
-    // .md/.markdown are Markdown notes; every other text file (.txt, .log, .conf, ...) is plain text
-    let is_markdown = matches!(
-        ImportExportService::detect_format_from_path(&canonical),
-        Some(ImportFormat::Md)
-    );
-    let validated = ImportExportService::read_and_validate_file(
-        &canonical,
-        if is_markdown {
-            ImportFormat::Md
-        } else {
-            ImportFormat::Txt
-        },
-    )
-    .map_err(|error| friendly_error(&error.to_string()))?;
-
-    let mut title = ImportExportService::derive_proposed_title(&file_name);
-    if title.chars().count() > MAX_NOTE_TITLE_CHARS {
-        title = title.chars().take(MAX_NOTE_TITLE_CHARS).collect();
-    }
-    let format = if is_markdown { "md" } else { "txt" };
-
-    // The same unchanged file opened again goes back to the note made from it
-    if let DuplicateMatch::ExactMatch { existing_id, .. } =
-        ImportExportService::check_duplicate_with_key(conn, &title, &validated.text, dek)
-            .map_err(|error| error.to_string())?
-    {
-        return Ok(OpenedFile {
-            path: canonical.to_string_lossy().into_owned(),
-            file_name,
-            note_id: existing_id,
-            title,
-            format: format.to_string(),
-            created: false,
-        });
-    }
-
-    let note = NoteRepository::create_with_key(
-        conn,
-        CreateNoteDto {
-            title: Some(title.clone()),
-            content: Some(validated.text),
-            format: Some(format.to_string()),
-            ..Default::default()
-        },
-        dek,
-    )
-    .map_err(|error| error.to_string())?;
-
+    // Only checks that it is a readable text file; the content itself is read when it is shown
+    read_external_text(&canonical)?;
+    let doc = register_external(conn, &canonical)?;
     Ok(OpenedFile {
-        path: canonical.to_string_lossy().into_owned(),
-        file_name,
-        note_id: note.id,
-        title,
-        format: format.to_string(),
+        path: doc.path,
+        file_name: doc.file_name,
+        note_id: doc.id,
+        title: ImportExportService::derive_proposed_title(&display_name(&canonical)),
+        format: doc.format,
         created: true,
     })
 }
 
-/// Opens every path as a note. One bad file never stops the others.
-pub fn open_files_as_notes(
-    conn: &Connection,
-    dek: Option<&SecretBytes>,
-    paths: &[PathBuf],
-) -> OpenFilesReport {
+/// Opens every path as an external document (never as a note in the main list). One bad file never stops the others.
+pub fn open_files_as_notes(conn: &Connection, paths: &[PathBuf]) -> OpenFilesReport {
     let mut report = OpenFilesReport::default();
     for path in paths {
-        match open_one(conn, dek, path) {
+        match open_one(conn, path) {
             Ok(opened) => report.opened.push(opened),
             Err(message) => report.failed.push(FailedFile {
                 path: path.to_string_lossy().into_owned(),
@@ -582,16 +763,16 @@ mod tests {
     }
 
     #[test]
-    fn opens_markdown_and_text_files_as_notes_with_the_right_format() {
+    fn opened_files_become_external_documents_not_notes() {
         let env = setup();
         let md = env.dir.join("Work Report.md");
         let txt = env.dir.join("todo.txt");
-        let log = env.dir.join("server.log");
+        let json = env.dir.join("data.json");
         fs::write(&md, "\u{feff}# Heading\r\n\r\nbody").unwrap();
         fs::write(&txt, "plain text").unwrap();
-        fs::write(&log, "line 1\nline 2").unwrap();
+        fs::write(&json, "{\"notepad_version\": 1, \"notes\": []}").unwrap();
 
-        let report = open_files_as_notes(&env.conn, None, &[md, txt, log]);
+        let report = open_files_as_notes(&env.conn, &[md.clone(), txt, json]);
         assert!(report.failed.is_empty(), "{:?}", report.failed);
         let formats: Vec<_> = report
             .opened
@@ -600,42 +781,98 @@ mod tests {
             .collect();
         assert_eq!(
             formats,
-            vec![("Work Report", "md"), ("todo", "txt"), ("server", "txt")]
+            vec![("Work Report", "md"), ("todo", "txt"), ("data", "txt")]
         );
-        assert!(report.opened.iter().all(|o| o.created));
+        assert!(report.opened.iter().all(|o| is_external_id(&o.note_id)));
 
-        let note = NoteRepository::get_by_id(&env.conn, &report.opened[0].note_id)
+        let notes: i64 = env
+            .conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(notes, 0, "nothing lands in the main notes list");
+        assert_eq!(list_external_documents(&env.conn).unwrap().len(), 3);
+
+        let note = load_external_note(&env.conn, &report.opened[0].note_id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            note.content, "# Heading\n\nbody",
-            "BOM removed and line endings normalised"
-        );
+        assert_eq!(note.content, "# Heading\n\nbody", "BOM removed, LF endings");
         assert_eq!(note.format, "md");
+
+        // JSON is just text: shown verbatim, never interpreted
+        let json_note = load_external_note(&env.conn, &report.opened[2].note_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(json_note.content, "{\"notepad_version\": 1, \"notes\": []}");
     }
 
     #[test]
-    fn reopening_an_unchanged_file_reuses_its_note_but_a_changed_file_makes_a_new_one() {
+    fn reopening_a_file_keeps_one_entry_and_close_forgets_it_without_touching_the_file() {
         let env = setup();
         let file = env.dir.join("plan.md");
         fs::write(&file, "version one").unwrap();
 
-        let first = open_files_as_notes(&env.conn, None, std::slice::from_ref(&file));
-        let again = open_files_as_notes(&env.conn, None, std::slice::from_ref(&file));
-        assert!(first.opened[0].created);
-        assert!(
-            !again.opened[0].created,
-            "identical file reuses the existing note"
-        );
+        let first = open_files_as_notes(&env.conn, std::slice::from_ref(&file));
+        let again = open_files_as_notes(&env.conn, std::slice::from_ref(&file));
         assert_eq!(first.opened[0].note_id, again.opened[0].note_id);
+        assert_eq!(list_external_documents(&env.conn).unwrap().len(), 1);
 
-        fs::write(&file, "version two").unwrap();
-        let changed = open_files_as_notes(&env.conn, None, std::slice::from_ref(&file));
-        assert!(
-            changed.opened[0].created,
-            "edited file is opened as a new note"
+        assert!(close_external_document(&env.conn, &first.opened[0].note_id).unwrap());
+        assert!(list_external_documents(&env.conn).unwrap().is_empty());
+        assert!(!close_external_document(&env.conn, "ext-missing").unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "version one");
+    }
+
+    #[test]
+    fn pinned_documents_survive_a_restart_and_the_rest_are_cleared() {
+        let env = setup();
+        let keep = env.dir.join("keep.md");
+        let temp = env.dir.join("temp.txt");
+        fs::write(&keep, "a").unwrap();
+        fs::write(&temp, "b").unwrap();
+        let report = open_files_as_notes(&env.conn, &[keep, temp]);
+        let keep_id = report.opened[0].note_id.clone();
+
+        assert!(set_external_pinned(&env.conn, &keep_id, true).unwrap());
+        let listed = list_external_documents(&env.conn).unwrap();
+        assert_eq!(listed[0].id, keep_id, "pinned documents are listed first");
+        assert!(listed[0].pinned && !listed[1].pinned);
+
+        prune_unpinned_external(&env.conn);
+        let after = list_external_documents(&env.conn).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, keep_id);
+        assert!(!set_external_pinned(&env.conn, "ext-nope", true).unwrap());
+    }
+
+    #[test]
+    fn saving_writes_back_to_the_file_and_keeps_bom_and_crlf() {
+        let env = setup();
+        let file = env.dir.join("win.txt");
+        fs::write(&file, "\u{feff}one\r\ntwo").unwrap();
+        let id = open_files_as_notes(&env.conn, std::slice::from_ref(&file)).opened[0]
+            .note_id
+            .clone();
+
+        let saved = save_external_note(&env.conn, &id, "one\ntwo\nthree").unwrap();
+        assert_eq!(saved.content, "one\ntwo\nthree");
+        assert_eq!(
+            fs::read(&file).unwrap(),
+            "\u{feff}one\r\ntwo\r\nthree".as_bytes()
         );
-        assert_ne!(first.opened[0].note_id, changed.opened[0].note_id);
+
+        let unix = env.dir.join("unix.md");
+        fs::write(&unix, "a\nb").unwrap();
+        let id = open_files_as_notes(&env.conn, std::slice::from_ref(&unix)).opened[0]
+            .note_id
+            .clone();
+        save_external_note(&env.conn, &id, "a\nb\nc").unwrap();
+        assert_eq!(fs::read_to_string(&unix).unwrap(), "a\nb\nc");
+
+        fs::remove_file(&unix).unwrap();
+        assert!(save_external_note(&env.conn, &id, "x")
+            .unwrap_err()
+            .contains("moved or deleted"));
+        assert!(save_external_note(&env.conn, "ext-nope", "x").is_err());
     }
 
     #[test]
@@ -650,7 +887,6 @@ mod tests {
 
         let report = open_files_as_notes(
             &env.conn,
-            None,
             &[binary, env.dir.join("missing.md"), folder, good],
         );
         assert_eq!(report.opened.len(), 1);
@@ -673,29 +909,6 @@ mod tests {
             "message reads naturally: {binary_message}"
         );
         assert!(binary_message.contains("Only text files can be opened"));
-    }
-
-    #[test]
-    fn encrypted_notebooks_store_the_opened_file_encrypted() {
-        use crate::storage::crypto::generate_dek;
-        let env = setup();
-        let dek = generate_dek();
-        let file = env.dir.join("secret.md");
-        fs::write(&file, "classified").unwrap();
-        let report = open_files_as_notes(&env.conn, Some(&dek), std::slice::from_ref(&file));
-        assert_eq!(report.opened.len(), 1, "{:?}", report.failed);
-        let stored: String = env
-            .conn
-            .query_row(
-                "SELECT content FROM notes WHERE id = ?1",
-                [&report.opened[0].note_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(
-            !stored.contains("classified"),
-            "content is not stored in plaintext"
-        );
     }
 
     #[cfg(unix)]
