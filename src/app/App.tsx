@@ -1948,6 +1948,7 @@ export function App() {
         preview,
         updatedAt,
         isFavorite: n.is_favorite,
+        isPinned: n.is_pinned,
         notebookId: n.notebook_id ?? undefined,
         notebookPath,
         tags: noteTagsMap[n.id] ?? [],
@@ -2459,6 +2460,7 @@ export function App() {
             onActivateLink={handleActivateInternalLink}
             isTrash={activeNavId === "trash" && !selectedExternalId}
             onCloseNote={handleCloseNote}
+            onPinChanged={() => void loadNotes()}
             externalPinned={externalDocs.find((d) => d.id === selectedExternalId)?.pinned ?? false}
             onTogglePinExternal={
               selectedExternalId ? () => void handleTogglePinExternal(selectedExternalId) : undefined

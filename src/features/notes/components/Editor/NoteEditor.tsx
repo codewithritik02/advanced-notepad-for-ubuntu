@@ -47,6 +47,8 @@ export interface NoteEditorProps {
   /** Whether the open external file is pinned in the sidebar, and the action to toggle that. */
   externalPinned?: boolean;
   onTogglePinExternal?: () => void;
+  /** Called after a regular note was pinned or unpinned, so the list can re-sort. */
+  onPinChanged?: () => void;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -277,6 +279,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   startInEditMode = false,
   externalPinned = false,
   onTogglePinExternal,
+  onPinChanged,
 }) => {
   // A file opened from outside the notebook: saved back to the file, no notebook/tags/attachments
   const isExternal = isExternalId(noteId);
@@ -1235,6 +1238,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [noteId, loadedNote, onNoteUpdated, isReadOnly]);
 
+  const handleTogglePinNote = useCallback(async () => {
+    if (!noteId || !loadedNote || isReadOnly || isExternal) return;
+    const current = loadedNote.is_pinned;
+    setLoadedNote((prev) => (prev ? { ...prev, is_pinned: !current } : null));
+    try {
+      const updated = await storageService.notes.setPinned(noteId, !current);
+      setLoadedNote((prev) => (prev ? { ...prev, is_pinned: updated.is_pinned } : prev));
+      onNoteUpdated?.(updated);
+      onPinChanged?.();
+    } catch {
+      setLoadedNote((prev) => (prev ? { ...prev, is_pinned: current } : null));
+    }
+  }, [noteId, loadedNote, isReadOnly, isExternal, onNoteUpdated, onPinChanged]);
+
   const handleSave = useCallback(async () => {
     if (!noteId || isReadOnly) return;
 
@@ -1656,6 +1673,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             aria-label={externalPinned ? "Unpin file" : "Pin file"}
             aria-pressed={externalPinned}
             onClick={onTogglePinExternal}
+          >
+            <PinFileIcon />
+          </button>
+        )}
+
+        {!isExternal && !isReadOnly && loadedNote && (
+          <button
+            type="button"
+            className={`toolbar-btn ${loadedNote.is_pinned ? "is-active" : ""}`}
+            title={loadedNote.is_pinned ? "Unpin note (stops showing at the top)" : "Pin note to the top of the list"}
+            aria-label={loadedNote.is_pinned ? "Unpin note" : "Pin note"}
+            aria-pressed={!!loadedNote.is_pinned}
+            onClick={handleTogglePinNote}
           >
             <PinFileIcon />
           </button>

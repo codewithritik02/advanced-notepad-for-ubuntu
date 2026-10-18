@@ -78,6 +78,8 @@ export interface NoteListItem {
   preview: string;
   updatedAt: string;
   isFavorite?: boolean;
+  /** Pinned notes are listed first. */
+  isPinned?: boolean;
   notebookId?: string;
   notebookPath?: string;
   tags?: string[];

@@ -29437,3 +29437,16 @@ describe("Pin button in the external file toolbar", () => {
     assert.match(app, /onTogglePinExternal=\{/);
   });
 });
+
+describe("Pin a regular note from the toolbar", () => {
+  it("pins notes in the notes list and external files in the sidebar", () => {
+    const editor = fs.readFileSync("src/features/notes/components/Editor/NoteEditor.tsx", "utf8");
+    assert.match(editor, /storageService\.notes\.setPinned\(noteId, !current\)/);
+    assert.match(editor, /aria-label=\{loadedNote\.is_pinned \? "Unpin note" : "Pin note"\}/);
+    assert.match(editor, /\{isExternal && onTogglePinExternal && \(/, "external files keep the sidebar pin");
+    const app = fs.readFileSync("src/app/App.tsx", "utf8");
+    assert.match(app, /isPinned: n\.is_pinned/);
+    assert.match(app, /onPinChanged=\{\(\) => void loadNotes\(\)\}/);
+    assert.match(fs.readFileSync("src/features/notes/components/NotesList/NoteCard.tsx", "utf8"), /note-card-pinned-indicator/);
+  });
+});
