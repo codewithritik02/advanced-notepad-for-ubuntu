@@ -79,6 +79,7 @@ fn fresh_database_has_the_complete_schema_constraints_indexes_and_metadata() {
             "is_pinned",
             "is_deleted",
             "deleted_at",
+            "is_hidden",
         ]
         .into_iter()
         .map(str::to_string)
@@ -115,6 +116,7 @@ fn fresh_database_has_the_complete_schema_constraints_indexes_and_metadata() {
         "idx_attachments_note_id",
         "idx_notes_deleted_at",
         "idx_notes_trash_lifecycle",
+        "idx_notes_is_hidden",
     ] {
         assert!(indexes.contains(index), "missing expected index {index}");
     }
@@ -145,7 +147,7 @@ fn fresh_database_has_the_complete_schema_constraints_indexes_and_metadata() {
     );
     assert_eq!(
         validate_schema_version_compatibility(&connection).unwrap(),
-        4
+        LATEST_SCHEMA_VERSION
     );
     assert_database_healthy(&connection);
 }
@@ -397,9 +399,10 @@ fn failed_migration_rolls_back_its_schema_changes_and_preserves_existing_rows() 
         },
     )
     .unwrap();
+    let failing_version = LATEST_SCHEMA_VERSION + 1;
     let failing = [Migration {
-        version: 5,
-        name: "005_injected_failure",
+        version: failing_version,
+        name: "injected_failure",
         sql: "CREATE TABLE should_rollback (id TEXT PRIMARY KEY); INSERT INTO should_rollback VALUES ('x'); INVALID SQL;",
     }];
 
@@ -408,8 +411,8 @@ fn failed_migration_rolls_back_its_schema_changes_and_preserves_existing_rows() 
     assert_eq!(
         connection
             .query_row(
-                "SELECT COUNT(*) FROM _migrations WHERE version = 5",
-                [],
+                "SELECT COUNT(*) FROM _migrations WHERE version = ?1",
+                [failing_version],
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),

@@ -32,6 +32,8 @@ pub struct Note {
     pub is_pinned: bool,
     pub is_deleted: bool,
     pub deleted_at: Option<String>,
+    #[serde(default)]
+    pub is_hidden: bool,
 }
 
 impl Note {
@@ -66,6 +68,7 @@ pub struct UpdateNoteDto {
     pub is_favorite: Option<bool>,
     pub is_pinned: Option<bool>,
     pub is_deleted: Option<bool>,
+    pub is_hidden: Option<bool>,
 }
 
 /// Lightweight aggregate note counts DTO (Phase 13, Task 9)
@@ -88,6 +91,7 @@ pub struct ListNotesQueryOptions<'a> {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     pub content_limit: Option<usize>,
+    pub include_hidden: bool,
 }
 
 /// Persistent Notebook model
@@ -261,6 +265,8 @@ pub struct NoteMetadata {
     pub word_count: usize,
     pub character_count: usize,
     pub byte_size: usize,
+    #[serde(default)]
+    pub is_hidden: bool,
 }
 
 impl NoteMetadata {
@@ -283,6 +289,7 @@ impl NoteMetadata {
             word_count,
             character_count,
             byte_size,
+            is_hidden: note.is_hidden,
         }
     }
 

@@ -141,6 +141,15 @@ CREATE INDEX IF NOT EXISTS idx_notes_deleted_at ON notes(deleted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notes_trash_lifecycle ON notes(is_deleted, deleted_at DESC);
 "#;
 
+/// SQL DDL for Hidden notes column and index (Migration 005)
+pub const MIGRATION_005_HIDDEN_NOTES_SQL: &str = r#"
+-- 1. Add is_hidden column with default 0 (unhidden) for backwards compatibility
+ALTER TABLE notes ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0;
+
+-- 2. Create index on is_hidden for fast visibility filtering
+CREATE INDEX IF NOT EXISTS idx_notes_is_hidden ON notes(is_hidden);
+"#;
+
 /// SQL DDL for Note listing and ordering optimization (Phase 13, Task 9)
 pub const NOTE_LIST_INDEXES_SQL: &str = r#"
 -- 1. Covering index for active notes listing and sorting

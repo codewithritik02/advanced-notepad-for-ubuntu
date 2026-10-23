@@ -65,6 +65,7 @@ impl NoteRepository {
         let is_pin_int: i32 = row.get(8)?;
         let is_del_int: i32 = row.get(9)?;
         let deleted_at: Option<String> = row.get(10)?;
+        let is_hidden_int: i32 = row.get(11).unwrap_or(0);
 
         let title = Self::decrypt_field_if_encrypted(&raw_title, &id, "title", dek)?;
         let content = Self::decrypt_field_if_encrypted(&raw_content, &id, "content", dek)?;
@@ -81,6 +82,7 @@ impl NoteRepository {
             is_pinned: is_pin_int != 0,
             is_deleted: is_del_int != 0,
             deleted_at,
+            is_hidden: is_hidden_int != 0,
         })
     }
 
@@ -109,8 +111,8 @@ impl NoteRepository {
         conn.execute(
             "INSERT INTO notes (
                 id, title, content, format, notebook_id, created_at, modified_at,
-                is_favorite, is_pinned, is_deleted, deleted_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
+                is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, 0)",
             params![
                 id,
                 stored_title,
@@ -136,6 +138,7 @@ impl NoteRepository {
             is_pinned,
             is_deleted: false,
             deleted_at: None,
+            is_hidden: false,
         })
     }
 
@@ -173,8 +176,8 @@ impl NoteRepository {
         tx.execute(
             "INSERT INTO notes (
                 id, title, content, format, notebook_id, created_at, modified_at,
-                is_favorite, is_pinned, is_deleted, deleted_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)",
+                is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL, 0)",
             params![
                 id,
                 stored_title,
@@ -209,6 +212,7 @@ impl NoteRepository {
             is_pinned,
             is_deleted: false,
             deleted_at: None,
+            is_hidden: false,
         })
     }
 
@@ -223,7 +227,7 @@ impl NoteRepository {
     ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
              WHERE id = ?1",
         )?;
@@ -248,7 +252,7 @@ impl NoteRepository {
     ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
              WHERE id = ?1 AND is_deleted = 0",
         )?;
@@ -273,7 +277,7 @@ impl NoteRepository {
     ) -> Result<Option<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
              WHERE id = ?1 AND is_deleted = 1",
         )?;
@@ -309,7 +313,7 @@ impl NoteRepository {
     ) -> Result<Vec<Note>, StorageError> {
         let mut stmt = conn.prepare(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
              WHERE is_deleted = 1
              ORDER BY deleted_at DESC, id ASC",
@@ -426,23 +430,50 @@ impl NoteRepository {
 
     /// Returns aggregate note counts without loading or decrypting note records (Phase 13, Task 9)
     pub fn get_note_counts(conn: &Connection) -> Result<NoteCountsDto, StorageError> {
-        let (total, favorites, unfiled): (i64, i64, i64) = conn.query_row(
-            "SELECT 
-                COUNT(1),
-                COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0),
-                COALESCE(SUM(CASE WHEN notebook_id IS NULL THEN 1 ELSE 0 END), 0)
-             FROM notes 
-             WHERE is_deleted = 0",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )?;
+        Self::get_note_counts_with_options(conn, false)
+    }
 
-        let mut nb_stmt = conn.prepare(
+    /// Returns aggregate note counts with optional hidden notes inclusion
+    pub fn get_note_counts_with_options(
+        conn: &Connection,
+        include_hidden: bool,
+    ) -> Result<NoteCountsDto, StorageError> {
+        let (total, favorites, unfiled): (i64, i64, i64) = if include_hidden {
+            conn.query_row(
+                "SELECT 
+                    COUNT(1),
+                    COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN notebook_id IS NULL THEN 1 ELSE 0 END), 0)
+                 FROM notes 
+                 WHERE is_deleted = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT 
+                    COUNT(1),
+                    COALESCE(SUM(CASE WHEN is_favorite = 1 THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN notebook_id IS NULL THEN 1 ELSE 0 END), 0)
+                 FROM notes 
+                 WHERE is_deleted = 0 AND is_hidden = 0",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?
+        };
+
+        let nb_sql = if include_hidden {
             "SELECT notebook_id, COUNT(1) 
              FROM notes 
              WHERE is_deleted = 0 AND notebook_id IS NOT NULL 
-             GROUP BY notebook_id",
-        )?;
+             GROUP BY notebook_id"
+        } else {
+            "SELECT notebook_id, COUNT(1) 
+             FROM notes 
+             WHERE is_deleted = 0 AND is_hidden = 0 AND notebook_id IS NOT NULL 
+             GROUP BY notebook_id"
+        };
+        let mut nb_stmt = conn.prepare(nb_sql)?;
         let mut by_notebook = std::collections::HashMap::new();
         let mut nb_rows = nb_stmt.query([])?;
         while let Some(row) = nb_rows.next()? {
@@ -496,7 +527,7 @@ impl NoteRepository {
     ) -> Result<Vec<Note>, StorageError> {
         let mut sql = String::from(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
              WHERE 1=1",
         );
@@ -505,6 +536,10 @@ impl NoteRepository {
 
         if !options.include_deleted {
             sql.push_str(" AND is_deleted = 0");
+        }
+
+        if !options.include_hidden {
+            sql.push_str(" AND is_hidden = 0");
         }
 
         if options.unfiled_only {
@@ -556,6 +591,7 @@ impl NoteRepository {
                 limit: None,
                 offset: None,
                 content_limit: None,
+                include_hidden: false,
             },
             dek,
         )
@@ -590,6 +626,7 @@ impl NoteRepository {
         let is_favorite = dto.is_favorite.unwrap_or(existing.is_favorite);
         let is_pinned = dto.is_pinned.unwrap_or(existing.is_pinned);
         let is_deleted = dto.is_deleted.unwrap_or(existing.is_deleted);
+        let is_hidden = dto.is_hidden.unwrap_or(existing.is_hidden);
         let deleted_at = if is_deleted && !existing.is_deleted {
             Some(now.clone())
         } else if !is_deleted {
@@ -605,8 +642,8 @@ impl NoteRepository {
             "UPDATE notes
              SET title = ?1, content = ?2, format = ?3, notebook_id = ?4,
                  modified_at = ?5, is_favorite = ?6, is_pinned = ?7,
-                 is_deleted = ?8, deleted_at = ?9
-             WHERE id = ?10",
+                 is_deleted = ?8, deleted_at = ?9, is_hidden = ?10
+             WHERE id = ?11",
             params![
                 stored_title,
                 stored_content,
@@ -617,6 +654,7 @@ impl NoteRepository {
                 if is_pinned { 1 } else { 0 },
                 if is_deleted { 1 } else { 0 },
                 deleted_at,
+                if is_hidden { 1 } else { 0 },
                 id,
             ],
         )?;
@@ -633,6 +671,7 @@ impl NoteRepository {
             is_pinned,
             is_deleted,
             deleted_at,
+            is_hidden,
         })
     }
 
@@ -853,6 +892,41 @@ impl NoteRepository {
         Self::set_pinned_with_key(conn, id, !note.is_pinned, dek)
     }
 
+    pub fn set_hidden(conn: &Connection, id: &str, is_hidden: bool) -> Result<Note, StorageError> {
+        Self::set_hidden_with_key(conn, id, is_hidden, None)
+    }
+
+    pub fn set_hidden_with_key(
+        conn: &Connection,
+        id: &str,
+        is_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        Self::update_with_key(
+            conn,
+            id,
+            UpdateNoteDto {
+                is_hidden: Some(is_hidden),
+                ..Default::default()
+            },
+            dek,
+        )
+    }
+
+    pub fn toggle_hidden(conn: &Connection, id: &str) -> Result<Note, StorageError> {
+        Self::toggle_hidden_with_key(conn, id, None)
+    }
+
+    pub fn toggle_hidden_with_key(
+        conn: &Connection,
+        id: &str,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Note, StorageError> {
+        let note = Self::get_by_id_with_key(conn, id, dek)?
+            .ok_or_else(|| StorageError::NotFound(format!("Note with id '{id}' not found")))?;
+        Self::set_hidden_with_key(conn, id, !note.is_hidden, dek)
+    }
+
     pub fn list_favorites(conn: &Connection) -> Result<Vec<Note>, StorageError> {
         Self::list_favorites_with_key(conn, None)
     }
@@ -869,7 +943,7 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        Self::list_favorites_page_with_options(conn, None, None, content_limit, dek)
+        Self::list_favorites_page_with_options_and_hidden(conn, None, None, content_limit, false, dek)
     }
 
     pub fn list_favorites_page_with_options(
@@ -879,13 +953,27 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
+        Self::list_favorites_page_with_options_and_hidden(conn, limit, offset, content_limit, false, dek)
+    }
+
+    pub fn list_favorites_page_with_options_and_hidden(
+        conn: &Connection,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        content_limit: Option<usize>,
+        include_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut sql = String::from(
             "SELECT id, title, content, format, notebook_id, created_at, modified_at,
-                    is_favorite, is_pinned, is_deleted, deleted_at
+                    is_favorite, is_pinned, is_deleted, deleted_at, is_hidden
              FROM notes
-             WHERE is_deleted = 0 AND is_favorite = 1
-             ORDER BY is_pinned DESC, modified_at DESC, id ASC",
+             WHERE is_deleted = 0 AND is_favorite = 1",
         );
+        if !include_hidden {
+            sql.push_str(" AND is_hidden = 0");
+        }
+        sql.push_str(" ORDER BY is_pinned DESC, modified_at DESC, id ASC");
         if limit.is_some() {
             sql.push_str(" LIMIT ?1 OFFSET ?2");
         }
@@ -937,15 +1025,30 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
+        Self::list_by_tag_page_with_options_and_hidden(conn, tag_id, limit, offset, content_limit, false, dek)
+    }
+
+    pub fn list_by_tag_page_with_options_and_hidden(
+        conn: &Connection,
+        tag_id: &str,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        content_limit: Option<usize>,
+        include_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<Note>, StorageError> {
         let mut sql = String::from(
             "SELECT n.id, n.title, n.content, n.format, n.notebook_id, n.created_at, n.modified_at,
-                    n.is_favorite, n.is_pinned, n.is_deleted, n.deleted_at
+                    n.is_favorite, n.is_pinned, n.is_deleted, n.deleted_at, n.is_hidden
              FROM notes n
              JOIN note_tags nt ON nt.note_id = n.id
              WHERE nt.tag_id = ?1
-               AND n.is_deleted = 0
-             ORDER BY n.is_pinned DESC, n.modified_at DESC, n.id ASC",
+               AND n.is_deleted = 0",
         );
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        sql.push_str(" ORDER BY n.is_pinned DESC, n.modified_at DESC, n.id ASC");
         if limit.is_some() {
             sql.push_str(" LIMIT ?2 OFFSET ?3");
         }

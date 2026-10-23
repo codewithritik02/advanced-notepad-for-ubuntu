@@ -1,7 +1,7 @@
 use crate::storage::errors::StorageError;
 use crate::storage::schema::{
     INITIAL_SCHEMA_SQL, MIGRATION_002_FTS5_SQL, MIGRATION_003_ATTACHMENTS_SCHEMA_SQL,
-    MIGRATION_004_TRASH_INDEXES_SQL, NOTE_LIST_INDEXES_SQL,
+    MIGRATION_004_TRASH_INDEXES_SQL, MIGRATION_005_HIDDEN_NOTES_SQL, NOTE_LIST_INDEXES_SQL,
 };
 use rusqlite::Connection;
 
@@ -34,10 +34,15 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "004_trash_indexes",
         sql: MIGRATION_004_TRASH_INDEXES_SQL,
     },
+    Migration {
+        version: 5,
+        name: "005_hidden_notes",
+        sql: MIGRATION_005_HIDDEN_NOTES_SQL,
+    },
 ];
 
 /// Newest schema version this build can safely read and write.
-pub const LATEST_SCHEMA_VERSION: i32 = 4;
+pub const LATEST_SCHEMA_VERSION: i32 = 5;
 
 /// Returns zero for an uninitialized database, otherwise the highest recorded migration.
 pub fn current_schema_version(conn: &Connection) -> Result<i32, StorageError> {

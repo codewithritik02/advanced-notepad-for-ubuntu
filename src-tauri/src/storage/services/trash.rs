@@ -188,7 +188,7 @@ impl TrashService {
             Err(_) => {
                 // If encrypted and locked, query trashed notes IDs safely
                 let mut stmt = conn
-                    .prepare("SELECT id, title, content, format, notebook_id, created_at, modified_at, is_favorite, is_pinned, is_deleted, deleted_at FROM notes WHERE is_deleted = 1")
+                    .prepare("SELECT id, title, content, format, notebook_id, created_at, modified_at, is_favorite, is_pinned, is_deleted, deleted_at, is_hidden FROM notes WHERE is_deleted = 1")
                     .map_err(StorageError::Database)?;
                 let stub_notes: Vec<Note> = stmt
                     .query_map([], |row| {
@@ -204,6 +204,7 @@ impl TrashService {
                             is_pinned: row.get::<_, i64>(8)? != 0,
                             is_deleted: true,
                             deleted_at: row.get(10)?,
+                            is_hidden: row.get::<_, i64>(11).unwrap_or(0) != 0,
                         })
                     })
                     .map_err(StorageError::Database)?

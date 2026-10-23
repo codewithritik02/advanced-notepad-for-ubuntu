@@ -457,6 +457,7 @@ impl SearchRepository {
             JOIN notes n ON notes_fts.rowid = n.rowid
             WHERE notes_fts MATCH ?1
               AND n.is_deleted = 0
+              AND n.is_hidden = 0
             ORDER BY rank, n.modified_at DESC, n.id ASC
             LIMIT ?2
         "#;
@@ -512,6 +513,7 @@ impl SearchRepository {
                 is_favorite
             FROM notes
             WHERE is_deleted = 0
+              AND is_hidden = 0
               AND (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
             ORDER BY
               CASE

@@ -78,6 +78,7 @@ pub fn list_notes(
             limit: Some(page_size),
             offset: Some(offset.unwrap_or(0)),
             content_limit: Some(preview_size),
+            include_hidden: false,
         },
         dek.as_ref(),
     )

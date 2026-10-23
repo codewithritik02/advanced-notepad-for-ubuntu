@@ -436,6 +436,7 @@ fn external_note(doc: &ExternalDocument, content: String) -> Note {
         is_pinned: false,
         is_deleted: false,
         deleted_at: None,
+        is_hidden: false,
     }
 }
 
