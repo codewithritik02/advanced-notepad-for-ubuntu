@@ -15,6 +15,7 @@ import { ExportNoteModal } from "../../../importExport";
 import { logger } from "../../../../utils/logger";
 import { isExternalId } from "../../../../utils/externalDocuments";
 import { closeAfterPendingWrites } from "../../services/closeGuard";
+import { EditHistory, historyShortcut, type HistoryAction } from "../../utils/editHistory";
 import "./EditorPlaceholder.css";
 
 export interface NoteEditorProps {
@@ -325,12 +326,27 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [noteId, isExternal]);
 
   // In-memory editing state
-  const [title, setTitle] = useState("");
-  const [content, setContent] = useState("");
+  const [title, setTitleState] = useState("");
+  const [content, setContentState] = useState("");
   const [format, setFormat] = useState<NoteFormat>("txt");
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [viewMode, setViewMode] = useState<"edit" | "preview">("edit");
+
+  const titleHistory = useRef(new EditHistory());
+  const contentHistory = useRef(new EditHistory());
+  const [historyField, setHistoryField] = useState<"title" | "content">("content");
+  const setTitle = (value: string) => {
+    titleHistory.current.record(value);
+    latestDataRef.current.title = value;
+    setTitleState(value);
+  };
+  const setContent = (value: string) => {
+    contentHistory.current.record(value);
+    // Autosave captures this synchronously, before React effects run.
+    latestDataRef.current.content = value;
+    setContentState(value);
+  };
 
   // Defer expensive derived calculations off the critical typing path (React 19)
   const deferredContent = useDeferredValue(content);
@@ -425,8 +441,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       }
 
       setLoadedNote(note);
-      setTitle(note.title);
-      setContent(note.content);
+      titleHistory.current.reset(note.title);
+      contentHistory.current.reset(note.content);
+      setTitleState(note.title);
+      setContentState(note.content);
       const resolvedFormat: NoteFormat = (note.format as NoteFormat) === "md" ? "md" : "txt";
       setFormat(resolvedFormat);
       latestDataRef.current = { title: note.title, content: note.content, format: resolvedFormat };
@@ -435,7 +453,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setEditorStatus("saved");
       setLastSavedAt(note.modified_at);
       // An empty note has nothing to preview
-      if (!note.content.trim()) setViewMode("edit");
+      if (!note.content) setViewMode("edit");
 
       // Restore session cursor and scroll position if returning to a note during this session
       requestAnimationFrame(() => {
@@ -475,6 +493,9 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, []);
 
   useEffect(() => {
+    titleHistory.current.reset("");
+    contentHistory.current.reset("");
+    setHistoryField("content");
     setViewMode(startInEditMode ? "edit" : "preview");
 
     if (!noteId) {
@@ -482,8 +503,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setEditorStatus("idle");
       setLoadErrorState(null);
       setSaveError(null);
-      setTitle("");
-      setContent("");
+      setTitleState("");
+      setContentState("");
       latestDataRef.current = { title: "", content: "", format: "txt" };
       isDirtyRef.current = false;
       setIsDirty(false);
@@ -829,26 +850,67 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     newFormat: NoteFormat
   ) => {
     if (!loadedNote) return;
+    // An in-flight write may still replace the saved baseline, even if undo returns to it.
     const hasChanged =
+      isSavingRef.current ||
       newTitle !== loadedNote.title ||
       newFormat !== ((loadedNote.format as NoteFormat) === "md" ? "md" : "txt") ||
       newContent.length !== loadedNote.content.length ||
       newContent !== loadedNote.content;
 
-    if (hasChanged) {
-      if (!isDirtyRef.current) {
-        setIsDirty(true);
-        isDirtyRef.current = true;
-        setEditorStatus("unsaved");
-      }
-    } else {
-      if (isDirtyRef.current) {
-        setIsDirty(false);
-        isDirtyRef.current = false;
-        setEditorStatus("saved");
-      }
-    }
+    setIsDirty(hasChanged);
+    isDirtyRef.current = hasChanged;
+    setEditorStatus(hasChanged ? "unsaved" : "saved");
   };
+
+  const applyHistory = (action: HistoryAction, field = historyField) => {
+    if (isReadOnly || !noteId || (field === "title" && isExternal) || (field === "content" && viewMode !== "edit")) return;
+    const history = field === "title" ? titleHistory.current : contentHistory.current;
+    const result = history.apply(action);
+    if (!result) return;
+    const next = { ...latestDataRef.current, [field]: result.value };
+    latestDataRef.current = next;
+    if (field === "title") setTitleState(result.value);
+    else setContentState(result.value);
+    updateDirtyState(next.title, next.content, next.format);
+    scheduleAutosave(noteId);
+    const sourceNoteId = noteId;
+    requestAnimationFrame(() => {
+      if (activeFetchIdRef.current !== sourceNoteId) return;
+      const input = field === "title" ? titleInputRef.current : contentRef.current;
+      input?.focus({ preventScroll: true });
+      input?.setSelectionRange(result.cursor, result.cursor);
+    });
+  };
+
+  const handleHistoryKey = (
+    e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+    field: "title" | "content",
+  ) => {
+    const action = historyShortcut({ ...e, isComposing: e.nativeEvent.isComposing });
+    if (!action) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    applyHistory(action, field);
+    return true;
+  };
+
+  // Native menu/context-menu history actions must use the same history as shortcuts.
+  useLayoutEffect(() => {
+    const cleanups = (["title", "content"] as const).map((field) => {
+      const input = field === "title" ? titleInputRef.current : contentRef.current;
+      const onBeforeInput = (event: Event) => {
+        const type = (event as InputEvent).inputType;
+        if (type !== "historyUndo" && type !== "historyRedo") return;
+        if (!event.cancelable) return;
+        event.preventDefault();
+        applyHistory(type === "historyUndo" ? "undo" : "redo", field);
+      };
+      input?.addEventListener("beforeinput", onBeforeInput);
+      return () => input?.removeEventListener("beforeinput", onBeforeInput);
+    });
+    return () => cleanups.forEach((cleanup) => cleanup());
+  });
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isReadOnly) return;
@@ -1126,9 +1188,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   }, [viewMode, handleToggleViewMode]);
 
   const handleContentKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (handleHistoryKey(e, "content")) return;
     // Explicit Save shortcut (Ctrl/Cmd + S)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
+      e.stopPropagation();
       if (!isReadOnly) {
         handleSave();
       }
@@ -1176,9 +1240,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   };
 
   const handleTitleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (handleHistoryKey(e, "title")) return;
     // Explicit Save shortcut (Ctrl/Cmd + S)
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
       e.preventDefault();
+      e.stopPropagation();
       if (!isReadOnly) {
         handleSave();
       }
@@ -1455,8 +1521,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             title="Undo (Ctrl+Z)"
             aria-label="Undo"
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => document.execCommand("undo")}
-            disabled={isReadOnly}
+            onClick={() => applyHistory("undo")}
+            disabled={isReadOnly || (historyField === "content" && viewMode !== "edit") || !(historyField === "title" ? titleHistory.current : contentHistory.current).canUndo}
           >
             <UndoIcon />
           </button>
@@ -1466,8 +1532,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
             aria-label="Redo"
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => document.execCommand("redo")}
-            disabled={isReadOnly}
+            onClick={() => applyHistory("redo")}
+            disabled={isReadOnly || (historyField === "content" && viewMode !== "edit") || !(historyField === "title" ? titleHistory.current : contentHistory.current).canRedo}
           >
             <RedoIcon />
           </button>
@@ -1744,6 +1810,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               value={title}
               readOnly={isReadOnly || isExternal}
               onChange={handleTitleChange}
+              onFocus={() => setHistoryField("title")}
               onKeyDown={handleTitleKeyDown}
               aria-label="Note title"
             />
@@ -1827,6 +1894,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 value={content}
                 readOnly={isReadOnly}
                 onChange={handleContentChange}
+                onFocus={() => setHistoryField("content")}
                 onKeyDown={handleContentKeyDown}
                 onSelect={handleRecordSelection}
                 onKeyUp={handleRecordSelection}

@@ -1,3 +1,4 @@
+import "./editor-history.test.mjs";
 import test, { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -335,7 +336,7 @@ describe("Phase 14 Task 6 — Note Creation, Editing, Autosave, Undo, and Redo",
     assert.strictEqual(rawWhitespaceContent, "   \n\t  \n", "Content whitespace must not be stripped");
   });
 
-  it("inspects NoteEditor source to verify Undo and Redo toolbar controls and native execution", async () => {
+  it("inspects NoteEditor source to verify Undo and Redo toolbar controls and shared history execution", async () => {
     const fs = await import("node:fs/promises");
     const path = await import("node:path");
 
@@ -344,20 +345,20 @@ describe("Phase 14 Task 6 — Note Creation, Editing, Autosave, Undo, and Redo",
       "utf-8"
     );
 
-    // Verify Undo control exists and calls document.execCommand("undo")
+    // Verify Undo control exists and calls applyHistory("undo")
     assert.ok(
-      editorCode.includes('document.execCommand("undo")'),
-      "NoteEditor must execute document.execCommand('undo')"
+      editorCode.includes('applyHistory("undo")'),
+      "NoteEditor must execute applyHistory('undo')"
     );
     assert.ok(
       editorCode.includes('aria-label="Undo"'),
       "Undo button must have accessible aria-label"
     );
 
-    // Verify Redo control exists and calls document.execCommand("redo")
+    // Verify Redo control exists and calls applyHistory("redo")
     assert.ok(
-      editorCode.includes('document.execCommand("redo")'),
-      "NoteEditor must execute document.execCommand('redo')"
+      editorCode.includes('applyHistory("redo")'),
+      "NoteEditor must execute applyHistory('redo')"
     );
     assert.ok(
       editorCode.includes('aria-label="Redo"'),
@@ -366,7 +367,7 @@ describe("Phase 14 Task 6 — Note Creation, Editing, Autosave, Undo, and Redo",
 
     // Verify both controls respect isReadOnly
     assert.ok(
-      editorCode.includes("disabled={isReadOnly}"),
+      editorCode.includes("disabled={isReadOnly || (historyField"),
       "Undo/Redo toolbar buttons must be disabled when note is read-only or trashed"
     );
   });
@@ -3499,7 +3500,7 @@ describe("Phase 14 Task 19 — Keyboard Shortcuts and Accessibility Basics Tests
     assert.ok(editorCode.includes('role="alert"'), "NoteEditor save error banner must have role='alert'");
     assert.ok(editorCode.includes('title="Undo (Ctrl+Z)"'));
     assert.ok(editorCode.includes('title="Redo (Ctrl+Y or Ctrl+Shift+Z)"'));
-    assert.ok(editorCode.includes('disabled={isReadOnly}'));
+    assert.ok(editorCode.includes('disabled={isReadOnly || (historyField'));
   });
 
   it("verifies visible focus indicators are defined across interactive UI elements", async () => {
@@ -11175,12 +11176,12 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
         );
 
         assert.ok(
-          editorCode.includes('document.execCommand("undo")'),
-          "NoteEditor must support native undo execution"
+          editorCode.includes('applyHistory("undo")'),
+          "NoteEditor must support shared undo execution"
         );
         assert.ok(
-          editorCode.includes('document.execCommand("redo")'),
-          "NoteEditor must support native redo execution"
+          editorCode.includes('applyHistory("redo")'),
+          "NoteEditor must support shared redo execution"
         );
       });
 
@@ -18613,7 +18614,8 @@ describe("Phase 9 - Task 23: Add Frontend and Navigation Integration Tests", () 
       );
     });
 
-    it("regression: verifies keyboard shortcuts for link picker, history, and editing", () => {
+    it("regression: verifies keyboard shortcuts for link picker, history, and editing", async () => {
+      const { historyShortcut } = await import("../src/features/notes/utils/editHistory.ts");
       const testEvents = [
         { key: "k", ctrlKey: true, metaKey: false, expectedAction: "openLinkPicker" },
         { key: "s", ctrlKey: true, metaKey: false, expectedAction: "saveNote" },
@@ -18625,8 +18627,8 @@ describe("Phase 9 - Task 23: Add Frontend and Navigation Integration Tests", () 
       const resolveShortcut = (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") return "openLinkPicker";
         if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") return "saveNote";
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") return "undo";
-        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") return "redo";
+        const history = historyShortcut({ ...e, shiftKey: false, altKey: false });
+        if (history) return history;
         if (e.key === "Escape") return "closeModal";
         return null;
       };
@@ -28634,7 +28636,7 @@ describe("Markdown preview rendering", () => {
     const { parseMarkdown } = await loadMd();
     const blocks = parseMarkdown(
       "# Work Report - October 07, 2026\n\n**Date:** Wednesday\n**Branches:** `ritik` ➔ `origin/ritik`\n\n---\n",
-    );
+    ).filter((block) => block.t !== "blank");
     assert.equal(blocks[0].t, "heading");
     assert.equal(blocks[0].level, 1);
     assert.equal(flat(blocks[0].c), "Work Report - October 07, 2026");
@@ -28650,7 +28652,7 @@ describe("Markdown preview rendering", () => {
     const { parseMarkdown } = await loadMd();
     const blocks = parseMarkdown(
       "- [x] done\n- [ ] open\n  - nested\n\n1. a\n2. b\n\n> quoted\n\n```ts\nconst a = 1 < 2;\n```\n\n| h1 | h2 |\n|:--|--:|\n| 1 | 2 |\n",
-    );
+    ).filter((block) => block.t !== "blank");
     const types = blocks.map((b) => b.t);
     assert.deepEqual(types, ["list", "list", "quote", "code", "table"]);
     assert.deepEqual(blocks[0].items.map((i) => i.checked), [true, false]);
@@ -28841,7 +28843,7 @@ describe("Inline images in notes (Phase 1: preview + insert)", () => {
   it("round-trips an inserted image reference through the parser and list snippets", async () => {
     const { parseMarkdown, formatAttachmentImageMarkdown, markdownToPlainText } = await import("../src/utils/markdown.ts");
     const line = formatAttachmentImageMarkdown("img-9", "chart.png");
-    const blocks = parseMarkdown(`Intro text\n\n${line}\n\nOutro text`);
+    const blocks = parseMarkdown(`Intro text\n\n${line}\n\nOutro text`).filter((block) => block.t !== "blank");
     assert.deepEqual(blocks.map((b) => b.t), ["paragraph", "paragraph", "paragraph"]);
     assert.equal(blocks[1].c[0].t, "attachment");
     assert.equal(markdownToPlainText(`Intro\n\n${line}\n\nOutro`), "Intro chart Outro");
@@ -29237,8 +29239,8 @@ describe("Images in plain-text (TXT) notes", () => {
     const parts = splitAttachmentImages("Intro line\n\n![Chart|300](notepad://attachment/img-1)\n\nOutro line");
     assert.deepEqual(
       parts.map((p) => (p.type === "attachment" ? ["img", p.id, p.alt, p.width] : ["text", p.text])),
-      [["text", "Intro line\n"], ["img", "img-1", "Chart", 300], ["text", "\nOutro line"]],
-      "one line break next to the image is dropped, the blank line stays",
+      [["text", "Intro line\n\n"], ["img", "img-1", "Chart", 300], ["text", "\n\nOutro line"]],
+      "all line breaks next to the image stay unchanged",
     );
     assert.deepEqual(splitAttachmentImages("no images here"), [{ type: "text", text: "no images here" }]);
     assert.deepEqual(splitAttachmentImages(""), []);
@@ -29255,7 +29257,7 @@ describe("Images in plain-text (TXT) notes", () => {
     assert.match(preview, /<ImageLightbox/);
     assert.ok(!fs.existsSync("src/features/notes/components/ConvertToMarkdownDialog.tsx"));
     const css = fs.readFileSync("src/features/notes/components/Links/InternalLinks.css", "utf8");
-    assert.match(css, /\.editor-preview-area \.plain-note-image \{[^}]*display:\s*block/);
+    assert.match(css, /\.editor-preview-area \.plain-note-image \{[^}]*display:\s*inline-block/);
   });
 });
 
@@ -29411,7 +29413,7 @@ describe("Preview by default, pinned external files", () => {
   it("opens existing notes as a preview and only new notes in edit mode", () => {
     const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
     assert.match(editor, /setViewMode\(startInEditMode \? "edit" : "preview"\)/);
-    assert.match(editor, /if \(!note\.content\.trim\(\)\) setViewMode\("edit"\)/, "an empty note has nothing to preview");
+    assert.match(editor, /if \(!note\.content\) setViewMode\("edit"\)/, "an empty note has nothing to preview");
     const app = read("src/app/App.tsx");
     assert.match(app, /setNewNoteId\(created\.id\)/);
     assert.match(app, /startInEditMode=\{selectedNoteId !== null && selectedNoteId === newNoteId\}/);

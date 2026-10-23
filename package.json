@@ -22,7 +22,8 @@
     "test:regression": "cargo test --manifest-path src-tauri/Cargo.toml --test regression_defect_tracking_test",
     "build:desktop": "tauri build --debug --no-bundle",
     "package:linux": "tauri build --bundles deb",
-    "release:metadata": "node scripts/generate-release-metadata.mjs"
+    "release:metadata": "node scripts/generate-release-metadata.mjs",
+    "test:editor:browser": "node scripts/test-editor-browser.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

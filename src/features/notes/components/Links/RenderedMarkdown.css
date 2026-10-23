@@ -14,7 +14,7 @@
 }
 
 .md-paragraph {
-  margin: 0 0 0.9em;
+  margin: 0;
 }
 
 .md-heading {
@@ -173,4 +173,18 @@
 .md-plain {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* The parser represents blank source lines explicitly, including at note boundaries. */
+.md-blank-lines {
+  flex-shrink: 0;
+}
+
+.md-paragraph,
+.md-heading,
+.md-inline-code,
+.md-table th,
+.md-table td {
+  white-space: pre-wrap;
+  tab-size: 4;
 }

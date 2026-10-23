@@ -27,7 +27,7 @@ export const RenderedNoteContent: React.FC<RenderedNoteContentProps> = ({
   }, [content]);
   const [zoomed, setZoomed] = useState<{ id: string; alt: string } | null>(null);
 
-  if (!content || content.trim().length === 0) {
+  if (!content) {
     return (
       <div className={`editor-preview-area editor-preview-empty ${className}`}>
         {placeholder}

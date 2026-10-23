@@ -330,9 +330,14 @@
   white-space: normal;
 }
 
-/* An attached image inside a plain-text note sits on its own line, between the text around it */
+/* Source newlines control image spacing just as they control plain text spacing. */
 .editor-preview-area .plain-note-image {
-  display: block;
-  margin: 0.4em 0;
+  display: inline-block;
+  vertical-align: top;
+  margin: 0;
   white-space: normal;
+}
+
+.editor-preview-area .plain-note-image .attachment-image.is-inline {
+  margin: 0;
 }

@@ -100,3 +100,9 @@ Continuous Integration is automated via GitHub Actions in [`.github/workflows/ci
 - **Headless Desktop Tests**: Interactive desktop GUI workflows requiring rendered displays can run locally or in virtual framebuffers (`xvfb-run npm run build:desktop`). Backend integration suites use `TestAppDir` without requiring an active X11/Wayland display server.
 
 
+
+## Editor history and preview regression coverage
+
+`npm test` includes `editor-history.test.mjs`, which exercises the production history/shortcut and Markdown parser implementations. `npm run test:editor:browser` builds and mounts the real editor in headless Chromium with strictly mocked Tauri calls, synthetic notes and a fresh temporary browser profile. It checks keyboard/toolbar history, preview transitions, Tab autosave, link/image insertion, read-only protection and whitespace rendering. It does not connect to the installed application or its notes. The runner prints the temporary artifact directory. Set `EDITOR_TEST_BROWSER` to select another Chromium-compatible executable.
+
+See `docs/audits/editor-undo-spacing-2026-10-23.md` for the audit findings, implemented fixes and verification boundaries.

@@ -114,6 +114,8 @@ function renderBlocks(
   return blocks.map((block, index) => {
     const key = `${keyPrefix}-${index}`;
     switch (block.t) {
+      case "blank":
+        return <div key={key} className="md-blank-lines" style={{ height: `${block.lines}lh` }} aria-hidden="true" />;
       case "heading": {
         const Tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
         return (

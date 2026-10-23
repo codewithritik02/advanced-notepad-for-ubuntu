@@ -31,6 +31,7 @@ export interface MdListItem {
 }
 
 export type MdBlock =
+  | { t: "blank"; lines: number }
   | { t: "heading"; level: number; c: MdInline[] }
   | { t: "paragraph"; c: MdInline[] }
   | { t: "code"; lang: string; v: string }
@@ -263,12 +264,8 @@ function parseInlineRange(src: string, depth: number): MdInline[] {
     // Line breaks (every newline is a visible break in notes)
     if (ch === "\n") {
       flush(i);
-      // drop trailing spaces before the break
-      const last = out[out.length - 1];
-      if (last && last.t === "text") last.v = last.v.replace(/[ \t]+$/, "");
       out.push({ t: "br" });
       i++;
-      while (src[i] === " " || src[i] === "\t") i++;
       textStart = i;
       continue;
     }
@@ -510,7 +507,9 @@ function parseBlocksFromLines(lines: string[], depth: number): MdBlock[] {
     const line = lines[i];
 
     if (!line.trim()) {
-      i++;
+      const start = i;
+      while (i < lines.length && !lines[i].trim()) i++;
+      blocks.push({ t: "blank", lines: i - start });
       continue;
     }
 
@@ -642,7 +641,7 @@ function parseBlocksFromLines(lines: string[], depth: number): MdBlock[] {
       para.push(lines[i]);
       i++;
     }
-    const text = para.map((l) => l.replace(/^[ \t]+/, "")).join("\n").replace(/[ \t]+$/, "");
+    const text = para.join("\n");
     blocks.push(
       setext
         ? { t: "heading", level: setext, c: parseInline(text.replace(/\n/g, " ")) }
@@ -727,8 +726,8 @@ const ATTACHMENT_IMAGE_REGEX = /!\[([^\]\n]*)\]\(notepad:\/\/attachment\/([a-zA-
 
 /**
  * Splits plain text into text and attached-image parts, so a plain-text (TXT) note can show its
- * `![name](notepad://attachment/<id>)` lines as pictures without being Markdown. One line break
- * next to an image is dropped because the image already sits on its own line.
+ * `![name](notepad://attachment/<id>)` lines as pictures without being Markdown.
+ * Text segments retain all whitespace around the inline image.
  */
 export function splitAttachmentImages(text: string): PlainTextPart[] {
   const parts: PlainTextPart[] = [];
@@ -750,13 +749,5 @@ export function splitAttachmentImages(text: string): PlainTextPart[] {
   }
   if (last < text.length) parts.push({ type: "text", text: text.slice(last) });
 
-  return parts
-    .map((part, i) => {
-      if (part.type !== "text") return part;
-      let value = part.text;
-      if (parts[i + 1]?.type === "attachment") value = value.replace(/\n$/, "");
-      if (parts[i - 1]?.type === "attachment") value = value.replace(/^\n/, "");
-      return { type: "text" as const, text: value };
-    })
-    .filter((part) => part.type !== "text" || part.text.length > 0);
+  return parts;
 }
