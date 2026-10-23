@@ -30,6 +30,16 @@ impl SearchService {
         SearchRepository::search_with_key(conn, query, limit, dek)
     }
 
+    pub fn search_with_key_and_hidden(
+        conn: &Connection,
+        query: &str,
+        limit: Option<usize>,
+        dek: Option<&crate::storage::crypto::SecretBytes>,
+        include_hidden: bool,
+    ) -> Result<Vec<SearchResult>, StorageError> {
+        SearchRepository::search_with_key_and_hidden(conn, query, limit, dek, include_hidden)
+    }
+
     /// Rebuilds search index when needed via SearchRepository.
     pub fn rebuild_index(conn: &Connection) -> Result<(), StorageError> {
         SearchRepository::rebuild_search_index(conn)

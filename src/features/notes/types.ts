@@ -55,6 +55,7 @@ export function computeNoteMetadata(
     notebook_path: notebookPath ?? notebookName ?? null,
     is_favorite: note.is_favorite,
     is_pinned: note.is_pinned,
+    is_hidden: note.is_hidden ?? false,
     tags,
     word_count,
     character_count,
@@ -86,6 +87,7 @@ export interface NoteListItem {
   attachmentCount?: number;
   isDeleted?: boolean;
   deletedAt?: string | null;
+  isHidden?: boolean;
 }
 
 export type NotesListStatus = "idle" | "loading" | "error" | "empty";

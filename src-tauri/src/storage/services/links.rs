@@ -245,6 +245,15 @@ impl InternalLinkService {
         target_id: &str,
         dek: Option<&SecretBytes>,
     ) -> Result<ResolvedLinkTarget, InternalLinkError> {
+        Self::resolve_link_target_with_options_and_key(conn, target_id, false, dek)
+    }
+
+    pub fn resolve_link_target_with_options_and_key(
+        conn: &Connection,
+        target_id: &str,
+        include_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<ResolvedLinkTarget, InternalLinkError> {
         let trimmed_id = target_id.trim();
         if trimmed_id.is_empty()
             || trimmed_id.contains('/')
@@ -260,12 +269,16 @@ impl InternalLinkService {
             });
         }
 
-        let mut stmt = conn.prepare(
+        let mut sql = String::from(
             "SELECT n.id, n.title, n.notebook_id, nb.name, n.is_deleted
              FROM notes n
              LEFT JOIN notebooks nb ON n.notebook_id = nb.id
              WHERE n.id = ?1",
-        )?;
+        );
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        let mut stmt = conn.prepare(&sql)?;
 
         let mut rows = stmt.query(params![trimmed_id])?;
         if let Some(row) = rows.next()? {
@@ -329,6 +342,15 @@ impl InternalLinkService {
         target_note_id: &str,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
+        Self::get_backlinks_with_options_and_key(conn, target_note_id, false, dek)
+    }
+
+    pub fn get_backlinks_with_options_and_key(
+        conn: &Connection,
+        target_note_id: &str,
+        include_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<BacklinkItem>, InternalLinkError> {
         let trimmed_id = target_note_id.trim();
         if trimmed_id.is_empty()
             || trimmed_id.contains('/')
@@ -341,14 +363,18 @@ impl InternalLinkService {
         let mut backlinks = Vec::new();
 
         if let Some(key) = dek {
-            let mut stmt = conn.prepare(
+            let mut sql = String::from(
                 "SELECT n.id, n.title, n.content, n.notebook_id, nb.name, n.modified_at
                  FROM notes n
                  LEFT JOIN notebooks nb ON n.notebook_id = nb.id
                  WHERE n.is_deleted = 0
-                   AND n.id != ?1
-                 ORDER BY n.modified_at DESC",
-            )?;
+                   AND n.id != ?1",
+            );
+            if !include_hidden {
+                sql.push_str(" AND n.is_hidden = 0");
+            }
+            sql.push_str(" ORDER BY n.modified_at DESC");
+            let mut stmt = conn.prepare(&sql)?;
 
             let mut rows = stmt.query(params![trimmed_id])?;
             while let Some(row) = rows.next()? {
@@ -400,15 +426,19 @@ impl InternalLinkService {
         } else {
             let like_pattern = format!("%notepad://note/{}%", trimmed_id);
 
-            let mut stmt = conn.prepare(
+            let mut sql = String::from(
                 "SELECT n.id, n.title, n.content, n.notebook_id, nb.name, n.modified_at
                  FROM notes n
                  LEFT JOIN notebooks nb ON n.notebook_id = nb.id
                  WHERE n.is_deleted = 0
                    AND n.id != ?1
-                   AND n.content LIKE ?2
-                 ORDER BY n.modified_at DESC",
-            )?;
+                   AND n.content LIKE ?2",
+            );
+            if !include_hidden {
+                sql.push_str(" AND n.is_hidden = 0");
+            }
+            sql.push_str(" ORDER BY n.modified_at DESC");
+            let mut stmt = conn.prepare(&sql)?;
 
             let mut rows = stmt.query(params![trimmed_id, like_pattern])?;
 

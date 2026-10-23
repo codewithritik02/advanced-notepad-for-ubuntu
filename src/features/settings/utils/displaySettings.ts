@@ -20,6 +20,8 @@ export const ZOOM_SETTING_KEY = "ui_zoom_percent";
 export const EDITOR_FONT_SIZE_SETTING_KEY = "editor_font_size_px";
 export const MINIMAP_SETTING_KEY = "show_minimap";
 export const DEFAULT_SHOW_MINIMAP = true;
+export const SHOW_HIDDEN_NOTES_SETTING_KEY = "show_hidden_notes";
+export const DEFAULT_SHOW_HIDDEN_NOTES = false;
 
 /** Snaps any stored/typed value to the nearest supported zoom level. */
 export function normalizeZoomPercent(value: unknown): number {
@@ -58,6 +60,14 @@ export function normalizeShowMinimap(value: unknown): boolean {
   if (value === "false" || value === "0") return false;
   if (value === "true" || value === "1") return true;
   return DEFAULT_SHOW_MINIMAP;
+}
+
+/** Stored as the strings "true"/"false"; anything unreadable falls back to the default (false/off). */
+export function normalizeShowHiddenNotes(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (value === "false" || value === "0") return false;
+  if (value === "true" || value === "1") return true;
+  return DEFAULT_SHOW_HIDDEN_NOTES;
 }
 
 export function stepEditorFontSize(current: number, direction: 1 | -1): number {

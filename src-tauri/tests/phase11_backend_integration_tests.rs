@@ -20,7 +20,7 @@ use personal_notepad_lib::storage::{
     run_migrations,
     services::{
         compute_file_sha256, BackupRetentionManager, BackupService, BackupValidationService,
-        RestoreService, SearchService,
+        RestoreService, SearchService, CURRENT_APP_SCHEMA_VERSION,
     },
 };
 
@@ -327,7 +327,7 @@ fn test_integ_04_detect_missing_attachment() {
                     "entry_path": "database.sqlite",
                     "file_size": {db_size},
                     "sha256": "{db_hash}",
-                    "schema_version": 4,
+                    "schema_version": {CURRENT_APP_SCHEMA_VERSION},
                     "note_count": 1,
                     "notebook_count": 0,
                     "tag_count": 0,
@@ -497,7 +497,7 @@ fn test_integ_07_reject_unsupported_format_version() {
                     "entry_path": "database.sqlite",
                     "file_size": {file_size},
                     "sha256": "{hash}",
-                    "schema_version": 4,
+                    "schema_version": {CURRENT_APP_SCHEMA_VERSION},
                     "note_count": 0,
                     "notebook_count": 0,
                     "tag_count": 0,

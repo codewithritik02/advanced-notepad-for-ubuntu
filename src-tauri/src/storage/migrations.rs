@@ -6,6 +6,7 @@ use crate::storage::schema::{
 use rusqlite::Connection;
 
 /// Represents a single discrete database migration step
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Migration {
     pub version: i32,
     pub name: &'static str,
@@ -464,28 +465,19 @@ mod tests {
             "INSERT INTO _migrations (version, name, applied_at) VALUES (1, '001_initial_schema', ?1)",
             rusqlite::params![now],
         ).expect("Insert migration 1");
+        let note1_id = uuid::Uuid::new_v4().to_string();
+        let note2_id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+             VALUES (?1, 'Mission Critical Financial Plan', 'Q4 budget allocation and cash flow analysis.', 'txt', ?2, ?2, 0, 0, 0)",
+            rusqlite::params![note1_id, now],
+        ).expect("Insert note 1");
+        tx.execute(
+            "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+             VALUES (?1, 'Confidential System Architecture', 'Zero trust security model and access controls.', 'txt', ?2, ?2, 0, 0, 0)",
+            rusqlite::params![note2_id, now],
+        ).expect("Insert note 2");
         tx.commit().expect("Commit v1");
-
-        // 2. Insert vital user notes prior to search migration
-        let note1 = NoteRepository::create(
-            &conn,
-            CreateNoteDto {
-                title: Some("Mission Critical Financial Plan".to_string()),
-                content: Some("Q4 budget allocation and cash flow analysis.".to_string()),
-                ..Default::default()
-            },
-        )
-        .expect("Create note 1");
-
-        let note2 = NoteRepository::create(
-            &conn,
-            CreateNoteDto {
-                title: Some("Confidential System Architecture".to_string()),
-                content: Some("Zero trust security model and access controls.".to_string()),
-                ..Default::default()
-            },
-        )
-        .expect("Create note 2");
 
         let count_before: i64 = conn
             .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
@@ -499,9 +491,14 @@ mod tests {
             sql: "CREATE VIRTUAL TABLE broken_fts USING non_existent_extension_fts(foo); SYNTAX ERROR;",
         };
 
-        // 4. Run migration runner with failing search migration
-        // Invariant: Must return Ok(()) so database remains usable and app can start
-        let migration_res = run_migrations_custom(&mut conn, &[failing_search_migration]);
+        // 4. Run migration runner with failing search migration and remaining pending migrations
+        let pending = [
+            failing_search_migration,
+            MIGRATIONS[2],
+            MIGRATIONS[3],
+            MIGRATIONS[4],
+        ];
+        let migration_res = run_migrations_custom(&mut conn, &pending);
         assert!(
             migration_res.is_ok(),
             "Search migration failure must not crash migration runner; priority is database remaining usable"
@@ -539,7 +536,7 @@ mod tests {
             "Notes must never be deleted or lost on migration failure"
         );
 
-        let fetched_note1 = NoteRepository::get_by_id(&conn, &note1.id)
+        let fetched_note1 = NoteRepository::get_by_id(&conn, &note1_id)
             .unwrap()
             .expect("Note 1 must exist");
         assert_eq!(fetched_note1.title, "Mission Critical Financial Plan");
@@ -548,7 +545,7 @@ mod tests {
             "Q4 budget allocation and cash flow analysis."
         );
 
-        let fetched_note2 = NoteRepository::get_by_id(&conn, &note2.id)
+        let fetched_note2 = NoteRepository::get_by_id(&conn, &note2_id)
             .unwrap()
             .expect("Note 2 must exist");
         assert_eq!(fetched_note2.title, "Confidential System Architecture");
@@ -579,7 +576,7 @@ mod tests {
             1,
             "Search must return results via fallback mechanism"
         );
-        assert_eq!(search_results[0].note_id, note1.id);
+        assert_eq!(search_results[0].note_id, note1_id);
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -806,8 +803,8 @@ mod tests {
             .query_row("SELECT COUNT(1) FROM _migrations", [], |r| r.get(0))
             .expect("Count migrations");
         assert_eq!(
-            total_migrations, 4,
-            "Fresh database must have all 4 migrations applied"
+            total_migrations, LATEST_SCHEMA_VERSION as i64,
+            "Fresh database must have all migrations applied"
         );
 
         drop(conn);

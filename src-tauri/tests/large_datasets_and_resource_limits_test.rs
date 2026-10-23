@@ -102,6 +102,7 @@ fn test_synthetic_dataset_list_retrieval_and_index_efficiency() {
         limit: Some(50),
         offset: Some(0),
         content_limit: Some(300),
+        include_hidden: false,
     };
     let initial_slice =
         NoteRepository::list_filtered_options(&conn, &options, None).expect("list initial slice");

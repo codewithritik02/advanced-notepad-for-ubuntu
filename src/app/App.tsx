@@ -90,6 +90,7 @@ interface NotePageContext {
   navId: NavItemId;
   notebookId: string | null;
   tagId: string | null;
+  includeHidden?: boolean;
 }
 
 function trashedItemToNote(item: Awaited<ReturnType<typeof storageService.notes.listTrashed>>[number]): Note {
@@ -105,25 +106,34 @@ function trashedItemToNote(item: Awaited<ReturnType<typeof storageService.notes.
     is_pinned: false,
     is_deleted: true,
     deleted_at: item.deletedAt,
+    is_hidden: item.isHidden,
     attachment_count: item.attachmentCount,
   } as Note;
 }
 
 async function fetchNotePage(context: NotePageContext, offset: number): Promise<Note[]> {
+  const includeHidden = context.includeHidden ?? false;
   if (context.navId === "tags" && context.tagId) {
     return storageService.tags.getNotesForTag(
       context.tagId,
       300,
       DEFAULT_PAGE_SIZE,
-      offset
+      offset,
+      includeHidden
     );
   }
   if (context.navId === "trash") {
-    const items = await storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset);
+    const items = await storageService.notes.listTrashed(
+      DEFAULT_PAGE_SIZE,
+      offset,
+      includeHidden
+    );
     return items.map(trashedItemToNote);
   }
   if (context.navId === "favorites") {
-    return storageService.notes.listFavorites(300, DEFAULT_PAGE_SIZE, offset);
+    return includeHidden
+      ? storageService.notes.listFavorites(300, DEFAULT_PAGE_SIZE, offset, true)
+      : storageService.notes.listFavorites(300, DEFAULT_PAGE_SIZE, offset);
   }
 
   return storageService.notes.list({
@@ -133,6 +143,7 @@ async function fetchNotePage(context: NotePageContext, offset: number): Promise<
     limit: DEFAULT_PAGE_SIZE,
     offset,
     contentLimit: 300,
+    includeHidden,
   });
 }
 
@@ -141,6 +152,7 @@ export function App() {
   const display = useDisplaySettings();
   const sidebarPin = useSidebarPin();
   const recents = useRecentNotes();
+  const [visibleRecentNotes, setVisibleRecentNotes] = useState(recents.recent);
   const [activeNavId, setActiveNavId] = useState<NavItemId>("all-notes");
   const editorSaveRef = useRef<(() => Promise<void> | void) | null>(null);
 
@@ -149,6 +161,34 @@ export function App() {
       await editorSaveRef.current();
     }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (display.showHiddenNotes) {
+      setVisibleRecentNotes(recents.recent);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setVisibleRecentNotes(recents.recent.filter((entry) => entry.file));
+    void Promise.all(
+      recents.recent.map(async (entry) => {
+        if (entry.file) return entry;
+        try {
+          const note = await storageService.notes.get(entry.id);
+          return note && !note.is_hidden ? entry : null;
+        } catch {
+          return null;
+        }
+      })
+    ).then((entries) => {
+      if (!cancelled) setVisibleRecentNotes(entries.filter((entry) => entry !== null));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [display.showHiddenNotes, recents.recent]);
 
   const {
     query: searchQuery,
@@ -163,6 +203,7 @@ export function App() {
   } = useSearch({
     debounceMs: 200,
     limit: 50,
+    includeHidden: display.showHiddenNotes,
     onBeforeSearch: handleFlushPendingSave,
   });
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -570,7 +611,9 @@ export function App() {
   const refreshNoteCounts = useCallback(async () => {
     if (!isStorageReady || isAppLocked) return;
     try {
-      const noteCounts = await storageService.notes.getNoteCounts();
+      const noteCounts = display.showHiddenNotes
+        ? await storageService.notes.getNoteCounts(true)
+        : await storageService.notes.getNoteCounts();
       const counts: Record<string, number> = {
         "all-notes": noteCounts.total,
         "favorites": noteCounts.favorites,
@@ -581,15 +624,15 @@ export function App() {
 
       setNoteCounts(counts);
 
-      const countsByTag = await storageService.tags.getTagNoteCounts();
+      const countsByTag = await storageService.tags.getTagNoteCounts(display.showHiddenNotes);
       setTagCounts(countsByTag);
 
-      const tagsMap = await storageService.tags.getAllNotesTags();
+      const tagsMap = await storageService.tags.getAllNotesTags(display.showHiddenNotes);
       setNoteTagsMap(tagsMap);
     } catch {
       // Non-fatal for badge counters
     }
-  }, [isStorageReady]);
+  }, [isStorageReady, isAppLocked, display.showHiddenNotes]);
 
   const handleRenameTag = useCallback(
     async (id: string, newName: string) => {
@@ -646,6 +689,7 @@ export function App() {
           navId: effectiveNav,
           notebookId: effectiveNotebook,
           tagId: effectiveTag,
+          includeHidden: display.showHiddenNotes,
         };
         const fetchedNotes =
           effectiveNav === "tags" && !effectiveTag
@@ -673,7 +717,7 @@ export function App() {
         setStatus("error");
       }
     },
-    [activeNavId, selectedNotebookId, selectedTagId, isStorageReady, isAppLocked]
+    [activeNavId, selectedNotebookId, selectedTagId, isStorageReady, isAppLocked, display.showHiddenNotes]
   );
 
   const loadMoreNotes = useCallback(async () => {
@@ -708,6 +752,20 @@ export function App() {
       refreshNoteCounts();
     }
   }, [isStorageReady, isAppLocked, loadNotes, refreshNoteCounts]);
+
+  // Active Note Guard: If showHiddenNotes is turned off, gracefully deselect active note if it is hidden
+  useEffect(() => {
+    if (!display.showHiddenNotes && selectedNoteId && !isExternalId(selectedNoteId)) {
+      void storageService.notes
+        .get(selectedNoteId)
+        .then((note) => {
+          if (note?.is_hidden) {
+            setSelectedNoteId(null);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [display.showHiddenNotes, selectedNoteId]);
 
   const handleConfirmImport = useCallback(
     async (request: ImportRequest) => {
@@ -1263,7 +1321,10 @@ export function App() {
         // 2. Resolve target note by stable ID
         let resolved: ResolvedLinkTarget;
         try {
-          resolved = await storageService.links.resolveTarget(targetNoteId);
+          resolved = await storageService.links.resolveTarget(
+            targetNoteId,
+            display.showHiddenNotes
+          );
         } catch (resolveErr) {
           logger.error("Failed to resolve internal link target", resolveErr);
           if (activeLinkNavRequestIdRef.current !== navRequestId) return;
@@ -1317,6 +1378,7 @@ export function App() {
       isSearchActive,
       selectAllNotes,
       loadNotes,
+      display.showHiddenNotes,
     ]
   );
 
@@ -1551,9 +1613,17 @@ export function App() {
         });
         return;
       }
+      if (note.is_hidden && !display.showHiddenNotes) {
+        recents.remove(recentId);
+        setRestoreFeedback({
+          type: "error",
+          message: "That note is hidden. Enable Show Hidden Notes to open it.",
+        });
+        return;
+      }
       await handleActivateInternalLink(recentId);
     },
-    [recents, handleActivateInternalLink, handleFilesOpened]
+    [recents, handleActivateInternalLink, handleFilesOpened, display.showHiddenNotes]
   );
 
   const handleConfirmViewInTrash = useCallback(async () => {
@@ -1694,7 +1764,10 @@ export function App() {
     if (!previousId) return;
 
     try {
-      const resolved = await storageService.links.resolveTarget(previousId);
+      const resolved = await storageService.links.resolveTarget(
+        previousId,
+        display.showHiddenNotes
+      );
       if (resolved.lifecycle === "active") {
         if (activeNavId === "trash") {
           selectAllNotes();
@@ -1715,7 +1788,13 @@ export function App() {
         notebookName: null,
       });
     }
-  }, [navigationHistory, activeNavId, selectAllNotes, loadNotes]);
+  }, [
+    navigationHistory,
+    activeNavId,
+    selectAllNotes,
+    loadNotes,
+    display.showHiddenNotes,
+  ]);
 
   /**
    * Phase 9, Task 12 — Forward Navigation History
@@ -1740,7 +1819,10 @@ export function App() {
     if (!nextId) return;
 
     try {
-      const resolved = await storageService.links.resolveTarget(nextId);
+      const resolved = await storageService.links.resolveTarget(
+        nextId,
+        display.showHiddenNotes
+      );
       if (resolved.lifecycle === "active") {
         if (activeNavId === "trash") {
           selectAllNotes();
@@ -1761,7 +1843,13 @@ export function App() {
         notebookName: null,
       });
     }
-  }, [navigationHistory, activeNavId, selectAllNotes, loadNotes]);
+  }, [
+    navigationHistory,
+    activeNavId,
+    selectAllNotes,
+    loadNotes,
+    display.showHiddenNotes,
+  ]);
 
   // Wire arrow-key navigation over scoped search results (Task 45)
   // resultNoteIds is derived below after scopedSearchResults is computed;
@@ -1970,6 +2058,7 @@ export function App() {
         attachmentCount: (n as any).attachment_count,
         isDeleted: n.is_deleted,
         deletedAt: deletedAtDisplay ?? n.deleted_at ?? undefined,
+        isHidden: n.is_hidden,
       };
     });
   }, [filteredNotes, noteTagsMap, notebookPathMap]);
@@ -2281,7 +2370,7 @@ export function App() {
             onNavigateForward={handleNavigateForward}
             isEncryptionEnabled={isEncryptionEnabled}
             onLockClick={handleLockApp}
-            recentNotes={recents.recent}
+            recentNotes={visibleRecentNotes}
             onOpenRecent={handleOpenRecent}
             onRemoveRecent={recents.remove}
             onClearRecent={recents.clear}
@@ -2473,6 +2562,7 @@ export function App() {
             noteId={selectedNoteId}
             startInEditMode={selectedNoteId !== null && selectedNoteId === newNoteId}
             showMinimap={display.showMinimap}
+            showHiddenNotes={display.showHiddenNotes}
             onSaveNote={handleSaveNote}
             onRegisterSave={handleRegisterSave}
             onActivateLink={handleActivateInternalLink}
@@ -2514,6 +2604,16 @@ export function App() {
                 return [updated, ...prev];
               });
             }}
+            onHiddenChanged={(updated) => {
+              if (updated.is_hidden && !display.showHiddenNotes) {
+                setNotes((prev) => prev.filter((note) => note.id !== updated.id));
+                recents.remove(updated.id);
+                if (selectedNoteId === updated.id) setSelectedNoteId(null);
+              } else {
+                void loadNotes();
+              }
+              void refreshNoteCounts();
+            }}
           />
         }
       />
@@ -2532,6 +2632,8 @@ export function App() {
         onEditorFontSizeReset={display.resetEditorFontSize}
         showMinimap={display.showMinimap}
         onShowMinimapChange={display.setShowMinimap}
+        showHiddenNotes={display.showHiddenNotes}
+        onShowHiddenNotesChange={display.setShowHiddenNotes}
         onCreateBackup={() => {
           setIsSettingsOpen(false);
           setIsCreateBackupOpen(true);
@@ -2648,6 +2750,7 @@ export function App() {
           onClose={() => setRepairingBrokenTargetId(null)}
           onSelectNote={handleConfirmRepairReplacement}
           currentNoteId={selectedNoteId}
+          includeHidden={display.showHiddenNotes}
         />
       )}
 

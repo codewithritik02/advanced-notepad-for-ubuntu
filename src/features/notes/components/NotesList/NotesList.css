@@ -214,6 +214,24 @@
   padding: 0;
 }
 
+.note-card-hidden-indicator {
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+  opacity: 0.85;
+}
+
+.note-card-hidden-indicator:hover {
+  opacity: 1;
+}
+
 .note-card:hover .note-card-favorite-btn,
 .note-card:focus-within .note-card-favorite-btn,
 .note-card-favorite-btn.is-favorite {

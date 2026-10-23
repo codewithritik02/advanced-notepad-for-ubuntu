@@ -345,6 +345,7 @@ pub struct TrashedNoteItem {
     pub modified_at: String,
     pub deleted_at: Option<String>,
     pub is_favorite: bool,
+    pub is_hidden: bool,
     pub attachment_count: usize,
 }
 
@@ -1335,6 +1336,7 @@ mod tests {
             is_pinned: false,
             is_deleted: false,
             deleted_at: None,
+            is_hidden: false,
         };
 
         assert_eq!(active_note.lifecycle(), NoteLifecycle::Active);
@@ -1353,6 +1355,7 @@ mod tests {
             is_pinned: false,
             is_deleted: true,
             deleted_at: Some("2026-10-08T12:30:00Z".to_string()),
+            is_hidden: false,
         };
 
         assert_eq!(trashed_note.lifecycle(), NoteLifecycle::Trashed);
@@ -1381,6 +1384,7 @@ mod tests {
             modified_at: "2026-10-08T12:30:00Z".to_string(),
             deleted_at: Some("2026-10-08T12:30:00Z".to_string()),
             is_favorite: true,
+            is_hidden: false,
             attachment_count: 2,
         };
         let item_json = serde_json::to_string(&item).unwrap();

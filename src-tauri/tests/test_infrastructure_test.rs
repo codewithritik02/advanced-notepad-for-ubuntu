@@ -35,7 +35,10 @@ fn creates_complete_isolated_app_data_tree_with_real_migrations() {
     let migration_count: i64 = connection
         .query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(migration_count, 4);
+    assert_eq!(
+        migration_count,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION as i64
+    );
     drop(connection);
 }
 

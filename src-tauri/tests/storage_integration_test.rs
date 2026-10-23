@@ -10778,7 +10778,11 @@ fn test_phase11_task_16_recovery_checkpoint_suite() {
     assert_eq!(checkpoint.notebook_count, 1, "Must capture 1 notebook");
     assert_eq!(checkpoint.tag_count, 1, "Must capture 1 tag");
     assert_eq!(checkpoint.attachment_count, 1, "Must capture 1 attachment");
-    assert_eq!(checkpoint.schema_version, 4, "Current schema is v4");
+    assert_eq!(
+        checkpoint.schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION,
+        "Checkpoint must use the current schema"
+    );
     assert!(checkpoint.file_size > 0);
     assert!(
         std::path::Path::new(&checkpoint.file_path).exists(),
@@ -10932,16 +10936,25 @@ fn test_phase11_tasks_17_and_18_staged_restore_and_migration() {
     assert_eq!(staged.notebook_count, 1);
     assert_eq!(staged.tag_count, 1);
     assert_eq!(staged.attachment_count, 1);
-    assert_eq!(staged.initial_schema_version, 4);
+    assert_eq!(
+        staged.initial_schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION
+    );
     assert!(std::path::Path::new(&staged.staging_dir).exists());
     assert!(std::path::Path::new(&staged.database_path).exists());
 
     let staging_path = std::path::PathBuf::from(&staged.staging_dir);
 
-    // 4. Test Task 18 migration on staged database (already v4 -> no-op)
+    // 4. Test Task 18 migration on a current database (no-op)
     let mig_res = RestoreService::migrate_staged_database(&staging_path, &env.paths).unwrap();
-    assert_eq!(mig_res.previous_schema_version, 4);
-    assert_eq!(mig_res.migrated_schema_version, 4);
+    assert_eq!(
+        mig_res.previous_schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION
+    );
+    assert_eq!(
+        mig_res.migrated_schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION
+    );
     assert_eq!(mig_res.migrations_applied, 0);
     assert!(mig_res.is_verified);
     assert_eq!(mig_res.note_count, 1);
@@ -10993,8 +11006,14 @@ fn test_phase11_tasks_17_and_18_staged_restore_and_migration() {
     let legacy_mig =
         RestoreService::migrate_staged_database(&legacy_staging_path, &env.paths).unwrap();
     assert_eq!(legacy_mig.previous_schema_version, 1);
-    assert_eq!(legacy_mig.migrated_schema_version, 4);
-    assert_eq!(legacy_mig.migrations_applied, 3);
+    assert_eq!(
+        legacy_mig.migrated_schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION
+    );
+    assert_eq!(
+        legacy_mig.migrations_applied,
+        (personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION - 1) as usize
+    );
     assert_eq!(legacy_mig.note_count, 1);
     assert!(legacy_mig.is_verified);
 
@@ -11425,7 +11444,10 @@ fn test_phase11_task_20_post_restore_validation_and_restart() {
     assert!(val_report.is_valid);
     assert!(val_report.integrity_check_passed);
     assert!(val_report.foreign_key_check_passed);
-    assert_eq!(val_report.schema_version, 4);
+    assert_eq!(
+        val_report.schema_version,
+        personal_notepad_lib::storage::migrations::LATEST_SCHEMA_VERSION
+    );
     assert_eq!(val_report.note_count, 1);
     assert_eq!(val_report.notebook_count, 1);
     assert_eq!(val_report.tag_count, 1);
@@ -15104,6 +15126,7 @@ fn test_phase13_task_9_note_list_indexes_and_performance_invariants() {
             limit: None,
             offset: None,
             content_limit: Some(50),
+            include_hidden: false,
         },
         None,
     )
@@ -15136,6 +15159,7 @@ fn test_phase13_task_9_note_list_indexes_and_performance_invariants() {
             limit: Some(3),
             offset: Some(0),
             content_limit: None,
+            include_hidden: false,
         },
         None,
     )
@@ -15152,6 +15176,7 @@ fn test_phase13_task_9_note_list_indexes_and_performance_invariants() {
             limit: Some(3),
             offset: Some(3),
             content_limit: None,
+            include_hidden: false,
         },
         None,
     )
@@ -17446,16 +17471,15 @@ fn test_phase13_task_18_handle_database_corruption_and_migration_failures_safely
     // Apply first 2 migrations
     run_migrations_custom(&mut conn, &MIGRATIONS[..2]).expect("Run initial migrations");
 
-    // Create a note in the partially-migrated DB
-    let note = NoteRepository::create(
-        &conn,
-        CreateNoteDto {
-            title: Some("Pre-migration Note".to_string()),
-            content: Some("Must survive migrations intact.".to_string()),
-            ..Default::default()
-        },
+    // Insert using the historical schema, before the hidden-note column exists.
+    let note_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+         VALUES (?1, 'Pre-migration Note', 'Must survive migrations intact.', 'txt', ?2, ?2, 0, 0, 0)",
+        rusqlite::params![note_id, now],
     )
-    .expect("Create note");
+    .expect("Create historical note");
 
     // Automatic pre-migration snapshot created because migrations 3 and 4 are pending
     let snap_path = create_pre_migration_snapshot(&conn, &mig_db).expect("Create snapshot");
@@ -17473,10 +17497,12 @@ fn test_phase13_task_18_handle_database_corruption_and_migration_failures_safely
 
     // Verify snapshot is readable and contains our note
     let snap_conn = init_connection(&snap_file).expect("Open snapshot connection");
-    let snap_note = NoteRepository::get_by_id(&snap_conn, &note.id)
-        .expect("Query snapshot note")
-        .expect("Note in snapshot");
-    assert_eq!(snap_note.title, "Pre-migration Note");
+    let snap_title: String = snap_conn
+        .query_row("SELECT title FROM notes WHERE id = ?1", [&note_id], |row| {
+            row.get(0)
+        })
+        .expect("Query historical snapshot note");
+    assert_eq!(snap_title, "Pre-migration Note");
     drop(snap_conn);
 
     // =========================================================================
@@ -17505,10 +17531,12 @@ fn test_phase13_task_18_handle_database_corruption_and_migration_failures_safely
     );
 
     // Verify existing data is completely intact
-    let survived_note = NoteRepository::get_by_id(&conn, &note.id)
-        .expect("Get note")
-        .expect("Note survived");
-    assert_eq!(survived_note.title, "Pre-migration Note");
+    let survived_title: String = conn
+        .query_row("SELECT title FROM notes WHERE id = ?1", [&note_id], |row| {
+            row.get(0)
+        })
+        .expect("Get historical note");
+    assert_eq!(survived_title, "Pre-migration Note");
 
     // =========================================================================
     // 4. Safe run_migrations_with_safety completes all migrations cleanly
@@ -17516,7 +17544,7 @@ fn test_phase13_task_18_handle_database_corruption_and_migration_failures_safely
     run_migrations_with_safety(&mut conn, Some(&mig_db))
         .expect("Run remaining migrations with safety");
 
-    let final_note = NoteRepository::get_by_id(&conn, &note.id)
+    let final_note = NoteRepository::get_by_id(&conn, &note_id)
         .expect("Get note")
         .expect("Note present");
     assert_eq!(final_note.title, "Pre-migration Note");

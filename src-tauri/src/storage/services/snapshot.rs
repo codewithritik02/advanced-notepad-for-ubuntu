@@ -311,8 +311,9 @@ mod tests {
         assert_eq!(info.notebook_count, 1, "Must contain 1 notebook");
         assert_eq!(info.tag_count, 1, "Must contain 1 tag");
         assert_eq!(
-            info.schema_version, 4,
-            "Must match current schema version 4"
+            info.schema_version,
+            crate::storage::migrations::LATEST_SCHEMA_VERSION,
+            "Must match current schema version"
         );
         assert!(info.file_size > 0, "File size must be positive");
         assert!(!info.sha256.is_empty(), "SHA-256 hash must not be empty");

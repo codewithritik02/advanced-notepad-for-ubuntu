@@ -24,6 +24,7 @@ export const notesStorage = {
         limit: DEFAULT_PAGE_SIZE,
         offset: 0,
         contentLimit: 300,
+        includeHidden: false,
       });
     }
     const {
@@ -33,6 +34,7 @@ export const notesStorage = {
       limit = DEFAULT_PAGE_SIZE,
       offset = 0,
       contentLimit = 300,
+      includeHidden = false,
     } = options || {};
     return await invoke<Note[]>("list_notes", {
       includeDeleted,
@@ -41,14 +43,16 @@ export const notesStorage = {
       limit: limit ?? null,
       offset: offset ?? null,
       contentLimit: contentLimit ?? null,
+      includeHidden,
     });
   },
 
   /**
    * Retrieves aggregate counts of active, favorite, unfiled, trashed, and per-notebook notes without loading full records (Task 9).
+   * async getNoteCounts(): Promise<NoteCountsDto>
    */
-  async getNoteCounts(): Promise<NoteCountsDto> {
-    return await invoke<NoteCountsDto>("get_note_counts");
+  async getNoteCounts(includeHidden: boolean = false): Promise<NoteCountsDto> {
+    return await invoke<NoteCountsDto>("get_note_counts", { includeHidden });
   },
 
   /**
@@ -111,17 +115,33 @@ export const notesStorage = {
   },
 
   /**
+   * Sets or unsets hidden status for a note in SQLite.
+   */
+  async setHidden(id: string, isHidden: boolean): Promise<Note> {
+    return await invoke<Note>("set_note_hidden", { id, isHidden });
+  },
+
+  /**
+   * Toggles hidden status for a note in SQLite.
+   */
+  async toggleHidden(id: string): Promise<Note> {
+    return await invoke<Note>("toggle_note_hidden", { id });
+  },
+
+  /**
    * Lists all favorite, non-deleted notes ordered by modified date.
    */
   async listFavorites(
     contentLimit: number = 300,
     limit: number = DEFAULT_PAGE_SIZE,
-    offset: number = 0
+    offset: number = 0,
+    includeHidden: boolean = false
   ): Promise<Note[]> {
     return await invoke<Note[]>("list_favorite_notes", {
       contentLimit: contentLimit ?? null,
       limit,
       offset,
+      includeHidden,
     });
   },
 
@@ -144,9 +164,14 @@ export const notesStorage = {
    */
   async listTrashed(
     limit: number = DEFAULT_PAGE_SIZE,
-    offset: number = 0
+    offset: number = 0,
+    includeHidden: boolean = false
   ): Promise<TrashedNoteItem[]> {
-    return await invoke<TrashedNoteItem[]>("list_trashed_notes", { limit, offset });
+    return await invoke<TrashedNoteItem[]>("list_trashed_notes", {
+      limit,
+      offset,
+      includeHidden,
+    });
   },
 
   /**

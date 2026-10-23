@@ -8,6 +8,9 @@ import {
   EDITOR_FONT_SIZE_SETTING_KEY,
   MINIMAP_SETTING_KEY,
   DEFAULT_SHOW_MINIMAP,
+  SHOW_HIDDEN_NOTES_SETTING_KEY,
+  DEFAULT_SHOW_HIDDEN_NOTES,
+  normalizeShowHiddenNotes,
   normalizeShowMinimap,
   normalizeZoomPercent,
   stepZoomPercent,
@@ -18,6 +21,7 @@ import {
 const ZOOM_CACHE_KEY = "personal_notepad_zoom_percent";
 const FONT_CACHE_KEY = "personal_notepad_editor_font_size";
 const MINIMAP_CACHE_KEY = "personal_notepad_show_minimap";
+const HIDDEN_NOTES_CACHE_KEY = "personal_notepad_show_hidden_notes";
 const WHEEL_ZOOM_INTERVAL_MS = 120;
 
 export interface UseDisplaySettingsReturn {
@@ -25,6 +29,8 @@ export interface UseDisplaySettingsReturn {
   editorFontSize: number;
   showMinimap: boolean;
   setShowMinimap: (show: boolean) => void;
+  showHiddenNotes: boolean;
+  setShowHiddenNotes: (show: boolean | ((previous: boolean) => boolean)) => void;
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
@@ -85,6 +91,15 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
   const minimapRef = useRef(showMinimap);
   const minimapTouchedRef = useRef(false);
 
+  const [showHiddenNotes, setShowHiddenNotesState] = useState<boolean>(() => {
+    const cached = readCache(HIDDEN_NOTES_CACHE_KEY);
+    return cached === null
+      ? DEFAULT_SHOW_HIDDEN_NOTES
+      : normalizeShowHiddenNotes(cached);
+  });
+  const hiddenNotesRef = useRef(showHiddenNotes);
+  const hiddenNotesTouchedRef = useRef(false);
+
   // Latest values, so updates stay pure and persistence runs exactly once per change
   const zoomRef = useRef(zoomPercent);
   const fontRef = useRef(editorFontSize);
@@ -126,6 +141,21 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
           setShowMinimapState(show);
           try {
             localStorage.setItem(MINIMAP_CACHE_KEY, String(show));
+          } catch {
+            // Ignore cache write errors
+          }
+        }
+      })
+      .catch(() => {});
+    storageService.settings
+      .get(SHOW_HIDDEN_NOTES_SETTING_KEY)
+      .then((v) => {
+        if (isMounted && v !== null && !hiddenNotesTouchedRef.current) {
+          const show = normalizeShowHiddenNotes(v);
+          hiddenNotesRef.current = show;
+          setShowHiddenNotesState(show);
+          try {
+            localStorage.setItem(HIDDEN_NOTES_CACHE_KEY, String(show));
           } catch {
             // Ignore cache write errors
           }
@@ -183,6 +213,20 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
     storageService.settings.set(MINIMAP_SETTING_KEY, String(show)).catch(() => {});
   }, []);
 
+  const setShowHiddenNotes = useCallback((value: boolean | ((previous: boolean) => boolean)) => {
+    const show = typeof value === "function" ? value(hiddenNotesRef.current) : value;
+    if (show === hiddenNotesRef.current) return;
+    hiddenNotesTouchedRef.current = true;
+    hiddenNotesRef.current = show;
+    setShowHiddenNotesState(show);
+    try {
+      localStorage.setItem(HIDDEN_NOTES_CACHE_KEY, String(show));
+    } catch {
+      // Ignore cache write errors
+    }
+    storageService.settings.set(SHOW_HIDDEN_NOTES_SETTING_KEY, String(show)).catch(() => {});
+  }, []);
+
   const zoomIn = useCallback(
     () => commitZoom(stepZoomPercent(zoomRef.current, 1)),
     [commitZoom],
@@ -234,6 +278,8 @@ export function useDisplaySettings(): UseDisplaySettingsReturn {
     editorFontSize,
     showMinimap,
     setShowMinimap,
+    showHiddenNotes,
+    setShowHiddenNotes,
     zoomIn,
     zoomOut,
     resetZoom,

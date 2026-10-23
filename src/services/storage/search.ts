@@ -9,12 +9,14 @@ export const searchStorage = {
   async search(queryOrOptions: string | SearchQuery, limit?: number): Promise<SearchResult[]> {
     let queryText = "";
     let searchLimit = limit;
+    let includeHidden = false;
 
     if (typeof queryOrOptions === "string") {
       queryText = queryOrOptions;
     } else {
       queryText = queryOrOptions.query;
       searchLimit = queryOrOptions.limit ?? limit;
+      includeHidden = queryOrOptions.includeHidden ?? false;
     }
 
     const trimmed = queryText.trim();
@@ -25,6 +27,7 @@ export const searchStorage = {
     return await invoke<SearchResult[]>("search_notes", {
       query: trimmed,
       limit: searchLimit ?? null,
+      includeHidden,
     });
   },
 

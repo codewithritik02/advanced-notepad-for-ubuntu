@@ -9,6 +9,7 @@ export interface NotePickerModalProps {
   onSelectNote: (target: { id: string; title: string; customLabel?: string }) => void;
   currentNoteId?: string | null;
   initialLabel?: string;
+  includeHidden?: boolean;
 }
 
 // Inline search & folder icons for the picker
@@ -31,6 +32,7 @@ export const NotePickerModal: React.FC<NotePickerModalProps> = ({
   onSelectNote,
   currentNoteId,
   initialLabel = "",
+  includeHidden = false,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [customLabel, setCustomLabel] = useState(initialLabel);
@@ -61,7 +63,7 @@ export const NotePickerModal: React.FC<NotePickerModalProps> = ({
     let isSubscribed = true;
 
     Promise.all([
-      storageService.notes.list({ includeDeleted: false }),
+      storageService.notes.list({ includeDeleted: false, includeHidden }),
       storageService.notebooks.list().catch(() => [] as Notebook[]),
     ])
       .then(([allNotes, allNotebooks]) => {
@@ -90,7 +92,7 @@ export const NotePickerModal: React.FC<NotePickerModalProps> = ({
     return () => {
       isSubscribed = false;
     };
-  }, [isOpen, currentNoteId, initialLabel]);
+  }, [isOpen, currentNoteId, initialLabel, includeHidden]);
 
   // Focus search input whenever modal opens
   useEffect(() => {

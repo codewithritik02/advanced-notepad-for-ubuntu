@@ -80,28 +80,30 @@ export const tagsStorage = {
     tagId: string,
     contentLimit: number = 300,
     limit: number = DEFAULT_PAGE_SIZE,
-    offset: number = 0
+    offset: number = 0,
+    includeHidden: boolean = false
   ): Promise<Note[]> {
     return await invoke<Note[]>("get_notes_for_tag", {
       tagId,
       contentLimit: contentLimit ?? null,
       limit,
       offset,
+      includeHidden,
     });
   },
 
   /**
    * Retrieves note count mapping for each tag.
    */
-  async getTagNoteCounts(): Promise<Record<string, number>> {
-    return await invoke<Record<string, number>>("get_tag_note_counts");
+  async getTagNoteCounts(includeHidden: boolean = false): Promise<Record<string, number>> {
+    return await invoke<Record<string, number>>("get_tag_note_counts", { includeHidden });
   },
 
   /**
    * Retrieves all non-deleted notes' tag names map (note_id -> string[]).
    */
-  async getAllNotesTags(): Promise<Record<string, string[]>> {
-    return await invoke<Record<string, string[]>>("get_all_notes_tags");
+  async getAllNotesTags(includeHidden: boolean = false): Promise<Record<string, string[]>> {
+    return await invoke<Record<string, string[]>>("get_all_notes_tags", { includeHidden });
   },
 
   /**
@@ -113,4 +115,3 @@ export const tagsStorage = {
     return await invoke<Record<string, string[]>>("get_tags_for_notes", { noteIds });
   },
 };
-

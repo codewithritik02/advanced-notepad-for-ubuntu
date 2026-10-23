@@ -81,6 +81,7 @@ fn test_editor_save_transitions_monotonic_timestamps_and_error_isolation() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("first update succeeds");
@@ -110,6 +111,7 @@ fn test_editor_save_transitions_monotonic_timestamps_and_error_isolation() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     );
 
@@ -184,6 +186,7 @@ fn test_sidebar_notebook_selection_note_movement_and_unfiling_transitions() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("move note to nb B");
@@ -249,6 +252,7 @@ fn test_tag_assignment_removal_and_favorite_toggle_transitions() {
             is_favorite: Some(true),
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("toggle favorite true");
@@ -265,6 +269,7 @@ fn test_tag_assignment_removal_and_favorite_toggle_transitions() {
             is_favorite: Some(false),
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("toggle favorite false");
@@ -363,6 +368,7 @@ fn test_search_index_live_synchronization_and_trash_exclusion_transitions() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("update");

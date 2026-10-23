@@ -525,6 +525,7 @@ fn test_storage_protected_note_updates_produce_fresh_nonces() {
         is_favorite: None,
         is_pinned: None,
         is_deleted: None,
+        is_hidden: None,
     };
     NoteRepository::update_with_key(&conn, &note.id, update_dto, Some(&dek))
         .expect("Update failed");

@@ -8,6 +8,7 @@ export interface BacklinksSectionProps {
   onActivateLink?: (targetNoteId: string, customLabel?: string) => void | Promise<void>;
   isReadOnly?: boolean;
   refreshTrigger?: number | string | null;
+  includeHidden?: boolean;
 }
 
 function formatBacklinkDate(dateStr?: string): string {
@@ -31,6 +32,7 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
   noteId,
   onActivateLink,
   refreshTrigger,
+  includeHidden = false,
 }) => {
   const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,7 +47,7 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
     setIsLoading(true);
     setError(null);
     try {
-      const items = await storageService.links.getBacklinks(targetId);
+      const items = await storageService.links.getBacklinks(targetId, includeHidden);
       if (activeRequestIdRef.current === currentRequestId) {
         setBacklinks(items || []);
       }
@@ -60,7 +62,7 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
         setIsLoading(false);
       }
     }
-  }, []);
+  }, [includeHidden]);
 
   useEffect(() => {
     if (!noteId) {

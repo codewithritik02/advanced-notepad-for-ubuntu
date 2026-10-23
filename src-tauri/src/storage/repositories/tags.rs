@@ -174,13 +174,24 @@ impl TagRepository {
     pub fn get_tag_note_counts(
         conn: &Connection,
     ) -> Result<std::collections::HashMap<String, usize>, StorageError> {
-        let mut stmt = conn.prepare(
+        Self::get_tag_note_counts_with_options(conn, false)
+    }
+
+    pub fn get_tag_note_counts_with_options(
+        conn: &Connection,
+        include_hidden: bool,
+    ) -> Result<std::collections::HashMap<String, usize>, StorageError> {
+        let mut sql = String::from(
             "SELECT nt.tag_id, COUNT(n.id)
              FROM note_tags nt
              JOIN notes n ON n.id = nt.note_id
-             WHERE n.is_deleted = 0
-             GROUP BY nt.tag_id",
-        )?;
+             WHERE n.is_deleted = 0",
+        );
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        sql.push_str(" GROUP BY nt.tag_id");
+        let mut stmt = conn.prepare(&sql)?;
         let mut map = std::collections::HashMap::new();
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
@@ -195,14 +206,25 @@ impl TagRepository {
     pub fn get_all_notes_tag_names(
         conn: &Connection,
     ) -> Result<std::collections::HashMap<String, Vec<String>>, StorageError> {
-        let mut stmt = conn.prepare(
+        Self::get_all_notes_tag_names_with_options(conn, false)
+    }
+
+    pub fn get_all_notes_tag_names_with_options(
+        conn: &Connection,
+        include_hidden: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, StorageError> {
+        let mut sql = String::from(
             "SELECT nt.note_id, t.name
              FROM note_tags nt
              JOIN tags t ON t.id = nt.tag_id
              JOIN notes n ON n.id = nt.note_id
-             WHERE n.is_deleted = 0
-             ORDER BY t.name ASC",
-        )?;
+             WHERE n.is_deleted = 0",
+        );
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        sql.push_str(" ORDER BY t.name ASC");
+        let mut stmt = conn.prepare(&sql)?;
 
         let mut map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();

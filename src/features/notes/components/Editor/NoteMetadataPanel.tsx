@@ -12,12 +12,14 @@ export interface NoteMetadataPanelProps {
   modifiedAt?: string | null;
   format?: string;
   isFavorite?: boolean;
+  isHidden?: boolean;
   wordCount?: number;
   characterCount?: number;
   byteSize?: number;
   attachmentCount?: number;
   onMoveNote?: () => void;
   onToggleFavorite?: () => void;
+  onToggleHide?: () => void;
 }
 
 function formatTimestamp(isoString?: string | null): string {
@@ -47,12 +49,14 @@ export const NoteMetadataPanel: React.FC<NoteMetadataPanelProps> = ({
   modifiedAt,
   format = "txt",
   isFavorite = false,
+  isHidden = false,
   wordCount = 0,
   characterCount = 0,
   byteSize = 0,
   attachmentCount = 0,
   onMoveNote,
   onToggleFavorite,
+  onToggleHide,
 }) => {
   return (
     <div className={`note-metadata-panel ${isOpen ? "is-open" : "is-collapsed"}`}>
@@ -136,6 +140,29 @@ export const NoteMetadataPanel: React.FC<NoteMetadataPanelProps> = ({
                     aria-pressed={isFavorite}
                   >
                     {isFavorite ? "Unstar" : "Star"}
+                  </button>
+                )}
+              </span>
+            </div>
+
+            <div className="note-metadata-row">
+              <span className="note-metadata-label">Hidden</span>
+              <span className="note-metadata-value">
+                {isHidden ? (
+                  <span className="note-metadata-badge-hidden">Yes</span>
+                ) : (
+                  "No"
+                )}
+                {onToggleHide && (
+                  <button
+                    type="button"
+                    className="note-metadata-action-btn"
+                    onClick={onToggleHide}
+                    title={isHidden ? "Unhide note" : "Hide note"}
+                    aria-label={isHidden ? "Unhide note" : "Hide note"}
+                    aria-pressed={isHidden}
+                  >
+                    {isHidden ? "Unhide" : "Hide"}
                   </button>
                 )}
               </span>

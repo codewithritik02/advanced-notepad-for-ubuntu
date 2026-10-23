@@ -161,7 +161,7 @@ fn test_unit_2_backup_format_version_validation() {
                     "entry_path": "database.sqlite",
                     "file_size": {},
                     "sha256": "{db_hash}",
-                    "schema_version": 4,
+                    "schema_version": {CURRENT_APP_SCHEMA_VERSION},
                     "note_count": 0,
                     "notebook_count": 0,
                     "tag_count": 0,
@@ -658,7 +658,7 @@ fn test_unit_10_unsupported_version_handling() {
                 "entry_path": "database.sqlite",
                 "file_size": {},
                 "sha256": "{db_hash}",
-                "schema_version": 4,
+                "schema_version": {CURRENT_APP_SCHEMA_VERSION},
                 "note_count": 0,
                 "notebook_count": 0,
                 "tag_count": 0,
@@ -696,7 +696,7 @@ fn test_unit_10_unsupported_version_handling() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_unit_11_database_schema_compatibility_rules() {
-    assert_eq!(CURRENT_APP_SCHEMA_VERSION, 4);
+    assert_eq!(CURRENT_APP_SCHEMA_VERSION, 5);
 
     let temp = TempTestDir::new("unit_schema_compat");
     let paths = StoragePaths::from_root(temp.path().to_path_buf());
@@ -759,14 +759,19 @@ fn test_unit_11_database_schema_compatibility_rules() {
         p
     };
 
-    // 1. Current schema (v4): Compatible
-    let v4_arch = create_archive("schema_v4.pnbackup", 4);
-    let v4_res = personal_notepad_lib::storage::services::BackupValidationService::validate_backup(
-        &v4_arch, &paths,
-    )
-    .unwrap();
-    assert!(v4_res.is_valid);
-    assert_eq!(v4_res.compatibility, BackupCompatibilityStatus::Compatible);
+    // 1. Current schema: Compatible
+    let current_arch = create_archive("schema_current.pnbackup", CURRENT_APP_SCHEMA_VERSION);
+    let current_res =
+        personal_notepad_lib::storage::services::BackupValidationService::validate_backup(
+            &current_arch,
+            &paths,
+        )
+        .unwrap();
+    assert!(current_res.is_valid);
+    assert_eq!(
+        current_res.compatibility,
+        BackupCompatibilityStatus::Compatible
+    );
 
     // 2. Older schema (v2): RequiresMigration
     let v2_arch = create_archive("schema_v2.pnbackup", 2);

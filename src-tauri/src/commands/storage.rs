@@ -48,9 +48,11 @@ pub fn get_storage_info(paths: State<'_, StoragePaths>) -> Result<StorageInfo, S
 #[tauri::command]
 pub fn get_note_counts(
     db: State<'_, Database>,
+    include_hidden: Option<bool>,
 ) -> Result<crate::storage::models::NoteCountsDto, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::get_note_counts(&conn).map_err(|e| e.to_string())
+    NoteRepository::get_note_counts_with_options(&conn, include_hidden.unwrap_or(false))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -64,6 +66,7 @@ pub fn list_notes(
     limit: Option<usize>,
     offset: Option<usize>,
     content_limit: Option<usize>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<Note>, String> {
     let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
     let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
@@ -78,7 +81,7 @@ pub fn list_notes(
             limit: Some(page_size),
             offset: Some(offset.unwrap_or(0)),
             content_limit: Some(preview_size),
-            include_hidden: false,
+            include_hidden: include_hidden.unwrap_or(false),
         },
         dek.as_ref(),
     )
@@ -208,14 +211,16 @@ pub fn list_trashed_notes(
     session: State<'_, CryptoSession>,
     limit: Option<usize>,
     offset: Option<usize>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<TrashedNoteItem>, String> {
     let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_trashed_items_page_with_key(
+    NoteRepository::list_trashed_items_page_with_options_and_key(
         &conn,
         Some(page_size),
         Some(offset.unwrap_or(0)),
+        include_hidden.unwrap_or(false),
         dek.as_ref(),
     )
     .map_err(|e| e.user_friendly_message())
@@ -285,22 +290,49 @@ pub fn toggle_note_pinned(
 }
 
 #[tauri::command]
+pub fn set_note_hidden(
+    db: State<'_, Database>,
+    session: State<'_, CryptoSession>,
+    id: String,
+    is_hidden: bool,
+) -> Result<Note, String> {
+    let dek = get_active_dek(&session)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::set_hidden_with_key(&conn, &id, is_hidden, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
+pub fn toggle_note_hidden(
+    db: State<'_, Database>,
+    session: State<'_, CryptoSession>,
+    id: String,
+) -> Result<Note, String> {
+    let dek = get_active_dek(&session)?;
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NoteRepository::toggle_hidden_with_key(&conn, &id, dek.as_ref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
 pub fn list_favorite_notes(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     content_limit: Option<usize>,
     limit: Option<usize>,
     offset: Option<usize>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<Note>, String> {
     let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
     let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_favorites_page_with_options(
+    NoteRepository::list_favorites_page_with_options_and_hidden(
         &conn,
         Some(page_size),
         Some(offset.unwrap_or(0)),
         Some(preview_size),
+        include_hidden.unwrap_or(false),
         dek.as_ref(),
     )
     .map_err(|e| e.to_string())
@@ -417,17 +449,19 @@ pub fn get_notes_for_tag(
     content_limit: Option<usize>,
     limit: Option<usize>,
     offset: Option<usize>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<Note>, String> {
     let page_size = crate::storage::limits::sanitize_pagination_bounds(limit);
     let preview_size = crate::storage::limits::sanitize_preview_limit(content_limit);
     let dek = get_active_dek(&session)?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    NoteRepository::list_by_tag_page_with_options(
+    NoteRepository::list_by_tag_page_with_options_and_hidden(
         &conn,
         &tag_id,
         Some(page_size),
         Some(offset.unwrap_or(0)),
         Some(preview_size),
+        include_hidden.unwrap_or(false),
         dek.as_ref(),
     )
     .map_err(|e| e.to_string())
@@ -436,17 +470,21 @@ pub fn get_notes_for_tag(
 #[tauri::command]
 pub fn get_tag_note_counts(
     db: State<'_, Database>,
+    include_hidden: Option<bool>,
 ) -> Result<std::collections::HashMap<String, usize>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    TagRepository::get_tag_note_counts(&conn).map_err(|e| e.to_string())
+    TagRepository::get_tag_note_counts_with_options(&conn, include_hidden.unwrap_or(false))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn get_all_notes_tags(
     db: State<'_, Database>,
+    include_hidden: Option<bool>,
 ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    TagRepository::get_all_notes_tag_names(&conn).map_err(|e| e.to_string())
+    TagRepository::get_all_notes_tag_names_with_options(&conn, include_hidden.unwrap_or(false))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -495,16 +533,20 @@ pub fn search_notes(
     session: State<'_, CryptoSession>,
     query: String,
     limit: Option<usize>,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<SearchResult>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db
         .conn
         .lock()
         .map_err(|_| "Unable to search notes.".to_string())?;
-    let search_res = match dek {
-        Some(ref key) => SearchService::search_with_key(&conn, &query, limit, Some(key)),
-        None => SearchService::search(&conn, &query, limit),
-    };
+    let search_res = SearchService::search_with_key_and_hidden(
+        &conn,
+        &query,
+        limit,
+        dek.as_ref(),
+        include_hidden.unwrap_or(false),
+    );
     search_res.map_err(|e| match e {
         StorageError::Validation(msg) => msg,
         StorageError::SearchError(_) | StorageError::Database(_) => {
@@ -786,6 +828,7 @@ pub fn resolve_link_target(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     target_id: String,
+    include_hidden: Option<bool>,
 ) -> Result<ResolvedLinkTarget, String> {
     let dek = get_active_dek(&session)?;
     let conn = db
@@ -793,12 +836,12 @@ pub fn resolve_link_target(
         .lock()
         .map_err(|_| "Database connection is unavailable.".to_string())?;
 
-    match dek {
-        Some(ref key) => {
-            InternalLinkService::resolve_link_target_with_key(&conn, &target_id, Some(key))
-        }
-        None => InternalLinkService::resolve_link_target(&conn, &target_id),
-    }
+    InternalLinkService::resolve_link_target_with_options_and_key(
+        &conn,
+        &target_id,
+        include_hidden.unwrap_or(false),
+        dek.as_ref(),
+    )
     .map_err(|e| e.user_friendly_message())
 }
 
@@ -808,6 +851,7 @@ pub fn get_backlinks(
     db: State<'_, Database>,
     session: State<'_, CryptoSession>,
     target_note_id: String,
+    include_hidden: Option<bool>,
 ) -> Result<Vec<BacklinkItem>, String> {
     let dek = get_active_dek(&session)?;
     let conn = db
@@ -815,12 +859,12 @@ pub fn get_backlinks(
         .lock()
         .map_err(|_| "Database connection is unavailable.".to_string())?;
 
-    match dek {
-        Some(ref key) => {
-            InternalLinkService::get_backlinks_with_key(&conn, &target_note_id, Some(key))
-        }
-        None => InternalLinkService::get_backlinks(&conn, &target_note_id),
-    }
+    InternalLinkService::get_backlinks_with_options_and_key(
+        &conn,
+        &target_note_id,
+        include_hidden.unwrap_or(false),
+        dek.as_ref(),
+    )
     .map_err(|e| e.user_friendly_message())
 }
 

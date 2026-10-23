@@ -86,6 +86,7 @@ mod tests {
                 is_favorite: Some(false),
                 is_pinned: None,
                 is_deleted: None,
+                is_hidden: None,
             },
         )
         .expect("Update note failed");

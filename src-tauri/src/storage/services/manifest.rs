@@ -15,7 +15,7 @@ use crate::storage::models::{
 use crate::storage::services::attachment_capture::CapturedAttachment;
 
 /// Current maximum application database schema version supported by this build.
-pub const CURRENT_APP_SCHEMA_VERSION: i32 = 4;
+pub const CURRENT_APP_SCHEMA_VERSION: i32 = crate::storage::migrations::LATEST_SCHEMA_VERSION;
 
 /// Maximum allowed archive entry count to prevent decompression bomb denial-of-service.
 pub const MAX_ARCHIVE_ENTRY_COUNT: usize = crate::storage::limits::MAX_BACKUP_ENTRY_COUNT;
@@ -497,7 +497,7 @@ mod tests {
             entry_path: "database.sqlite".to_string(),
             file_size: db_bytes.len() as u64,
             sha256: db_sha256.clone(),
-            schema_version: 4,
+            schema_version: CURRENT_APP_SCHEMA_VERSION,
             note_count: 5,
             notebook_count: 1,
             tag_count: 2,

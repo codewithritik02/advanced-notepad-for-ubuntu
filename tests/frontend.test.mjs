@@ -7741,9 +7741,10 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
         const hookPath = path.resolve("src/features/search/useSearch.ts");
         const hookCode = await fs.readFile(hookPath, "utf-8");
 
-        assert.ok(
-          hookCode.includes("searchStorage.search(trimmed, limit)"),
-          "useSearch hook delegates limit enforcement directly to storage backend"
+        assert.match(
+          hookCode,
+          /searchStorage\.search\(\{[\s\S]*?query:\s*trimmed,[\s\S]*?limit,[\s\S]*?includeHidden,[\s\S]*?\}\)/,
+          "useSearch hook delegates the bounded query and hidden-note policy to storage backend"
         );
         // Verify hook doesn't contain results.slice(0, 50) as fake protection
         assert.strictEqual(
@@ -10430,16 +10431,16 @@ describe("Phase 5 - Task 63: Frontend Component & Logic Tests", () => {
           );
         }
 
-        // 3. Invariant: commands::storage::search_notes delegates to SearchService::search
+        // 3. Invariant: commands::storage::search_notes delegates to the visibility-aware service
         assert.ok(
-          commandsStorage.includes("SearchService::search("),
-          "commands::storage::search_notes must delegate to SearchService::search"
+          commandsStorage.includes("SearchService::search_with_key_and_hidden("),
+          "commands::storage::search_notes must delegate to the visibility-aware SearchService"
         );
 
-        // 4. Invariant: SearchService delegates to SearchRepository
+        // 4. Invariant: SearchService delegates to the visibility-aware repository
         assert.ok(
-          searchServiceCode.includes("SearchRepository::search("),
-          "SearchService::search must delegate to SearchRepository::search"
+          searchServiceCode.includes("SearchRepository::search_with_key_and_hidden("),
+          "SearchService must delegate hidden-note policy to SearchRepository"
         );
 
         // 5. Invariant: SearchRepository is where SQLite SQL queries reside
@@ -12753,8 +12754,8 @@ describe("Phase 8: Trash & Recovery", () => {
 
       assert.ok(notesStorageContent.includes("listTrashed"), "notesStorage should have listTrashed method");
       assert.ok(
-        notesStorageContent.includes('invoke<TrashedNoteItem[]>("list_trashed_notes", { limit, offset })'),
-        "listTrashed should invoke the paginated list_trashed_notes contract"
+        /invoke<TrashedNoteItem\[\]>\("list_trashed_notes",\s*\{[\s\S]*?limit,[\s\S]*?offset,[\s\S]*?includeHidden,[\s\S]*?\}\)/.test(notesStorageContent),
+        "listTrashed should invoke the paginated, visibility-aware list_trashed_notes contract"
       );
       assert.ok(notesStorageContent.includes("TrashedNoteItem"), "notesStorage should import TrashedNoteItem");
     });
@@ -12777,7 +12778,11 @@ describe("Phase 8: Trash & Recovery", () => {
       // Verify trashed notes mapping in loadNotes
       assert.ok(appContent.includes('context.navId === "trash"'), "page loader should handle the Trash view");
       assert.ok(appContent.includes('is_deleted: true'), "trash page mapping should mark trashed notes as deleted");
-      assert.ok(appContent.includes("storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset)"), "trash loading should be paginated");
+      assert.match(
+        appContent,
+        /storageService\.notes\.listTrashed\([\s\S]*?DEFAULT_PAGE_SIZE,[\s\S]*?offset,[\s\S]*?includeHidden[\s\S]*?\)/,
+        "trash loading should be paginated and visibility-aware"
+      );
     });
   });
 
@@ -14470,8 +14475,8 @@ describe("Phase 8: Trash & Recovery", () => {
           "Selecting trash must invoke loadNotes with 'trash' and null filters"
         );
         assert.ok(
-          appContent.includes("storageService.notes.listTrashed(DEFAULT_PAGE_SIZE, offset)"),
-          "App.tsx must load Trash through the bounded page helper"
+          /storageService\.notes\.listTrashed\([\s\S]*?DEFAULT_PAGE_SIZE,[\s\S]*?offset,[\s\S]*?includeHidden[\s\S]*?\)/.test(appContent),
+          "App.tsx must load Trash through the bounded, visibility-aware page helper"
         );
       });
 
@@ -15743,7 +15748,7 @@ describe("Phase 9 - Task 9: Target Resolution by Stable Note ID Tests", () => {
       "utf8"
     );
 
-    assert.ok(linksStorageContent.includes("resolveTarget(targetId: string)"), "Must define resolveTarget method");
+    assert.ok(linksStorageContent.includes("resolveTarget(targetId: string, includeHidden: boolean = false)"), "Must define visibility-aware resolveTarget method");
     assert.ok(linksStorageContent.includes("invoke<ResolvedLinkTarget>(\"resolve_link_target\""), "Must invoke resolve_link_target command");
 
     const indexContent = fs.readFileSync(
@@ -15915,8 +15920,8 @@ describe("Phase 9 - Task 10: Safe Internal-Link Activation Tests", () => {
       "Must define handleActivateInternalLink handler"
     );
     assert.ok(
-      appContent.includes("storageService.links.resolveTarget(targetNoteId)"),
-      "Must call resolveTarget with stable note ID"
+      /storageService\.links\.resolveTarget\(\s*targetNoteId,\s*display\.showHiddenNotes\s*\)/.test(appContent),
+      "Must call resolveTarget with stable note ID and the hidden-note visibility setting"
     );
     assert.ok(
       appContent.includes("if (editorSaveRef.current) {"),
@@ -16556,12 +16561,12 @@ describe("Phase 9 - Task 14: Implement Incoming Links / Backlinks Tests", () => 
     );
 
     assert.ok(
-      linksTs.includes("async getBacklinks(targetNoteId: string): Promise<BacklinkItem[]>"),
-      "Must define getBacklinks method in linksStorage"
+      linksTs.includes("async getBacklinks(targetNoteId: string, includeHidden: boolean = false): Promise<BacklinkItem[]>"),
+      "Must define visibility-aware getBacklinks method in linksStorage"
     );
     assert.ok(
-      linksTs.includes("invoke<BacklinkItem[]>(\"get_backlinks\", { targetNoteId })"),
-      "Must call tauri command get_backlinks"
+      linksTs.includes("invoke<BacklinkItem[]>(\"get_backlinks\", { targetNoteId, includeHidden })"),
+      "Must call tauri command get_backlinks with the hidden-note visibility setting"
     );
   });
 
@@ -16658,8 +16663,8 @@ describe("Phase 9 - Task 14: Implement Incoming Links / Backlinks Tests", () => 
       "storage.rs must define pub fn get_backlinks"
     );
     assert.ok(
-      storageCommands.includes("InternalLinkService::get_backlinks(&conn, &target_note_id)"),
-      "storage.rs must invoke InternalLinkService::get_backlinks"
+      storageCommands.includes("InternalLinkService::get_backlinks_with_options_and_key("),
+      "storage.rs must invoke the visibility-aware InternalLinkService method"
     );
     assert.ok(
       libRs.includes("commands::get_backlinks,"),
@@ -29325,7 +29330,8 @@ describe("Open with Personal Notepad and the Recent list", () => {
 
     const app = read("src/app/App.tsx");
     assert.match(app, /useOpenFiles\(isStorageReady && !isAppLocked, handleFilesOpened\)/, "files wait until the app is ready and unlocked");
-    assert.match(app, /recentNotes=\{recents\.recent\}/);
+    assert.match(app, /recentNotes=\{visibleRecentNotes\}/);
+    assert.match(app, /note\s*&&\s*!note\.is_hidden\s*\?\s*entry\s*:\s*null/);
     assert.match(app, /onOpenRecent=\{handleOpenRecent\}/);
     assert.match(app, /That note no longer exists/);
 
@@ -29506,5 +29512,95 @@ describe("ZIP export and external-file removal confirmation", () => {
     assert.match(app, /closeExternalRef\.current\?\.\(target\.id\)/);
     assert.doesNotMatch(app, /onCloseExternal=\{handleCloseExternal\}/);
     assert.match(read("src/features/notes/components/ConfirmNoteActionDialog.tsx"), /Remove from External\?/);
+  });
+});
+
+describe("Hidden Notes Feature & Invariants", () => {
+  const read = (p) => fs.readFileSync(p, "utf8");
+
+  it("reads and normalizes the show-hidden-notes setting safely with default false", async () => {
+    const m = await import("../src/features/settings/utils/displaySettings.ts");
+    assert.equal(m.DEFAULT_SHOW_HIDDEN_NOTES, false);
+    assert.equal(m.SHOW_HIDDEN_NOTES_SETTING_KEY, "show_hidden_notes");
+    assert.equal(m.normalizeShowHiddenNotes(false), false);
+    assert.equal(m.normalizeShowHiddenNotes("false"), false);
+    assert.equal(m.normalizeShowHiddenNotes("0"), false);
+    assert.equal(m.normalizeShowHiddenNotes(true), true);
+    assert.equal(m.normalizeShowHiddenNotes("true"), true);
+    assert.equal(m.normalizeShowHiddenNotes("1"), true);
+    assert.equal(m.normalizeShowHiddenNotes("garbage"), false);
+    assert.equal(m.normalizeShowHiddenNotes(null), false);
+  });
+
+  it("wires showHiddenNotes state and dual persistence in useDisplaySettings hook", () => {
+    const hook = read("src/hooks/useDisplaySettings.ts");
+    assert.match(hook, /HIDDEN_NOTES_CACHE_KEY\s*=\s*"personal_notepad_show_hidden_notes"/);
+    assert.match(hook, /SHOW_HIDDEN_NOTES_SETTING_KEY/);
+    assert.match(hook, /normalizeShowHiddenNotes/);
+    assert.match(hook, /showHiddenNotes:\s*boolean/);
+    assert.match(hook, /setShowHiddenNotes/);
+  });
+
+  it("exposes setHidden and toggleHidden with includeHidden parameter in storage service", () => {
+    const notesStorage = read("src/services/storage/notes.ts");
+    assert.match(notesStorage, /async setHidden\(id:\s*string,\s*isHidden:\s*boolean\)/);
+    assert.match(notesStorage, /invoke<Note>\("set_note_hidden",\s*\{\s*id,\s*isHidden\s*\}\)/);
+    assert.match(notesStorage, /async toggleHidden\(id:\s*string\)/);
+    assert.match(notesStorage, /invoke<Note>\("toggle_note_hidden",\s*\{\s*id\s*\}\)/);
+    assert.match(notesStorage, /includeHidden/);
+
+    const tagsStorage = read("src/services/storage/tags.ts");
+    assert.match(tagsStorage, /includeHidden/);
+  });
+
+  it("includes is_hidden in domain types and NoteListItem contract", () => {
+    const types = read("src/services/storage/types.ts");
+    assert.match(types, /is_hidden:\s*boolean;/);
+    assert.match(types, /includeHidden\?:\s*boolean;/);
+
+    const noteTypes = read("src/features/notes/types.ts");
+    assert.match(noteTypes, /isHidden\?:\s*boolean;/);
+    assert.match(noteTypes, /is_hidden:\s*note\.is_hidden/);
+  });
+
+  it("renders accessible Show Hidden Notes toggle row in SettingsModal", () => {
+    const settings = read("src/features/settings/components/SettingsModal/SettingsModal.tsx");
+    assert.match(settings, /showHiddenNotes/);
+    assert.match(settings, /onShowHiddenNotesChange/);
+    assert.match(settings, /id="show-hidden-notes"/);
+    assert.match(settings, /role="switch"/);
+    assert.match(settings, /aria-checked=\{showHiddenNotes\}/);
+    assert.match(settings, /Display hidden notes in note lists and search results/);
+  });
+
+  it("renders hidden indicator badge on NoteCard and maintains single-row 24px box sizing", () => {
+    const noteCard = read("src/features/notes/components/NotesList/NoteCard.tsx");
+    assert.match(noteCard, /note\.isHidden/);
+    assert.match(noteCard, /note-card-hidden-indicator/);
+    assert.match(noteCard, /title="Hidden note"/);
+    assert.match(noteCard, /aria-label="Hidden note"/);
+
+    const notesListCss = read("src/features/notes/components/NotesList/NotesList.css");
+    assert.match(notesListCss, /\.note-card-hidden-indicator\s*\{[^}]*width:\s*24px;\s*height:\s*24px;/);
+  });
+
+  it("provides Hide/Unhide toolbar action and details panel row in NoteEditor", () => {
+    const editor = read("src/features/notes/components/Editor/NoteEditor.tsx");
+    assert.match(editor, /handleToggleHideNote/);
+    assert.match(editor, /storageService\.notes\.setHidden\(noteId,\s*nextHidden\)/);
+    assert.match(editor, /toolbar-btn-hide/);
+    assert.match(editor, /title=\{loadedNote\.is_hidden \? "Unhide note" : "Hide note"\}/);
+    assert.match(editor, /aria-label=\{loadedNote\.is_hidden \? "Unhide note" : "Hide note"\}/);
+    assert.match(editor, /aria-pressed=\{loadedNote\.is_hidden\}/);
+    assert.match(editor, /<EyeOffIcon/);
+
+    const metadataPanel = read("src/features/notes/components/Editor/NoteMetadataPanel.tsx");
+    assert.match(metadataPanel, /note-metadata-badge-hidden/);
+    assert.match(metadataPanel, /onToggleHide/);
+
+    const app = read("src/app/App.tsx");
+    assert.match(app, /showHiddenNotes=\{display\.showHiddenNotes\}/);
+    assert.match(app, /onShowHiddenNotesChange=\{display\.setShowHiddenNotes\}/);
+    assert.match(app, /if \(!display\.showHiddenNotes && selectedNoteId && !isExternalId\(selectedNoteId\)\)/);
   });
 });

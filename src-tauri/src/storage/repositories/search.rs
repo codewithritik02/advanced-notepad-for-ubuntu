@@ -62,6 +62,17 @@ impl SearchRepository {
         limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<SearchResult>, StorageError> {
+        Self::search_with_key_and_hidden(conn, query, limit, dek, false)
+    }
+
+    /// Searches notes with an explicit hidden-note visibility policy.
+    pub fn search_with_key_and_hidden(
+        conn: &Connection,
+        query: &str,
+        limit: Option<usize>,
+        dek: Option<&SecretBytes>,
+        include_hidden: bool,
+    ) -> Result<Vec<SearchResult>, StorageError> {
         let trimmed = query.trim();
 
         // Task 7: Empty or whitespace query returns empty result without expensive DB search
@@ -90,10 +101,16 @@ impl SearchRepository {
                 }
             };
 
-            return Self::search_in_memory_encrypted(conn, trimmed, bounded_limit, key);
+            return Self::search_in_memory_encrypted(
+                conn,
+                trimmed,
+                bounded_limit,
+                key,
+                include_hidden,
+            );
         }
 
-        Self::search_unencrypted(conn, trimmed, bounded_limit)
+        Self::search_unencrypted(conn, trimmed, bounded_limit, include_hidden)
     }
 
     /// Executes search against unencrypted notes using FTS5 with LIKE fallback.
@@ -101,6 +118,7 @@ impl SearchRepository {
         conn: &Connection,
         trimmed: &str,
         bounded_limit: usize,
+        include_hidden: bool,
     ) -> Result<Vec<SearchResult>, StorageError> {
         #[cfg(debug_assertions)]
         let start = std::time::Instant::now();
@@ -116,23 +134,25 @@ impl SearchRepository {
             .unwrap_or(false);
 
         let search_res = if has_fts {
-            match Self::search_fts5(conn, trimmed, bounded_limit) {
+            match Self::search_fts5(conn, trimmed, bounded_limit, include_hidden) {
                 Ok(results) => Ok(results),
                 Err(_) => {
                     let _ = Self::recover_index(conn);
-                    if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
+                    if let Ok(recovered) =
+                        Self::search_fts5(conn, trimmed, bounded_limit, include_hidden)
+                    {
                         Ok(recovered)
                     } else {
-                        Self::search_like(conn, trimmed, bounded_limit)
+                        Self::search_like(conn, trimmed, bounded_limit, include_hidden)
                     }
                 }
             }
         } else {
             let _ = Self::recover_index(conn);
-            if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit) {
+            if let Ok(recovered) = Self::search_fts5(conn, trimmed, bounded_limit, include_hidden) {
                 Ok(recovered)
             } else {
-                Self::search_like(conn, trimmed, bounded_limit)
+                Self::search_like(conn, trimmed, bounded_limit, include_hidden)
             }
         };
 
@@ -158,11 +178,19 @@ impl SearchRepository {
         query: &str,
         limit: usize,
         dek: &SecretBytes,
+        include_hidden: bool,
     ) -> Result<Vec<SearchResult>, StorageError> {
         #[cfg(debug_assertions)]
         let start = std::time::Instant::now();
 
-        let notes = NoteRepository::list_active_with_key(conn, Some(dek))?;
+        let notes = NoteRepository::list_filtered_options(
+            conn,
+            &crate::storage::models::ListNotesQueryOptions {
+                include_hidden,
+                ..Default::default()
+            },
+            Some(dek),
+        )?;
 
         let trimmed = query.trim();
         let lower_query = trimmed.to_lowercase();
@@ -437,15 +465,17 @@ impl SearchRepository {
         conn: &Connection,
         query: &str,
         limit: usize,
+        include_hidden: bool,
     ) -> Result<Vec<SearchResult>, StorageError> {
         // Sanitize search tokens for FTS5 syntax safety (Task 73)
         // Wrap each whitespace-delimited word in double-quotes with prefix wildcard
         let fts_query = sanitize_fts5_query(query);
         if fts_query.is_empty() {
-            return Self::search_like(conn, query, limit);
+            return Self::search_like(conn, query, limit, include_hidden);
         }
 
-        let sql = r#"
+        let mut sql = String::from(
+            r#"
             SELECT
                 n.id,
                 n.title,
@@ -457,12 +487,19 @@ impl SearchRepository {
             JOIN notes n ON notes_fts.rowid = n.rowid
             WHERE notes_fts MATCH ?1
               AND n.is_deleted = 0
-              AND n.is_hidden = 0
+        "#,
+        );
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        sql.push_str(
+            r#"
             ORDER BY rank, n.modified_at DESC, n.id ASC
             LIMIT ?2
-        "#;
+        "#,
+        );
 
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![fts_query, limit as i64], |row| {
             let snippet_str: Option<String> = row.get(2)?;
             let clean_snippet = snippet_str
@@ -500,10 +537,12 @@ impl SearchRepository {
         conn: &Connection,
         query: &str,
         limit: usize,
+        include_hidden: bool,
     ) -> Result<Vec<SearchResult>, StorageError> {
         let exact_title = query.to_string();
 
-        let sql = r#"
+        let mut sql = String::from(
+            r#"
             SELECT
                 id,
                 title,
@@ -513,7 +552,13 @@ impl SearchRepository {
                 is_favorite
             FROM notes
             WHERE is_deleted = 0
-              AND is_hidden = 0
+        "#,
+        );
+        if !include_hidden {
+            sql.push_str(" AND is_hidden = 0");
+        }
+        sql.push_str(
+            r#"
               AND (title LIKE ?1 ESCAPE '\' OR content LIKE ?1 ESCAPE '\')
             ORDER BY
               CASE
@@ -525,13 +570,14 @@ impl SearchRepository {
               modified_at DESC,
               id ASC
             LIMIT ?4
-        "#;
+        "#,
+        );
 
         // Escape LIKE wildcards inside user query for exact matching safety
         let escaped_pattern = format!("%{}%", escape_like(query));
         let escaped_prefix = format!("{}%", escape_like(query));
 
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(
             params![escaped_pattern, exact_title, escaped_prefix, limit as i64],
             |row| {
@@ -3299,14 +3345,16 @@ mod tests {
 
         // 6. Verification of LIKE fallback query limit enforcement:
         // Even when bypassing FTS5, search_like must strictly enforce LIMIT ? in SQL
-        let results_like_default = SearchRepository::search_like(&conn, "Quantum", 50).unwrap();
+        let results_like_default =
+            SearchRepository::search_like(&conn, "Quantum", 50, false).unwrap();
         assert_eq!(
             results_like_default.len(),
             50,
             "search_like must enforce limit 50 in SQL"
         );
 
-        let results_like_custom = SearchRepository::search_like(&conn, "Quantum", 25).unwrap();
+        let results_like_custom =
+            SearchRepository::search_like(&conn, "Quantum", 25, false).unwrap();
         assert_eq!(
             results_like_custom.len(),
             25,
@@ -3919,7 +3967,7 @@ mod tests {
         assert!(returned_ids.contains(&note2.id));
 
         // 4. Test phrase search on fallback LIKE engine
-        let like_results = SearchRepository::search_like(&conn, "project plan", 50).unwrap();
+        let like_results = SearchRepository::search_like(&conn, "project plan", 50, false).unwrap();
         // LIKE matches substring '%project plan%', finding Note 1
         assert_eq!(
             like_results.len(),
@@ -4182,7 +4230,7 @@ mod tests {
 
         // LIKE search fallback ranking verification:
         // Tier 0 (Exact Title Match) -> Tier 1 (Title Prefix Match) -> Tier 3 (Content Match)
-        let like_results = SearchRepository::search_like(&conn, "project", 50).unwrap();
+        let like_results = SearchRepository::search_like(&conn, "project", 50, false).unwrap();
         assert_eq!(like_results.len(), 3);
         assert_eq!(
             like_results[0].note_id, note_a.id,
@@ -4280,7 +4328,7 @@ mod tests {
         // Verify LIKE search fallback is also 100% deterministic across 5 runs
         let mut like_runs: Vec<Vec<String>> = Vec::new();
         for _ in 0..5 {
-            let res = SearchRepository::search_like(&conn, "project", 50).unwrap();
+            let res = SearchRepository::search_like(&conn, "project", 50, false).unwrap();
             assert_eq!(res.len(), 5);
             like_runs.push(res.into_iter().map(|r| r.note_id).collect());
         }

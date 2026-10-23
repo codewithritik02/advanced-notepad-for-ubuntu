@@ -2533,7 +2533,7 @@ mod tests {
 
         assert!(checkpoint.is_verified, "Checkpoint must be verified");
         assert_eq!(checkpoint.note_count, 2);
-        assert_eq!(checkpoint.schema_version, 4);
+        assert_eq!(checkpoint.schema_version, CURRENT_APP_SCHEMA_VERSION);
         assert!(checkpoint.file_size > 0);
         assert!(
             Path::new(&checkpoint.file_path).exists(),
@@ -2920,7 +2920,10 @@ mod tests {
             mig_result.migrated_schema_version,
             CURRENT_APP_SCHEMA_VERSION
         );
-        assert_eq!(mig_result.migrations_applied, 3);
+        assert_eq!(
+            mig_result.migrations_applied,
+            (CURRENT_APP_SCHEMA_VERSION - 1) as usize
+        );
         assert!(mig_result.is_verified);
         assert_eq!(
             mig_result.note_count, 1,
@@ -3445,7 +3448,7 @@ mod tests {
         assert!(report.is_valid);
         assert!(report.integrity_check_passed);
         assert!(report.foreign_key_check_passed);
-        assert_eq!(report.schema_version, 4);
+        assert_eq!(report.schema_version, CURRENT_APP_SCHEMA_VERSION);
         assert_eq!(report.note_count, 1);
         assert_eq!(report.notebook_count, 1);
         assert_eq!(report.tag_count, 1);

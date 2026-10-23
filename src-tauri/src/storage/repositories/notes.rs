@@ -345,6 +345,16 @@ impl NoteRepository {
         offset: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<TrashedNoteItem>, StorageError> {
+        Self::list_trashed_items_page_with_options_and_key(conn, limit, offset, false, dek)
+    }
+
+    pub fn list_trashed_items_page_with_options_and_key(
+        conn: &Connection,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        include_hidden: bool,
+        dek: Option<&SecretBytes>,
+    ) -> Result<Vec<TrashedNoteItem>, StorageError> {
         let mut sql = String::from(
             r#"
             SELECT
@@ -357,7 +367,8 @@ impl NoteRepository {
                 n.modified_at,
                 n.deleted_at,
                 n.is_favorite,
-                COALESCE(att.att_count, 0) AS attachment_count
+                COALESCE(att.att_count, 0) AS attachment_count,
+                n.is_hidden
             FROM notes n
             LEFT JOIN notebooks nb ON n.notebook_id = nb.id
             LEFT JOIN (
@@ -366,9 +377,13 @@ impl NoteRepository {
                 GROUP BY note_id
             ) att ON n.id = att.note_id
             WHERE n.is_deleted = 1
-            ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC
         "#,
         );
+
+        if !include_hidden {
+            sql.push_str(" AND n.is_hidden = 0");
+        }
+        sql.push_str(" ORDER BY COALESCE(n.deleted_at, n.modified_at) DESC, n.id ASC");
 
         if limit.is_some() {
             sql.push_str(" LIMIT ?1 OFFSET ?2");
@@ -393,6 +408,7 @@ impl NoteRepository {
             let deleted_at: Option<String> = row.get(7)?;
             let is_fav_int: i32 = row.get(8)?;
             let att_count: i64 = row.get(9)?;
+            let is_hidden: i32 = row.get(10)?;
 
             let title = Self::decrypt_field_if_encrypted(&raw_title, &id, "title", dek)?;
             let full_content = Self::decrypt_field_if_encrypted(&raw_content, &id, "content", dek)?;
@@ -408,6 +424,7 @@ impl NoteRepository {
                 modified_at,
                 deleted_at,
                 is_favorite: is_fav_int != 0,
+                is_hidden: is_hidden != 0,
                 attachment_count: att_count.max(0) as usize,
             });
         }
@@ -482,10 +499,12 @@ impl NoteRepository {
             by_notebook.insert(nb_id, count.max(0) as usize);
         }
 
-        let trash: i64 =
-            conn.query_row("SELECT COUNT(1) FROM notes WHERE is_deleted = 1", [], |r| {
-                r.get(0)
-            })?;
+        let trash_sql = if include_hidden {
+            "SELECT COUNT(1) FROM notes WHERE is_deleted = 1"
+        } else {
+            "SELECT COUNT(1) FROM notes WHERE is_deleted = 1 AND is_hidden = 0"
+        };
+        let trash: i64 = conn.query_row(trash_sql, [], |r| r.get(0))?;
 
         Ok(NoteCountsDto {
             total: total.max(0) as usize,
@@ -943,7 +962,14 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        Self::list_favorites_page_with_options_and_hidden(conn, None, None, content_limit, false, dek)
+        Self::list_favorites_page_with_options_and_hidden(
+            conn,
+            None,
+            None,
+            content_limit,
+            false,
+            dek,
+        )
     }
 
     pub fn list_favorites_page_with_options(
@@ -953,7 +979,14 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        Self::list_favorites_page_with_options_and_hidden(conn, limit, offset, content_limit, false, dek)
+        Self::list_favorites_page_with_options_and_hidden(
+            conn,
+            limit,
+            offset,
+            content_limit,
+            false,
+            dek,
+        )
     }
 
     pub fn list_favorites_page_with_options_and_hidden(
@@ -1025,7 +1058,15 @@ impl NoteRepository {
         content_limit: Option<usize>,
         dek: Option<&SecretBytes>,
     ) -> Result<Vec<Note>, StorageError> {
-        Self::list_by_tag_page_with_options_and_hidden(conn, tag_id, limit, offset, content_limit, false, dek)
+        Self::list_by_tag_page_with_options_and_hidden(
+            conn,
+            tag_id,
+            limit,
+            offset,
+            content_limit,
+            false,
+            dek,
+        )
     }
 
     pub fn list_by_tag_page_with_options_and_hidden(

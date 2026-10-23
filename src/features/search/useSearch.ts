@@ -7,6 +7,7 @@ import { logger } from "../../utils/logger.ts";
 export interface UseSearchOptions {
   debounceMs?: number;
   limit?: number;
+  includeHidden?: boolean;
   /**
    * Task 54: Optional callback executed before search queries run against the database.
    * Flushes any pending autosaves in the note editor to ensure FTS index consistency.
@@ -40,6 +41,7 @@ export interface UseSearchResult {
 export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
   const debounceMs = Math.max(0, options.debounceMs ?? 200);
   const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
+  const includeHidden = options.includeHidden ?? false;
 
   const [query, setQueryState] = useState<string>("");
   const [searchState, setSearchState] = useState<SearchState>({ status: "idle" });
@@ -90,7 +92,11 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
       setSearchState({ status: "searching", query: trimmed });
 
       try {
-        const searchResults = await searchStorage.search(trimmed, limit);
+        const searchResults = await searchStorage.search({
+          query: trimmed,
+          limit,
+          includeHidden,
+        });
         const durationMs = performance.now() - startTime;
 
         // Task 20: Stale request protection
@@ -116,7 +122,7 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
         }
       }
     },
-    [limit]
+    [limit, includeHidden]
   );
 
   const setQuery = useCallback(
@@ -172,6 +178,22 @@ export function useSearch(options: UseSearchOptions = {}): UseSearchResult {
     setQueryState("");
     setSearchState({ status: "idle" });
   }, []);
+
+  const previousIncludeHiddenRef = useRef(includeHidden);
+  useEffect(() => {
+    if (previousIncludeHiddenRef.current === includeHidden) return;
+    previousIncludeHiddenRef.current = includeHidden;
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    const trimmed = query.trim();
+    if (!trimmed) return;
+    // Remove results produced under the previous visibility policy immediately.
+    requestIdRef.current += 1;
+    setSearchState({ status: "searching", query: trimmed });
+    void executeSearch(query);
+  }, [includeHidden, query, executeSearch]);
 
   // Cleanup on unmount
   useEffect(() => {

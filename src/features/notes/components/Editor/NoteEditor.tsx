@@ -24,6 +24,7 @@ export interface NoteEditorProps {
   showMinimap?: boolean;
   onSaveNote?: (id: string, title: string, content: string, format?: NoteFormat) => Promise<void> | void;
   onNoteUpdated?: (updatedNote: Note) => void;
+  onHiddenChanged?: (updatedNote: Note) => void;
   onRegisterSave?: (saveFn: (() => Promise<void>) | null) => void;
   notebookName?: string | null;
   notebookPath?: string | null;
@@ -50,6 +51,7 @@ export interface NoteEditorProps {
   onTogglePinExternal?: () => void;
   /** Called after a regular note was pinned or unpinned, so the list can re-sort. */
   onPinChanged?: () => void;
+  showHiddenNotes?: boolean;
 }
 
 // Inline lightweight SVG icons for editor toolbar
@@ -93,6 +95,13 @@ const EyeIcon = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
     <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
+const EyeOffIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+    <line x1="1" y1="1" x2="23" y2="23" />
   </svg>
 );
 
@@ -260,6 +269,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   showMinimap = true,
   onSaveNote,
   onNoteUpdated,
+  onHiddenChanged,
   onRegisterSave,
   notebookName,
   notebookPath,
@@ -281,6 +291,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   externalPinned = false,
   onTogglePinExternal,
   onPinChanged,
+  showHiddenNotes = false,
 }) => {
   // A file opened from outside the notebook: saved back to the file, no notebook/tags/attachments
   const isExternal = isExternalId(noteId);
@@ -1318,6 +1329,21 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     }
   }, [noteId, loadedNote, isReadOnly, isExternal, onNoteUpdated, onPinChanged]);
 
+  const handleToggleHideNote = useCallback(async () => {
+    if (!noteId || !loadedNote || isReadOnly || isExternal) return;
+    const current = loadedNote.is_hidden;
+    const nextHidden = !current;
+    setLoadedNote((prev) => (prev ? { ...prev, is_hidden: nextHidden } : null));
+    try {
+      const updated = await storageService.notes.setHidden(noteId, nextHidden);
+      setLoadedNote(updated);
+      onNoteUpdated?.(updated);
+      onHiddenChanged?.(updated);
+    } catch {
+      setLoadedNote((prev) => (prev ? { ...prev, is_hidden: current } : null));
+    }
+  }, [noteId, loadedNote, isReadOnly, isExternal, onNoteUpdated, onHiddenChanged]);
+
   const handleSave = useCallback(async () => {
     if (!noteId || isReadOnly) return;
 
@@ -1641,6 +1667,20 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </button>
         )}
 
+        {!isReadOnly && !isExternal && loadedNote && (
+          <button
+            type="button"
+            className={`toolbar-btn-hide ${loadedNote.is_hidden ? "is-hidden" : ""}`}
+            title={loadedNote.is_hidden ? "Unhide note" : "Hide note"}
+            aria-label={loadedNote.is_hidden ? "Unhide note" : "Hide note"}
+            aria-pressed={loadedNote.is_hidden}
+            onClick={handleToggleHideNote}
+          >
+            {loadedNote.is_hidden ? <EyeOffIcon /> : <EyeIcon />}
+            <span>{loadedNote.is_hidden ? "Hidden" : "Hide"}</span>
+          </button>
+        )}
+
         {!isReadOnly && !isExternal && loadedNote && onDeleteNote && (
           <button
             type="button"
@@ -1854,12 +1894,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             modifiedAt={loadedNote?.modified_at}
             format={format}
             isFavorite={loadedNote?.is_favorite}
+            isHidden={loadedNote?.is_hidden}
             wordCount={wordCount}
             characterCount={content.length}
             byteSize={byteSize}
             attachmentCount={attachmentCount}
             onMoveNote={!isReadOnly && !isExternal && onMoveNote && loadedNote ? () => onMoveNote(loadedNote) : undefined}
             onToggleFavorite={!isReadOnly && !isExternal ? handleToggleFavorite : undefined}
+            onToggleHide={!isReadOnly && !isExternal ? handleToggleHideNote : undefined}
           />
 
           {/* Note File Attachments (Phase 7, Tasks 11-19) */}
@@ -1917,6 +1959,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             onActivateLink={handleActivateLink}
             isReadOnly={isReadOnly}
             refreshTrigger={lastSavedAt}
+            includeHidden={showHiddenNotes}
           />
         </div>
       </div>
@@ -1990,6 +2033,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         onSelectNote={handleSelectLinkTarget}
         currentNoteId={noteId}
         initialLabel={linkPickerInitialLabel}
+        includeHidden={showHiddenNotes}
       />
 
       {/* Export Note Modal (Phase 10, Task 14) */}

@@ -108,6 +108,8 @@ pub fn run() {
             commands::toggle_note_favorite,
             commands::set_note_pinned,
             commands::toggle_note_pinned,
+            commands::set_note_hidden,
+            commands::toggle_note_hidden,
             commands::list_favorite_notes,
             commands::list_notebooks,
             commands::get_notebook,

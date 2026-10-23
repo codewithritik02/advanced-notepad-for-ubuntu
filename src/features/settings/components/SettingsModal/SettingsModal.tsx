@@ -34,6 +34,8 @@ export interface SettingsModalProps {
   onEditorFontSizeReset: () => void;
   showMinimap: boolean;
   onShowMinimapChange: (show: boolean) => void;
+  showHiddenNotes?: boolean;
+  onShowHiddenNotesChange?: (show: boolean) => void;
   onCreateBackup?: () => void;
   onViewBackups?: () => void;
   onLock?: () => Promise<void> | void;
@@ -57,6 +59,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onEditorFontSizeReset,
   showMinimap,
   onShowMinimapChange,
+  showHiddenNotes = false,
+  onShowHiddenNotesChange,
   onCreateBackup,
   onViewBackups,
   onLock,
@@ -261,6 +265,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onChange={(e) => onShowMinimapChange(e.target.checked)}
                 />
                 <span>Show an overview strip beside long notes</span>
+              </label>
+            </div>
+            <div className="display-setting-row">
+              <label className="display-setting-label" htmlFor="show-hidden-notes">
+                Show Hidden Notes
+              </label>
+              <label className="display-toggle" htmlFor="show-hidden-notes">
+                <input
+                  id="show-hidden-notes"
+                  type="checkbox"
+                  role="switch"
+                  aria-checked={showHiddenNotes}
+                  checked={showHiddenNotes}
+                  onChange={(e) => onShowHiddenNotesChange?.(e.target.checked)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      onShowHiddenNotesChange?.(!showHiddenNotes);
+                    }
+                  }}
+                />
+                <span>Display hidden notes in note lists and search results</span>
               </label>
             </div>
           </div>

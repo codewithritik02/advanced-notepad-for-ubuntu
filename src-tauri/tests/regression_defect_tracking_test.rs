@@ -164,6 +164,7 @@ fn regression_def_05_fts5_index_synchronization_and_soft_delete_exclusion() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("update note");
@@ -187,6 +188,7 @@ fn regression_def_05_fts5_index_synchronization_and_soft_delete_exclusion() {
             is_favorite: None,
             is_pinned: None,
             is_deleted: None,
+            is_hidden: None,
         },
     )
     .expect("re-add keyword");

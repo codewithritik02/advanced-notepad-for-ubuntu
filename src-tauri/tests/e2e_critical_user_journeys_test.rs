@@ -78,6 +78,7 @@ fn test_workflow_a_basic_note_persistence_and_restart() {
                 is_favorite: None,
                 is_pinned: None,
                 is_deleted: None,
+                is_hidden: None,
             },
         )
         .expect("[Workflow A: Step 3] Failed to enter title and content");

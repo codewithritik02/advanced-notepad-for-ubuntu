@@ -28,6 +28,7 @@ export interface Note {
   is_pinned: boolean;
   is_deleted: boolean;
   deleted_at: string | null;
+  is_hidden: boolean;
 }
 
 /**
@@ -43,6 +44,7 @@ export interface TrashedNoteItem {
   modifiedAt: string;
   deletedAt: string | null;
   isFavorite: boolean;
+  isHidden: boolean;
   attachmentCount: number;
 }
 
@@ -76,6 +78,7 @@ export interface NoteMetadata {
   notebook_path?: string | null;
   is_favorite: boolean;
   is_pinned: boolean;
+  is_hidden: boolean;
   tags: Tag[];
   word_count: number;
   character_count: number;
@@ -99,6 +102,7 @@ export interface ListNotesOptions {
   limit?: number;
   offset?: number;
   contentLimit?: number;
+  includeHidden?: boolean;
 }
 
 export interface CreateNoteInput {
@@ -118,6 +122,7 @@ export interface UpdateNoteInput {
   is_favorite?: boolean;
   is_pinned?: boolean;
   is_deleted?: boolean;
+  is_hidden?: boolean;
 }
 
 export interface Notebook {
@@ -164,6 +169,7 @@ export interface SetNoteTagsInput {
 export interface SearchQuery {
   query: string;
   limit?: number;
+  includeHidden?: boolean;
 }
 
 export interface SearchResult {
@@ -821,5 +827,3 @@ export interface StagedMigrationResult {
   attachmentCount: number;
   isVerified: boolean;
 }
-
-

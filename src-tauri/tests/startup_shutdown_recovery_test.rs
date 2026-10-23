@@ -106,15 +106,15 @@ fn startup_upgrades_an_older_supported_schema_without_losing_notes() {
     let environment = TestAppDir::with_label("older-schema");
     let mut connection = init_connection(&environment.paths.database_file).unwrap();
     run_migrations_custom(&mut connection, &MIGRATIONS[..1]).unwrap();
-    let note = NoteRepository::create(
-        &connection,
-        CreateNoteDto {
-            title: Some("Version one note".to_string()),
-            content: Some("Must survive migration".to_string()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let note_id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    connection
+        .execute(
+            "INSERT INTO notes (id, title, content, format, created_at, modified_at, is_favorite, is_pinned, is_deleted)
+             VALUES (?1, 'Version one note', 'Must survive migration', 'txt', ?2, ?2, 0, 0, 0)",
+            rusqlite::params![note_id, now],
+        )
+        .unwrap();
     drop(connection);
 
     let runtime = initialize_application_storage(environment.paths.clone()).unwrap();
@@ -134,7 +134,7 @@ fn startup_upgrades_an_older_supported_schema_without_losing_notes() {
             .collect::<Vec<_>>()
     );
     assert_eq!(
-        NoteRepository::get_by_id(&connection, &note.id)
+        NoteRepository::get_by_id(&connection, &note_id)
             .unwrap()
             .unwrap()
             .content,
