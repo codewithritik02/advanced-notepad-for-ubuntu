@@ -515,12 +515,14 @@ pub fn get_note_notebook_path(db: State<'_, Database>, note_id: String) -> Resul
 
 #[tauri::command]
 pub fn get_setting(db: State<'_, Database>, key: String) -> Result<Option<String>, String> {
+    SettingsRepository::validate_frontend_key(&key).map_err(|e| e.to_string())?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     SettingsRepository::get(&conn, &key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_setting(db: State<'_, Database>, key: String, value: String) -> Result<(), String> {
+    SettingsRepository::validate_frontend_write(&key, &value).map_err(|e| e.to_string())?;
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     SettingsRepository::set(&conn, &key, &value).map_err(|e| e.to_string())
 }
