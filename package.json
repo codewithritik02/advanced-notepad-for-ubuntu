@@ -12,6 +12,7 @@
     "lint": "node scripts/lint-frontend.mjs",
     "lint:frontend": "node scripts/lint-frontend.mjs",
     "test": "node --experimental-strip-types tests/frontend.test.mjs",
+    "test:safety": "node scripts/check-test-safety.mjs",
     "test:frontend": "node --experimental-strip-types tests/frontend.test.mjs",
     "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
     "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --all",

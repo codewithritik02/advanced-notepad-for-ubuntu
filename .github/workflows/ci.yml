@@ -33,8 +33,19 @@ jobs:
       - name: Frontend Code Hygiene & Linting
         run: npm run lint
 
+      - name: Test Safety Guard (tests must never touch installed app data)
+        run: npm run test:safety
+
       - name: Frontend Unit & Component Tests
         run: npm test
+
+      - name: Editor Browser Regression Test (isolated, no backend or real notes)
+        run: npm run test:editor:browser
+        env:
+          EDITOR_TEST_BROWSER: google-chrome
+
+      - name: Dependency Vulnerability Audit (npm, production dependencies)
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Production Frontend Build
         run: npm run build
@@ -77,6 +88,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Dependency Vulnerability Audit (RustSec advisory database)
+        run: cargo audit --file src-tauri/Cargo.lock
 
       - name: Rust Code Formatting Check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
