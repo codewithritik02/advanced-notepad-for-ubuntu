@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **Large files froze the app.** Opening a plain-text/JSON file with tens of thousands of lines kept the interface busy for minutes. The minimap measured every word of the preview through the browser, which is quadratic on one huge text node. Large previews are now drawn as a single soft block (`MAX_PER_WORD_PREVIEW_CHARS`).
+- **Single-instance socket path.** A very long `XDG_RUNTIME_DIR`/`TMPDIR` no longer breaks forwarding of "open with" files to the running window; it falls back to a shorter directory.
+- **Test race.** Backup/restore tests that share process-wide flags now serialize consistently.
+
+### Security
+- The generic `get_setting`/`set_setting` commands only accept an allowlist of interface keys (`auto_lock_settings`) and cap value size, so the webview can no longer read or overwrite `encryption_metadata` or `backup_settings`.
+
+### Changed
+- Test builds optimize only the crypto/SQLite dependencies, cutting the Rust test suite from ~5.5 minutes to ~1 minute. Production Argon2 parameters and release builds are unchanged.
+- CI now runs `cargo audit`, `npm audit` (high severity), the editor browser regression test and a new test-safety guard (`npm run test:safety`) that fails if test code references the installed app's data location.
+
+---
+
 ## [0.1.0] - 2026-10-17
 
 ### Added
