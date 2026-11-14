@@ -5,6 +5,13 @@ import "./EditorScrollTools.css";
 
 export const MINIMAP_WIDTH_PX = 96;
 const MAX_MINIMAP_WORDS = 12000;
+/**
+ * Preview text longer than this is drawn as one soft block instead of word by word. Measuring a
+ * word means asking the browser for a Range rectangle, which costs time proportional to the size of
+ * the text node; plain-text/JSON files render as one huge node, so per-word measuring is quadratic
+ * and froze the app on files with tens of thousands of lines.
+ */
+export const MAX_PER_WORD_PREVIEW_CHARS = 20000;
 const MIN_HOST_WIDTH_PX = 620;
 
 export interface NoteMinimapProps {
@@ -256,7 +263,12 @@ export const NoteMinimap: React.FC<NoteMinimapProps> = ({
           const rect = image.getBoundingClientRect();
           word(rect.left - docRect.left, toY(image), rect.width, rect.height, "image");
         });
-      drawDomWords(root, "script,style,.attachment-image-missing", kindOf);
+      if ((root.textContent ?? "").length > MAX_PER_WORD_PREVIEW_CHARS) {
+        const rect = root.getBoundingClientRect();
+        box(padX + (rect.left - docRect.left) * sx, toY(root) * scale, rect.width * sx, rect.height * scale, colors.text, 0.3);
+      } else {
+        drawDomWords(root, "script,style,.attachment-image-missing", kindOf);
+      }
     }
 
     ctx.globalAlpha = 1;

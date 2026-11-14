@@ -29089,6 +29089,17 @@ describe("Scroll tools: back-to-top, minimap and no scroll jump on insert", () =
     assert.match(read("src/app/App.tsx"), /showMinimap=\{display\.showMinimap\}/);
   });
 
+  it("never measures a huge preview word by word (regression: 20-30k line files froze the app)", () => {
+    const minimap = read("src/features/notes/components/Editor/NoteMinimap.tsx");
+    assert.match(minimap, /MAX_PER_WORD_PREVIEW_CHARS = 20000/);
+    // The per-word DOM walk must sit behind the size guard, never be called unconditionally
+    assert.match(
+      minimap,
+      /textContent \?\? ""\)\.length > MAX_PER_WORD_PREVIEW_CHARS\) \{[\s\S]*?\} else \{\s*drawDomWords\(root,/,
+    );
+    assert.equal((minimap.match(/drawDomWords\(root,/g) ?? []).length, 1);
+  });
+
   it("reads the minimap setting safely", async () => {
     const m = await import("../src/features/settings/utils/displaySettings.ts");
     assert.equal(m.normalizeShowMinimap("false"), false);
