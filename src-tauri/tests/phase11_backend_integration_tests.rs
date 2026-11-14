@@ -1,3 +1,4 @@
+mod common;
 use rusqlite::Connection;
 use std::fs::{self, File};
 use std::io::{Read, Write};
@@ -469,6 +470,7 @@ fn test_integ_06_detect_corrupted_manifest() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_integ_07_reject_unsupported_format_version() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("integ_07");
     let unsupp_archive = env.paths.backups_dir.join("unsupported_format.pnbackup");
 
@@ -823,6 +825,7 @@ fn test_integ_13_simulate_failure_during_backup_creation() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_integ_14_simulate_failure_during_archive_extraction() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("integ_14");
     let mut conn = init_connection(&env.paths.database_file).unwrap();
     run_migrations(&mut conn).unwrap();
@@ -870,6 +873,7 @@ fn test_integ_14_simulate_failure_during_archive_extraction() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_integ_15_simulate_staged_database_validation_failure() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("integ_15");
     let mut conn = init_connection(&env.paths.database_file).unwrap();
     run_migrations(&mut conn).unwrap();
@@ -959,6 +963,7 @@ fn test_integ_15_simulate_staged_database_validation_failure() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_integ_16_simulate_schema_migration_failure() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("integ_16");
     let mut conn = init_connection(&env.paths.database_file).unwrap();
     run_migrations(&mut conn).unwrap();
@@ -1168,6 +1173,7 @@ fn test_integ_19_repeated_backups_bounded_and_no_tmp_leakage() {
 // -----------------------------------------------------------------------------
 #[test]
 fn test_integ_20_unicode_and_empty_notes_backup_and_restore() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("integ_20");
     let mut conn = init_connection(&env.paths.database_file).unwrap();
     run_migrations(&mut conn).unwrap();

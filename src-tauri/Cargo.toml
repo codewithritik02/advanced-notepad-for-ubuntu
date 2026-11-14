@@ -36,6 +36,25 @@ zeroize = { version = "1.8", features = ["derive"] }
 base64 = "0.22"
 
 
+# Test/dev speed only: password hashing (Argon2id), AES-GCM and SQLite are pathologically slow in
+# unoptimized builds, which made the encryption and storage test suites take minutes. Only these
+# dependencies are optimized; the application's own code keeps full debug info and checks, and the
+# Argon2 parameters used in production are untouched. Release builds are configured below.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.aes-gcm]
+opt-level = 3
+[profile.dev.package.ghash]
+opt-level = 3
+[profile.dev.package.ctr]
+opt-level = 3
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

@@ -664,6 +664,7 @@ fn test_abandoned_temp_files_cleanup_on_restart() {
 /// 13. Interrupted encryption migration detects transition marker and executes safe rollback.
 #[test]
 fn test_interrupted_encryption_migration_rollback_recovery() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let app_dir = TestAppDir::new();
     let mut conn = app_dir.open_migrated_database();
 

@@ -1,3 +1,4 @@
+mod common;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use std::fs;
@@ -1269,6 +1270,7 @@ fn test_migration_interrupted_state_and_startup_recovery_decision() {
 
 #[test]
 fn test_migration_rollback_interrupted_migration_restores_authoritative_state() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new();
     let mut conn = init_connection(&env.paths.database_file).expect("DB init failed");
     run_migrations(&mut conn).expect("Migration failed");
@@ -1332,6 +1334,7 @@ fn test_migration_rollback_interrupted_migration_restores_authoritative_state() 
 
 #[test]
 fn test_migration_recovery_checkpoint_validation_and_tamper_detection() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new();
     let mut conn = init_connection(&env.paths.database_file).expect("DB init failed");
     run_migrations(&mut conn).expect("Migration failed");
@@ -1403,6 +1406,7 @@ fn test_migration_password_change_interruption_atomicity() {
 
 #[test]
 fn test_migration_restore_of_compatible_encrypted_backup() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env_source = TestEnv::new();
     let mut conn_src = init_connection(&env_source.paths.database_file).expect("DB init failed");
     run_migrations(&mut conn_src).expect("Migration failed");

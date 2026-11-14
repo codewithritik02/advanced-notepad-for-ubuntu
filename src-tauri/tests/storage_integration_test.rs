@@ -10695,6 +10695,7 @@ fn test_phase11_task_15_restore_preview_and_confirmation_suite() {
 
 #[test]
 fn test_phase11_task_16_recovery_checkpoint_suite() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         models::{BackupCompatibilityStatus, BackupType, CreateNoteDto, CreateNotebookDto},
         repositories::{NotebookRepository, TagRepository},
@@ -11033,6 +11034,7 @@ fn test_phase11_tasks_17_and_18_staged_restore_and_migration() {
 
 #[test]
 fn test_phase11_task_19_restore_activation_and_rollback() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         init_connection,
         models::{
@@ -11314,6 +11316,7 @@ fn test_phase11_task_19_restore_activation_and_rollback() {
 
 #[test]
 fn test_phase11_task_20_post_restore_validation_and_restart() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         init_connection,
         models::{
@@ -11534,6 +11537,7 @@ fn test_phase11_task_20_post_restore_validation_and_restart() {
 
 #[test]
 fn test_phase11_task_21_restore_progress_cancellation_and_feedback() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         init_connection,
         models::{
@@ -16251,6 +16255,7 @@ fn test_phase13_task_12_failure_safe_import_export_operations() {
 
 #[test]
 fn test_phase13_task_13_harden_backup_and_restore_reliability() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::{
         crypto::{
             generate_salt, EncryptionMetadata, KdfConfig, SecretBytes, WrappedKey,
@@ -17994,6 +17999,7 @@ fn test_phase13_task_21_audit_memory_resource_cleanup_and_long_sessions() {
 
 #[test]
 fn test_phase13_task_23_reliability_and_stress_suite() {
+    let _global_state_guard = common::lock_process_global_test_state();
     use personal_notepad_lib::storage::models::{
         BackupRestoreRequest, CreateNoteDto, UpdateNoteDto,
     };

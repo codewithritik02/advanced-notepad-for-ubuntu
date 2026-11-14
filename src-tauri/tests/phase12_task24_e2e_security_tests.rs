@@ -1,3 +1,4 @@
+mod common;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::PathBuf;
@@ -610,6 +611,7 @@ fn test_scenario_d_tampered_storage_rejection() {
 // =============================================================================
 #[test]
 fn test_scenario_e_interrupted_migration_startup_recovery() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("pn_task24_scen_e");
 
     let note_id: String;
@@ -714,6 +716,7 @@ fn test_scenario_e_interrupted_migration_startup_recovery() {
 // =============================================================================
 #[test]
 fn test_scenario_f_encrypted_backup_and_restore() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env_src = TestEnv::new("pn_task24_scen_f_src");
     let password = "EncryptedBackupPassword999!";
 

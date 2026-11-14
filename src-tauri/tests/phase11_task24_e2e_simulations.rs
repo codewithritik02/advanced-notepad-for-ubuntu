@@ -1,3 +1,4 @@
+mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -56,6 +57,7 @@ impl Drop for TestEnv {
 // =============================================================================
 #[test]
 fn test_scenario_a_normal_recovery_lifecycle() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("pn_e2e_scen_a");
     let mut conn = init_connection(&env.paths.database_file).expect("Conn init failed");
     run_migrations(&mut conn).expect("Migrations failed");
@@ -278,6 +280,7 @@ fn test_scenario_a_normal_recovery_lifecycle() {
 // =============================================================================
 #[test]
 fn test_scenario_b_corrupt_backup_detection_and_defense() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("pn_e2e_scen_b");
     let mut conn = init_connection(&env.paths.database_file).expect("Conn init failed");
     run_migrations(&mut conn).expect("Migrations failed");
@@ -420,6 +423,7 @@ fn test_scenario_c_interrupted_restore_and_rollback_recovery() {
 // =============================================================================
 #[test]
 fn test_scenario_d_automatic_backup_and_inaccessible_destination() {
+    let _global_state_guard = common::lock_process_global_test_state();
     let env = TestEnv::new("pn_e2e_scen_d");
     let mut conn = init_connection(&env.paths.database_file).expect("Conn init failed");
     run_migrations(&mut conn).expect("Migrations failed");
