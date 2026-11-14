@@ -527,11 +527,30 @@ pub fn socket_path(data_dir: &Path) -> PathBuf {
         .map(|byte| format!("{byte:02x}"))
         .collect();
 
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute() && dir.is_dir())
-        .unwrap_or_else(std::env::temp_dir);
-    runtime_dir.join(format!("personal-notepad-{short}.sock"))
+    let candidates = [
+        std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute() && dir.is_dir()),
+        Some(std::env::temp_dir()),
+    ];
+    socket_path_in(&candidates, &short)
+}
+
+/// Longest socket path used. `sockaddr_un` holds about 108 bytes on Linux (104 on macOS); a margin
+/// is kept so the terminating NUL and platform differences can never push a path over the limit.
+const MAX_SOCKET_PATH_BYTES: usize = 100;
+
+/// Picks the first candidate directory whose socket path fits the limit, falling back to `/tmp`.
+/// A very long `XDG_RUNTIME_DIR` or `TMPDIR` would otherwise make binding the socket fail with
+/// "path must be shorter than SUN_LEN" and silently disable "open with" forwarding.
+fn socket_path_in(candidates: &[Option<PathBuf>], short: &str) -> PathBuf {
+    let file_name = format!("personal-notepad-{short}.sock");
+    candidates
+        .iter()
+        .flatten()
+        .map(|dir| dir.join(&file_name))
+        .find(|path| path.as_os_str().len() <= MAX_SOCKET_PATH_BYTES)
+        .unwrap_or_else(|| PathBuf::from("/tmp").join(file_name))
 }
 
 /// Wire format: one line per message. `OPEN <absolute path>` or `FOCUS`.
@@ -910,6 +929,29 @@ mod tests {
             "message reads naturally: {binary_message}"
         );
         assert!(binary_message.contains("Only text files can be opened"));
+    }
+
+    #[test]
+    fn socket_path_falls_back_when_the_runtime_dir_is_too_long() {
+        let long = PathBuf::from(format!("/{}", "a".repeat(150)));
+        let short_dir = PathBuf::from("/run/user/1000");
+        // Fits: first candidate wins
+        assert_eq!(
+            socket_path_in(&[Some(short_dir.clone()), Some(long.clone())], "abc"),
+            short_dir.join("personal-notepad-abc.sock")
+        );
+        // Too long: next candidate is used
+        assert_eq!(
+            socket_path_in(&[Some(long.clone()), Some(short_dir.clone())], "abc"),
+            short_dir.join("personal-notepad-abc.sock")
+        );
+        // Everything too long or missing: /tmp, and always within the socket limit
+        let result = socket_path_in(&[Some(long), None], "0123456789ab");
+        assert_eq!(
+            result,
+            PathBuf::from("/tmp/personal-notepad-0123456789ab.sock")
+        );
+        assert!(result.as_os_str().len() <= MAX_SOCKET_PATH_BYTES);
     }
 
     #[cfg(unix)]
