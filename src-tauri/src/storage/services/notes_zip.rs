@@ -1,11 +1,14 @@
 //! ZIP export: every note gets its own folder holding the note file and an `assets/` folder with
-//! the files attached to it, so a note and its images always travel together.
+//! the files attached to it, so a note and its images always travel together. Notes that live in a
+//! notebook are placed under the notebook's folder path; notes without a notebook stay at the root.
 //!
 //! ```text
 //! export.zip
-//! ├── Meeting notes/
-//! │   ├── Meeting notes.md          (the note, in its own format; image links point to assets/)
-//! │   └── assets/photo.png
+//! ├── Work/
+//! │   └── Projects/
+//! │       └── Meeting notes/
+//! │           ├── Meeting notes.md  (the note, in its own format; image links point to assets/)
+//! │           └── assets/photo.png
 //! └── Shopping list/
 //!     └── Shopping list.txt
 //! ```
@@ -22,7 +25,9 @@ use crate::storage::models::{
     Attachment, ExportBatchRequest, ExportFileResult, ExportItemStatus, ExportProgress,
     ExportScope, ExportSummary,
 };
-use crate::storage::repositories::{AttachmentRepository, NoteRepository, SearchRepository};
+use crate::storage::repositories::{
+    AttachmentRepository, NoteRepository, NotebookRepository, SearchRepository,
+};
 use crate::storage::services::attachments::AttachmentService;
 use crate::storage::services::import_export::{ImportExportService, MAX_BATCH_FILE_COUNT};
 
@@ -72,6 +77,36 @@ pub fn rewrite_attachment_links(content: &str, assets: &[(String, String)]) -> S
         );
     }
     result
+}
+
+/// Sanitized folder names of a notebook and its ancestors, outermost first.
+fn notebook_folder_segments(conn: &Connection, notebook_id: Option<&str>) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut current = notebook_id.map(str::to_string);
+    while let Some(id) = current {
+        if !visited.insert(id.clone()) {
+            break; // defensive: never loop on a corrupt hierarchy
+        }
+        match NotebookRepository::get_by_id(conn, &id) {
+            Ok(Some(nb)) => {
+                segments.push(ImportExportService::sanitize_filename(&nb.name));
+                current = nb.parent_id;
+            }
+            _ => break,
+        }
+    }
+    segments.reverse();
+    segments
+}
+
+/// Folder paths already taken in the archive (lowercased).
+#[derive(Default)]
+struct FolderNames {
+    /// Note folders written so far.
+    used: std::collections::HashSet<String>,
+    /// Notebook folders, which a note folder must never merge into.
+    notebook_dirs: std::collections::HashSet<String>,
 }
 
 fn zip_error(error: zip::result::ZipError) -> StorageError {
@@ -172,7 +207,16 @@ impl ImportExportService {
         let skipped = preview.skipped_trashed_count + preview.skipped_missing_count;
         let mut results = Vec::new();
         let (mut exported, mut failed, mut cancelled) = (0usize, 0usize, 0usize);
-        let mut used_folders = std::collections::HashSet::new();
+        let mut folders = FolderNames::default();
+        // Every notebook folder in the archive, so a note folder never merges into one.
+        for meta in &preview.notes {
+            let segments = notebook_folder_segments(conn, meta.notebook_id.as_deref());
+            for depth in 1..=segments.len() {
+                folders
+                    .notebook_dirs
+                    .insert(segments[..depth].join("/").to_lowercase());
+            }
+        }
         let mut is_cancelled = false;
 
         for (idx, meta) in preview.notes.iter().enumerate() {
@@ -194,7 +238,7 @@ impl ImportExportService {
                     &mut writer,
                     options,
                     &meta.id,
-                    &mut used_folders,
+                    &mut folders,
                 ) {
                     Ok(skipped_assets) => {
                         exported += 1;
@@ -271,11 +315,29 @@ impl ImportExportService {
         writer: &mut zip::ZipWriter<W>,
         options: zip::write::SimpleFileOptions,
         note_id: &str,
-        used_folders: &mut std::collections::HashSet<String>,
+        folders: &mut FolderNames,
     ) -> Result<usize, StorageError> {
         let note = NoteRepository::get_by_id_with_key(conn, note_id, dek)?
             .ok_or_else(|| StorageError::Validation("The note no longer exists.".to_string()))?;
-        let folder = unique_name(&Self::sanitize_filename(&note.title), used_folders);
+        let dir = notebook_folder_segments(conn, note.notebook_id.as_deref()).join("/");
+        let prefix = if dir.is_empty() {
+            String::new()
+        } else {
+            format!("{dir}/")
+        };
+        let title = Self::sanitize_filename(&note.title);
+        // Unique among sibling note folders and never equal to a notebook folder.
+        let mut folder = title.clone();
+        let mut counter = 2;
+        loop {
+            let key = format!("{prefix}{folder}").to_lowercase();
+            if !folders.notebook_dirs.contains(&key) && folders.used.insert(key) {
+                break;
+            }
+            folder = format!("{title} ({counter})");
+            counter += 1;
+        }
+        let path = format!("{prefix}{folder}");
         let ext = if note.format == "md" { "md" } else { "txt" };
 
         let attachments: Vec<Attachment> =
@@ -306,12 +368,12 @@ impl ImportExportService {
 
         let content = rewrite_attachment_links(&note.content, &assets);
         writer
-            .start_file(format!("{folder}/{folder}.{ext}"), options)
+            .start_file(format!("{path}/{folder}.{ext}"), options)
             .map_err(zip_error)?;
         writer.write_all(content.as_bytes())?;
         for (name, bytes) in asset_bytes {
             writer
-                .start_file(format!("{folder}/assets/{name}"), options)
+                .start_file(format!("{path}/assets/{name}"), options)
                 .map_err(zip_error)?;
             writer.write_all(&bytes)?;
         }
@@ -487,6 +549,83 @@ mod tests {
     fn zip_export_decrypts_notes_and_attachments_in_memory() {
         let dek = crate::storage::crypto::generate_dek();
         run_zip_export(Some(&dek));
+    }
+
+    #[test]
+    fn zip_export_keeps_the_notebook_folder_structure() {
+        use crate::storage::models::{CreateNoteDto, CreateNotebookDto};
+        let (conn, storage, base) = setup();
+        let nb = |name: &str, parent: Option<&str>| {
+            NotebookRepository::create(
+                &conn,
+                CreateNotebookDto {
+                    name: name.to_string(),
+                    parent_id: parent.map(str::to_string),
+                },
+            )
+            .unwrap()
+            .id
+        };
+        let work = nb("Work", None);
+        let projects = nb("Projects", Some(&work));
+        let app = nb("Desktop App", Some(&projects));
+        let note = |title: &str, body: &str, notebook: Option<&String>| {
+            NoteRepository::create_with_key(
+                &conn,
+                CreateNoteDto {
+                    title: Some(title.to_string()),
+                    content: Some(body.to_string()),
+                    format: Some("md".to_string()),
+                    notebook_id: notebook.cloned(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+            .id
+        };
+        let image = base.join("sources").join("shot.png");
+        std::fs::write(&image, [1u8, 2, 3]).unwrap();
+        let deep = note("Meeting", "deep", Some(&app));
+        AttachmentService::add_attachment_with_key(&conn, &storage, &deep, &image, None).unwrap();
+        let mid = note("Meeting", "mid", Some(&projects));
+        let same_dir = note("Meeting", "again", Some(&app));
+        let root = note("Loose", "root", None);
+        // a note named like a notebook must not merge into that notebook's folder
+        let clash = note("Projects", "clash", Some(&work));
+
+        let dest = base.join("out").join("tree.zip");
+        let summary = ImportExportService::export_notes_zip_with_key(
+            &conn,
+            &storage,
+            zip_request(vec![deep, mid, same_dir, root, clash], &dest),
+            None,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(summary.exported_count, 5, "{:?}", summary.results);
+
+        let files = read_zip(&dest);
+        let names: Vec<&str> = files.keys().map(String::as_str).collect();
+        let has = |n: &str| names.contains(&n);
+        assert!(
+            has("Work/Projects/Desktop App/Meeting/Meeting.md"),
+            "{names:?}"
+        );
+        assert!(
+            has("Work/Projects/Desktop App/Meeting/assets/shot.png"),
+            "{names:?}"
+        );
+        assert!(
+            has("Work/Projects/Desktop App/Meeting (2)/Meeting (2).md"),
+            "{names:?}"
+        );
+        assert!(has("Work/Projects/Meeting/Meeting.md"), "{names:?}");
+        assert!(has("Loose/Loose.md"), "{names:?}");
+        assert!(has("Work/Projects (2)/Projects (2).md"), "{names:?}");
+        assert!(!names.contains(&"Work/Projects/Projects.md"), "{names:?}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

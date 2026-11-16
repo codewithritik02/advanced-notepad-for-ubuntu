@@ -321,7 +321,7 @@ export interface InsertInternalLinkInput {
 // ==========================================
 
 export type ImportFormat = "txt" | "md" | "json";
-/** "zip" = one archive with a folder per note and its attachments in assets/ */
+/** "zip" = one archive with a folder per note (under its notebook folders) and its attachments in assets/ */
 export type ExportFormat = "txt" | "md" | "json" | "zip";
 export type DuplicatePolicy = "import_as_new" | "skip_exact" | "ask";
 export type DuplicateMatch =

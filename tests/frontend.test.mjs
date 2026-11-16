@@ -29515,7 +29515,7 @@ describe("ZIP export and external-file removal confirmation", () => {
     assert.match(single, /format: "zip"/);
     assert.match(single, /type: "single_note"/);
     const rust = read("src-tauri/src/storage/services/notes_zip.rs");
-    assert.match(rust, /\{folder\}\/assets\/\{name\}/);
+    assert.match(rust, /\{path\}\/assets\/\{name\}/);
     assert.match(rust, /notepad:\/\/attachment\/\{id\}/);
     assert.match(read("src-tauri/src/commands/import_export.rs"), /ExportFormat::Zip/);
   });

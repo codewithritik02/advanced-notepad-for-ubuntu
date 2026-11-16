@@ -332,7 +332,7 @@ export const ExportBatchModal: React.FC<ExportBatchModalProps> = ({
                   <span className="format-chip-name">ZIP with images &amp; files</span>
                 </div>
                 <span className="format-chip-desc">
-                  One folder per note (in its own .md/.txt format) with its images and attachments
+                  One folder per note (in its own .md/.txt format) with its images and attachments, grouped under notebook folders
                   inside an assets folder.
                 </span>
               </button>
