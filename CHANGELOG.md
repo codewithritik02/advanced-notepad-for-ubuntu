@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.1.1] - 2026-11-16
+
 ### Added
 - **Notebook nesting up to 7 levels** (was 3), enforced in create, move and import, and in the UI (the "New Sub-notebook" option is disabled at the maximum depth).
 - **Move notebook.** Right-click a notebook → "Move to..." opens a tree dialog (with a "Top level" option); invalid targets (itself, its own sub-notebooks, or a place that would exceed 7 levels) are disabled. New `move_notebook` command.
@@ -21,11 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ZIP files cannot be imported back yet, and JSON files are imported as plain text, so importing does not recreate notebook folders.
 
 ### Fixed
+- The Settings "About" version label now matches the package version.
 - **Large files froze the app.** Opening a plain-text/JSON file with tens of thousands of lines kept the interface busy for minutes. The minimap measured every word of the preview through the browser, which is quadratic on one huge text node. Large previews are now drawn as a single soft block (`MAX_PER_WORD_PREVIEW_CHARS`).
 - **Single-instance socket path.** A very long `XDG_RUNTIME_DIR`/`TMPDIR` no longer breaks forwarding of "open with" files to the running window; it falls back to a shorter directory.
 - **Test race.** Backup/restore tests that share process-wide flags now serialize consistently.
 
 ### Security
+- Updated dev-tooling dependencies (`vite`, `source-map-js`) to clear two high-severity `npm audit` advisories. The shipped app was not affected (`npm audit --omit=dev`: 0).
 - The generic `get_setting`/`set_setting` commands only accept an allowlist of interface keys (`auto_lock_settings`) and cap value size, so the webview can no longer read or overwrite `encryption_metadata` or `backup_settings`.
 
 ### Changed
