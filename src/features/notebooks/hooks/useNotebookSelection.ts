@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { NoteLocation } from "../types";
 import { locationToNavId } from "../types";
 export { locationToNavId };
@@ -15,7 +15,7 @@ export interface UseNotebookSelectionReturn {
   selectFavorites: () => void;
   selectTag: (tagId: string) => void;
   selectTrash: () => void;
-  // Expand / collapse UI state (Task 9)
+  // Expand / collapse UI state (Task 9, remembered across restarts)
   expandedNotebookIds: Set<string>;
   toggleExpand: (notebookId: string) => void;
   expandNotebook: (notebookId: string) => void;
@@ -29,13 +29,35 @@ export interface UseNotebookSelectionReturn {
  * - Expansion state is purely React UI state (not stored in SQLite).
  * - Navigation state uses the explicit NoteLocation model to avoid ambiguous null states.
  */
+const EXPANDED_STORAGE_KEY = "notepad.expandedNotebookIds";
+
+/** Reads the remembered expanded folders; any storage/parse problem simply means "none". */
+function loadExpandedIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : []
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export function useNotebookSelection(
   initialLocation: NoteLocation = { type: "all" }
 ): UseNotebookSelectionReturn {
   const [location, setLocation] = useState<NoteLocation>(initialLocation);
-  const [expandedNotebookIds, setExpandedNotebookIds] = useState<Set<string>>(
-    () => new Set<string>()
-  );
+  // Which folders are open is remembered across restarts (UI preference only, never in SQLite).
+  const [expandedNotebookIds, setExpandedNotebookIds] = useState<Set<string>>(loadExpandedIds);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify([...expandedNotebookIds]));
+    } catch {
+      // Storage unavailable (private mode / quota): expansion just won't persist.
+    }
+  }, [expandedNotebookIds]);
 
   const selectedNotebookId =
     location.type === "notebook" ? location.notebookId : null;

@@ -122,7 +122,7 @@ fn nested_notebook_hierarchy_depth_and_path_resolution() {
         "Work / Projects"
     );
 
-    // Level 3: Grandchild notebook (boundary limit = MAX_NOTEBOOK_NESTING_DEPTH = 3)
+    // Level 3: Grandchild notebook
     let grandchild = NotebookRepository::create(
         conn,
         CreateNotebookDto {
@@ -130,7 +130,7 @@ fn nested_notebook_hierarchy_depth_and_path_resolution() {
             parent_id: Some(child.id.clone()),
         },
     )
-    .expect("create grandchild notebook at max depth");
+    .expect("create grandchild notebook");
     assert_eq!(
         NotebookRepository::get_depth(conn, &grandchild.id).unwrap(),
         3
@@ -140,12 +140,27 @@ fn nested_notebook_hierarchy_depth_and_path_resolution() {
         "Work / Projects / Desktop App"
     );
 
-    // Level 4: Exceeding nesting depth must be rejected
+    // Fill levels 4..=MAX_NOTEBOOK_NESTING_DEPTH, then exceeding the limit must be rejected
+    let mut deepest = grandchild;
+    for level in 4..=MAX_NOTEBOOK_NESTING_DEPTH {
+        deepest = NotebookRepository::create(
+            conn,
+            CreateNotebookDto {
+                name: format!("Level {level}"),
+                parent_id: Some(deepest.id.clone()),
+            },
+        )
+        .expect("create level within the limit");
+        assert_eq!(
+            NotebookRepository::get_depth(conn, &deepest.id).unwrap(),
+            level
+        );
+    }
     let overflow_res = NotebookRepository::create(
         conn,
         CreateNotebookDto {
-            name: "Level 4 Overflow".to_string(),
-            parent_id: Some(grandchild.id.clone()),
+            name: "Overflow".to_string(),
+            parent_id: Some(deepest.id.clone()),
         },
     );
     match overflow_res {
@@ -368,7 +383,7 @@ fn move_notebook_and_defend_against_cycles_and_invalid_hierarchies() {
     assert_eq!(re_nested.parent_id, Some(root_a.id.clone()));
 
     // Create another deep node under Module -> Module is now level 3
-    // Trying to move a 2-level subtree under a level-2 parent would exceed depth 3
+    // Trying to move a 2-level subtree under a parent at depth MAX-1 would exceed the limit
     let deep_target = NotebookRepository::create(
         conn,
         CreateNotebookDto {
@@ -378,10 +393,23 @@ fn move_notebook_and_defend_against_cycles_and_invalid_hierarchies() {
     )
     .expect("create deep target under root b");
 
-    // Subproject has height 2 (Subproject -> Module). Moving Subproject under deep_target (depth 2)
-    // would produce depth 2 + 2 = 4 (> 3) -> MUST FAIL!
+    // Extend the chain under deep_target until it sits at depth MAX - 1.
+    let mut chain_tip = deep_target;
+    for level in 3..MAX_NOTEBOOK_NESTING_DEPTH {
+        chain_tip = NotebookRepository::create(
+            conn,
+            CreateNotebookDto {
+                name: format!("Chain {level}"),
+                parent_id: Some(chain_tip.id.clone()),
+            },
+        )
+        .expect("extend chain");
+    }
+
+    // Subproject has height 2 (Subproject -> Module). Moving it under chain_tip (depth MAX-1)
+    // would produce depth MAX + 1 -> MUST FAIL!
     let depth_overflow_move =
-        NotebookRepository::move_notebook(conn, &child.id, Some(&deep_target.id));
+        NotebookRepository::move_notebook(conn, &child.id, Some(&chain_tip.id));
     match depth_overflow_move {
         Err(StorageError::InvalidHierarchy(msg)) => {
             assert!(

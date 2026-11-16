@@ -638,3 +638,41 @@
   color: var(--color-accent-default);
   opacity: 0.85;
 }
+
+.notes-list-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  padding: 4px var(--spacing-md) 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary, var(--color-text-secondary));
+}
+
+.notes-list-breadcrumb-link {
+  max-width: 110px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+}
+
+.notes-list-breadcrumb-link:hover {
+  color: var(--color-accent-default);
+  text-decoration: underline;
+}
+
+.notes-list-breadcrumb-current {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}

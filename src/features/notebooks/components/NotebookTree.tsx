@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { NotebookTreeItem } from "./NotebookTreeItem";
 import { NotebookContextMenu } from "./NotebookContextMenu";
+import { MAX_NOTEBOOK_NESTING_DEPTH } from "../../../services/storage/limits";
 import { buildNotebookTree } from "../utils/notebookTree";
 import type { Notebook, NotebooksStatus } from "../types";
 import "./NotebookTree.css";
@@ -18,6 +19,8 @@ export interface NotebookTreeProps {
   onRenameNotebook?: (notebook: Notebook) => void;
   onDeleteNotebook?: (notebook: Notebook) => void;
   onExportNotebook?: (notebook: Notebook) => void;
+  onCreateNote?: (notebookId: string) => void;
+  onMoveNotebook?: (notebook: Notebook) => void;
   onDropNote?: (noteId: string, destinationNotebookId: string | null) => void;
   onRetry?: () => void;
   noteCounts?: Record<string, number>;
@@ -36,6 +39,8 @@ export const NotebookTree: React.FC<NotebookTreeProps> = ({
   onRenameNotebook,
   onDeleteNotebook,
   onExportNotebook,
+  onCreateNote,
+  onMoveNotebook,
   onDropNote,
   onRetry,
   noteCounts,
@@ -49,6 +54,19 @@ export const NotebookTree: React.FC<NotebookTreeProps> = ({
   const tree = useMemo(() => {
     return buildNotebookTree(notebooks, noteCounts);
   }, [notebooks, noteCounts]);
+
+  // Depth (1-based) of every notebook, used to stop offering sub-notebooks at the limit.
+  const depthById = useMemo(() => {
+    const map = new Map<string, number>();
+    const walk = (nodes: typeof tree) => {
+      for (const n of nodes) {
+        map.set(n.id, n.depth + 1);
+        walk(n.children);
+      }
+    };
+    walk(tree);
+    return map;
+  }, [tree]);
 
   const handleContextMenu = (e: React.MouseEvent, notebook: Notebook) => {
     e.preventDefault();
@@ -129,8 +147,11 @@ export const NotebookTree: React.FC<NotebookTreeProps> = ({
           x={contextMenu.x}
           y={contextMenu.y}
           notebook={contextMenu.notebook}
+          canCreateChild={(depthById.get(contextMenu.notebook.id) ?? 1) < MAX_NOTEBOOK_NESTING_DEPTH}
           onClose={() => setContextMenu(null)}
+          onNewNote={onCreateNote ? (nb) => onCreateNote(nb.id) : undefined}
           onNewChild={(nb) => onCreateNotebook?.(nb.id)}
+          onMove={onMoveNotebook}
           onRename={(nb) => onRenameNotebook?.(nb)}
           onDelete={(nb) => onDeleteNotebook?.(nb)}
           onExport={onExportNotebook}

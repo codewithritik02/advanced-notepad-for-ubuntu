@@ -2794,8 +2794,8 @@ describe("Phase 14 Task 16 — Test Large Data Sets and Resource Limits", () => 
     );
   });
 
-  it("verifies notebook tree depth clamping strictly respects MAX_NOTEBOOK_NESTING_DEPTH = 3", () => {
-    const MAX_NOTEBOOK_NESTING_DEPTH = 3;
+  it("verifies notebook tree depth clamping strictly respects MAX_NOTEBOOK_NESTING_DEPTH = 7", () => {
+    const MAX_NOTEBOOK_NESTING_DEPTH = 7;
 
     // Helper: calculate hierarchy depth from parent-child references
     const calculateDepth = (notebookId, notebookMap) => {
@@ -2809,24 +2809,25 @@ describe("Phase 14 Task 16 — Test Large Data Sets and Resource Limits", () => 
       return depth;
     };
 
-    const notebooks = new Map([
-      ["nb-root", { id: "nb-root", name: "Root", parentId: null }],
-      ["nb-child", { id: "nb-child", name: "Child", parentId: "nb-root" }],
-      ["nb-grandchild", { id: "nb-grandchild", name: "Grandchild", parentId: "nb-child" }],
-    ]);
+    const notebooks = new Map();
+    for (let level = 1; level <= MAX_NOTEBOOK_NESTING_DEPTH; level++) {
+      notebooks.set(`nb-${level}`, {
+        id: `nb-${level}`,
+        name: `Level ${level}`,
+        parentId: level === 1 ? null : `nb-${level - 1}`,
+      });
+    }
 
-    assert.strictEqual(calculateDepth("nb-root", notebooks), 1);
-    assert.strictEqual(calculateDepth("nb-child", notebooks), 2);
-    assert.strictEqual(calculateDepth("nb-grandchild", notebooks), 3);
+    assert.strictEqual(calculateDepth("nb-1", notebooks), 1);
+    assert.strictEqual(calculateDepth("nb-3", notebooks), 3);
+    assert.strictEqual(calculateDepth(`nb-${MAX_NOTEBOOK_NESTING_DEPTH}`, notebooks), MAX_NOTEBOOK_NESTING_DEPTH);
 
-    // Can we add child under root? (depth 1 + 1 = 2 <= 3 -> YES)
-    assert.strictEqual(calculateDepth("nb-root", notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, true);
+    // A child can be added while the parent depth is below the limit
+    assert.strictEqual(calculateDepth("nb-1", notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, true);
+    assert.strictEqual(calculateDepth(`nb-${MAX_NOTEBOOK_NESTING_DEPTH - 1}`, notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, true);
 
-    // Can we add child under child? (depth 2 + 1 = 3 <= 3 -> YES)
-    assert.strictEqual(calculateDepth("nb-child", notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, true);
-
-    // Can we add child under grandchild? (depth 3 + 1 = 4 > 3 -> NO)
-    assert.strictEqual(calculateDepth("nb-grandchild", notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, false);
+    // ...but not under a notebook already at the maximum depth (UI hides "New Sub-notebook")
+    assert.strictEqual(calculateDepth(`nb-${MAX_NOTEBOOK_NESTING_DEPTH}`, notebooks) < MAX_NOTEBOOK_NESTING_DEPTH, false);
   });
 
   it("verifies resource limits and boundary validation rules across titles, tags, and search", () => {
@@ -3128,7 +3129,7 @@ describe("Phase 14 Task 18 — Unicode, Input Validation, and Adversarial Test D
     assert.ok(limitsCode.includes("MAX_NOTE_CONTENT_BYTES: usize = 10 * 1024 * 1024;"));
     assert.ok(limitsCode.includes("MAX_TAG_NAME_CHARS: usize = 100;"));
     assert.ok(limitsCode.includes("MAX_NOTEBOOK_NAME_CHARS: usize = 200;"));
-    assert.ok(limitsCode.includes("MAX_NOTEBOOK_NESTING_DEPTH: usize = 3;"));
+    assert.ok(limitsCode.includes("MAX_NOTEBOOK_NESTING_DEPTH: usize = 7;"));
     assert.ok(limitsCode.includes("MAX_ATTACHMENT_SIZE_BYTES: u64 = 100 * 1024 * 1024;"));
 
     // Validation functions enforce rejection on empty / overflow
@@ -20054,17 +20055,19 @@ describe("Phase 9 - Task 24: Security, Reliability, and Performance Verification
       assert.deepStrictEqual(parsed.tags, ["alpha", "beta", "zeta"]);
     });
 
-    it("nesting depth limits: enforces maximum notebook depth of 3 levels during validation", () => {
+    it("nesting depth limits: enforces maximum notebook depth of 7 levels during validation", () => {
       const validateNestingDepth = (notebookPath) => {
         if (!notebookPath) return true;
         const segments = notebookPath.split("/").filter((s) => s.trim().length > 0);
-        return segments.length <= 3;
+        return segments.length <= 7;
       };
 
       assert.strictEqual(validateNestingDepth("Work"), true);
       assert.strictEqual(validateNestingDepth("Work/Projects"), true);
       assert.strictEqual(validateNestingDepth("Work/Projects/2026"), true);
-      assert.strictEqual(validateNestingDepth("Work/Projects/2026/Q1"), false, "4 levels exceeds max nesting depth of 3");
+      assert.strictEqual(validateNestingDepth("Work/Projects/2026/Q1"), true);
+      assert.strictEqual(validateNestingDepth("A/B/C/D/E/F/G"), true);
+      assert.strictEqual(validateNestingDepth("A/B/C/D/E/F/G/H"), false, "8 levels exceeds max nesting depth of 7");
     });
   });
 

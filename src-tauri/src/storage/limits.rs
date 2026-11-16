@@ -20,8 +20,8 @@ pub const MAX_TAG_NAME_CHARS: usize = 100;
 /// Maximum notebook name length in Unicode characters: 200 characters.
 pub const MAX_NOTEBOOK_NAME_CHARS: usize = 200;
 
-/// Maximum notebook hierarchy depth: 3 levels.
-pub const MAX_NOTEBOOK_NESTING_DEPTH: usize = 3;
+/// Maximum notebook hierarchy depth: 7 levels.
+pub const MAX_NOTEBOOK_NESTING_DEPTH: usize = 7;
 
 // --- Attachment Bounds ---
 /// Default maximum attachment file size: 100 MiB (104,857,600 bytes).

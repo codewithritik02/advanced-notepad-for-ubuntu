@@ -10,6 +10,7 @@ export interface UseNotebooksReturn {
   loadNotebooks: () => Promise<void>;
   createNotebook: (name: string, parentId?: string | null) => Promise<Notebook>;
   renameNotebook: (id: string, name: string) => Promise<Notebook>;
+  moveNotebook: (id: string, newParentId: string | null) => Promise<Notebook>;
   deleteNotebook: (id: string) => Promise<boolean>;
 }
 
@@ -88,6 +89,18 @@ export function useNotebooks(isStorageReady = true): UseNotebooksReturn {
     }
   }, []);
 
+  const moveNotebook = useCallback(async (id: string, newParentId: string | null) => {
+    try {
+      const updated = await notebookService.move(id, newParentId);
+      setNotebooks((prev) => prev.map((nb) => (nb.id === id ? updated : nb)));
+      return updated;
+    } catch (err) {
+      logger.error("Notebook move failed", err, { notebookId: id });
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(msg);
+    }
+  }, []);
+
   const deleteNotebook = useCallback(async (id: string) => {
     try {
       const success = await notebookService.delete(id);
@@ -109,6 +122,7 @@ export function useNotebooks(isStorageReady = true): UseNotebooksReturn {
     loadNotebooks,
     createNotebook,
     renameNotebook,
+    moveNotebook,
     deleteNotebook,
   };
 }

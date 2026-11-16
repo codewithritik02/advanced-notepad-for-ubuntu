@@ -38,6 +38,14 @@ export const notebooksStorage = {
   },
 
   /**
+   * Moves a notebook (with its whole subtree) under a new parent, or to the top level (null).
+   * The backend rejects cycles and moves that would exceed the maximum nesting depth.
+   */
+  async move(id: string, newParentId: string | null): Promise<Notebook> {
+    return await invoke<Notebook>("move_notebook", { id, newParentId });
+  },
+
+  /**
    * Deletes a notebook safely. Fails if child notebooks exist.
    * Associated notes automatically have notebook_id unassigned to NULL (unfiled).
    */

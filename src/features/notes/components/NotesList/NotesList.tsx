@@ -11,6 +11,9 @@ export interface NotesListProps {
   onSelectNote?: (noteId: string) => void;
   status?: NotesListStatus;
   title?: string;
+  /** Ancestor chain (root first, ending with the current notebook); shown when it has 2+ entries. */
+  breadcrumb?: Array<{ id: string; name: string }>;
+  onBreadcrumbSelect?: (notebookId: string) => void;
   errorMessage?: string;
   errorTitle?: string;
   emptyTitle?: string;
@@ -73,6 +76,8 @@ export const NotesList = React.memo<NotesListProps>(({
   onSelectNote = () => {},
   status = "idle",
   title = "All Notes",
+  breadcrumb,
+  onBreadcrumbSelect,
   errorMessage,
   errorTitle,
   emptyTitle,
@@ -230,6 +235,33 @@ export const NotesList = React.memo<NotesListProps>(({
           </button>
         )}
       </div>
+
+      {breadcrumb && breadcrumb.length > 1 && !isSearchMode && !isTrashMode && (
+        <nav className="notes-list-breadcrumb" aria-label="Notebook path">
+          {breadcrumb.map((crumb, index) => {
+            const isLast = index === breadcrumb.length - 1;
+            return (
+              <React.Fragment key={crumb.id}>
+                {index > 0 && <span className="notes-list-breadcrumb-sep" aria-hidden="true">›</span>}
+                {isLast ? (
+                  <span className="notes-list-breadcrumb-current" aria-current="page" title={crumb.name}>
+                    {crumb.name}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="notes-list-breadcrumb-link"
+                    onClick={() => onBreadcrumbSelect?.(crumb.id)}
+                    title={crumb.name}
+                  >
+                    {crumb.name}
+                  </button>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </nav>
+      )}
 
       {/* Panel Body */}
       <div className="notes-list-content" onScroll={handleScroll}>

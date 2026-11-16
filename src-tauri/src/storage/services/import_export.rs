@@ -169,7 +169,7 @@ impl ImportExportService {
     }
 
     /// Resolves an existing notebook by slash-delimited path (e.g. "Work/Projects")
-    /// or creates the missing hierarchy levels idempotently (capped at 3 levels deep).
+    /// or creates the missing hierarchy levels idempotently (capped at MAX_NOTEBOOK_NESTING_DEPTH (7) levels deep).
     pub fn resolve_or_create_notebook_path(
         conn: &Connection,
         path_str: &str,
@@ -4279,7 +4279,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
         assert_eq!(imported_notes[0].format, "txt");
         assert!(imported_notes[0].content.contains("System Design"));
 
-        // 12. Verify Nesting Depth Enforcement (Max 3 levels)
+        // 12. Verify Nesting Depth Enforcement (Max 7 levels)
         let deep_json = temp_dir.join("deep_nesting.json");
         let invalid_deep_doc = InterchangeDocument {
             schema: None,
@@ -4295,7 +4295,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
                 title: "Deep Note".to_string(),
                 content: "Content".to_string(),
                 format: "txt".to_string(),
-                notebook_path: Some("Level1/Level2/Level3/Level4".to_string()),
+                notebook_path: Some("L1/L2/L3/L4/L5/L6/L7/L8".to_string()),
                 tags: vec![],
                 is_favorite: false,
                 is_pinned: false,
@@ -4315,7 +4315,7 @@ Check out our related note: [System Design](note:550e8400-e29b-41d4-a716-4466554
             .unwrap_err();
         assert!(deep_err
             .to_string()
-            .contains("exceeding maximum nesting depth of 3 levels"));
+            .contains("exceeding maximum nesting depth of 7 levels"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

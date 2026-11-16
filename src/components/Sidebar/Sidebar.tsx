@@ -31,6 +31,8 @@ export interface SidebarProps {
   onRenameNotebook?: (notebook: Notebook) => void;
   onDeleteNotebook?: (notebook: Notebook) => void;
   onExportNotebook?: (notebook: Notebook) => void;
+  onCreateNoteInNotebook?: (notebookId: string) => void;
+  onMoveNotebook?: (notebook: Notebook) => void;
   onImportNotes?: () => void;
   onDropNote?: (noteId: string, destinationNotebookId: string | null) => void;
   onRetryNotebooks?: () => void;
@@ -143,6 +145,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRenameNotebook,
   onDeleteNotebook,
   onExportNotebook,
+  onCreateNoteInNotebook,
+  onMoveNotebook,
   onImportNotes,
   onDropNote,
   onRetryNotebooks,
@@ -379,6 +383,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onRenameNotebook={onRenameNotebook}
             onDeleteNotebook={onDeleteNotebook}
             onExportNotebook={onExportNotebook}
+            onCreateNote={onCreateNoteInNotebook}
+            onMoveNotebook={onMoveNotebook}
             onDropNote={onDropNote}
             onRetry={onRetryNotebooks}
             noteCounts={noteCounts}

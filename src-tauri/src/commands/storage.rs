@@ -370,6 +370,17 @@ pub fn update_notebook(
 }
 
 #[tauri::command]
+pub fn move_notebook(
+    db: State<'_, Database>,
+    id: String,
+    new_parent_id: Option<String>,
+) -> Result<Notebook, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    NotebookRepository::move_notebook(&conn, &id, new_parent_id.as_deref())
+        .map_err(|e| e.user_friendly_message())
+}
+
+#[tauri::command]
 pub fn delete_notebook(db: State<'_, Database>, id: String) -> Result<bool, String> {
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
     NotebookRepository::delete(&mut conn, &id).map_err(|e| e.user_friendly_message())

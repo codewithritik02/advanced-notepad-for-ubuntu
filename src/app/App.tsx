@@ -30,6 +30,7 @@ import {
   RenameNotebookDialog,
   DeleteNotebookDialog,
   MoveNoteDialog,
+  MoveNotebookDialog,
   Notebook,
   computeNotebookPath,
 } from "../features/notebooks";
@@ -431,6 +432,7 @@ export function App() {
     error: notebooksError,
     loadNotebooks,
     createNotebook,
+    moveNotebook,
     renameNotebook,
     deleteNotebook,
   } = useNotebooks(isStorageReady);
@@ -466,6 +468,7 @@ export function App() {
 
   // Move Note Modal State (Task 16)
   const [movingNote, setMovingNote] = useState<Note | null>(null);
+  const [movingNotebook, setMovingNotebook] = useState<Notebook | null>(null);
 
   // Permanent Delete Modal State (Phase 8, Task 16)
   const [noteActionConfirm, setNoteActionConfirm] = useState<NoteConfirmTarget | null>(null);
@@ -808,7 +811,10 @@ export function App() {
   const isCreatingRef = useRef(false);
 
   // Persistent note creation (Task 18: Assign to selected notebook or unfiled; auto-tag if in tag view)
-  const handleNewNoteAction = useCallback(async () => {
+  const handleNewNoteAction = useCallback(async (notebookIdOverride?: unknown) => {
+    // Also used directly as a click handler, so only accept a real notebook id string.
+    const forcedNotebookId =
+      typeof notebookIdOverride === "string" ? notebookIdOverride : undefined;
     if (isCreatingRef.current) return;
     isCreatingRef.current = true;
 
@@ -823,18 +829,19 @@ export function App() {
       }
 
       // If user was viewing trash or has an active search filter, reset to all-notes to reveal the new note
-      if (activeNavId === "trash") {
+      if (!forcedNotebookId && activeNavId === "trash") {
         setActiveNavId("all-notes");
         selectAllNotes();
       }
-      if (searchQuery) {
+      if (!forcedNotebookId && searchQuery) {
         clearSearch();
       }
 
       const targetNotebookId =
-        activeNavId === "notebook" && selectedNotebookId
+        forcedNotebookId ??
+        (activeNavId === "notebook" && selectedNotebookId
           ? selectedNotebookId
-          : undefined;
+          : undefined);
 
       const created = await storageService.notes.create({
         title: "Untitled Note",
@@ -843,7 +850,7 @@ export function App() {
         notebook_id: targetNotebookId,
       });
 
-      if (activeNavId === "tags" && selectedTagId) {
+      if (!forcedNotebookId && activeNavId === "tags" && selectedTagId) {
         try {
           await storageService.tags.addToNote(created.id, selectedTagId);
         } catch (e) {
@@ -851,7 +858,7 @@ export function App() {
         }
       }
 
-      if (activeNavId === "favorites") {
+      if (!forcedNotebookId && activeNavId === "favorites") {
         try {
           await storageService.notes.setFavorite(created.id, true);
           created.is_favorite = true;
@@ -875,6 +882,27 @@ export function App() {
       isCreatingRef.current = false;
     }
   }, [activeNavId, selectedNotebookId, searchQuery]);
+
+  // Right-click "New Note" on a notebook: open that notebook, then create the note inside it
+  const handleCreateNoteInNotebook = useCallback(
+    async (notebookId: string) => {
+      if (editorSaveRef.current) {
+        try {
+          await editorSaveRef.current();
+        } catch (saveErr) {
+          logger.error("AutoFlushOnNewNote", saveErr);
+        }
+      }
+      selectNotebook(notebookId, notebooks);
+      setActiveNavId("notebook");
+      if (searchQuery) {
+        clearSearch();
+      }
+      await loadNotes("notebook", notebookId, null);
+      await handleNewNoteAction(notebookId);
+    },
+    [notebooks, searchQuery, selectNotebook, clearSearch, loadNotes, handleNewNoteAction]
+  );
 
   // Persistent note update
   const handleSaveNote = useCallback(
@@ -1900,6 +1928,26 @@ export function App() {
     [renameNotebook]
   );
 
+  const handleMoveNotebook = useCallback(
+    async (id: string, newParentId: string | null) => {
+      if (inFlightMutationsRef.current.has(id)) return;
+      inFlightMutationsRef.current.add(id);
+      try {
+        await editorSaveRef.current?.();
+        await moveNotebook(id, newParentId);
+        if (newParentId) {
+          expandNotebook(newParentId);
+        }
+        // Reload so the tree and note paths reflect the new hierarchy
+        await loadNotebooks();
+        await refreshNoteCounts();
+      } finally {
+        inFlightMutationsRef.current.delete(id);
+      }
+    },
+    [moveNotebook, expandNotebook, loadNotebooks, refreshNoteCounts]
+  );
+
   const handleDeleteNotebook = useCallback(
     async (id: string) => {
       if (inFlightMutationsRef.current.has(id)) return;
@@ -2260,6 +2308,19 @@ export function App() {
     }
   };
 
+  // Ancestor chain (root first) of the open notebook, for the clickable breadcrumb
+  const notebookBreadcrumb: Array<{ id: string; name: string }> = [];
+  if (activeNavId === "notebook" && selectedNotebook && !searchQuery.trim()) {
+    const seen = new Set<string>();
+    let cur: Notebook | undefined = selectedNotebook;
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      notebookBreadcrumb.unshift({ id: cur.id, name: cur.name });
+      const parentId: string | null = cur.parent_id;
+      cur = parentId ? notebooks.find((n) => n.id === parentId) : undefined;
+    }
+  }
+
   const handleRetry = () => {
     if (!isStorageReady) {
       initStorage();
@@ -2441,6 +2502,8 @@ export function App() {
             onRenameNotebook={setRenamingNotebook}
             onDeleteNotebook={setDeletingNotebook}
             onExportNotebook={handleOpenExportNotebook}
+            onCreateNoteInNotebook={handleCreateNoteInNotebook}
+            onMoveNotebook={setMovingNotebook}
             onImportNotes={handleOpenImport}
             onDropNote={handleMoveNote}
             noteCounts={noteCounts}
@@ -2462,6 +2525,15 @@ export function App() {
           >
             <NotesList
               title={getSectionTitle()}
+              breadcrumb={notebookBreadcrumb.length > 1 ? notebookBreadcrumb : undefined}
+              onBreadcrumbSelect={(nbId) => {
+                void (async () => {
+                  await editorSaveRef.current?.();
+                  selectNotebook(nbId, notebooks);
+                  setActiveNavId("notebook");
+                  await loadNotes("notebook", nbId, null);
+                })();
+              }}
               notes={displayedNoteListItems}
               selectedNoteId={selectedNoteId}
               onSelectNote={handleKeyboardSelectNote}
@@ -2672,6 +2744,14 @@ export function App() {
         hasChildren={deletingNotebookHasChildren}
         onClose={() => setDeletingNotebook(null)}
         onDelete={handleDeleteNotebook}
+      />
+
+      <MoveNotebookDialog
+        isOpen={movingNotebook !== null}
+        notebook={movingNotebook}
+        notebooks={notebooks}
+        onClose={() => setMovingNotebook(null)}
+        onMove={handleMoveNotebook}
       />
 
       <MoveNoteDialog

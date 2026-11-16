@@ -9,3 +9,4 @@ export * from "./components/CreateNotebookDialog";
 export * from "./components/RenameNotebookDialog";
 export * from "./components/DeleteNotebookDialog";
 export * from "./components/MoveNoteDialog";
+export * from "./components/MoveNotebookDialog";

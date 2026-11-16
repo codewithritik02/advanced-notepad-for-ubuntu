@@ -115,6 +115,7 @@ pub fn run() {
             commands::get_notebook,
             commands::create_notebook,
             commands::update_notebook,
+            commands::move_notebook,
             commands::delete_notebook,
             commands::list_tags,
             commands::get_tag,

@@ -18,8 +18,8 @@ export const MAX_TAG_NAME_CHARS = 100;
 /** Maximum notebook name length in characters: 200 characters. */
 export const MAX_NOTEBOOK_NAME_CHARS = 200;
 
-/** Maximum notebook hierarchy nesting depth: 3 levels. */
-export const MAX_NOTEBOOK_NESTING_DEPTH = 3;
+/** Maximum notebook hierarchy nesting depth: 7 levels. */
+export const MAX_NOTEBOOK_NESTING_DEPTH = 7;
 
 // --- Attachment Bounds ---
 /** Default maximum attachment file size: 100 MiB (104,857,600 bytes). */

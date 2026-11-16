@@ -11,9 +11,9 @@ use personal_notepad_lib::storage::{
         sanitize_pagination_bounds, validate_bulk_operation_count, validate_note_content,
         validate_notebook_name, validate_tag_name, DEFAULT_PAGE_SIZE, MAX_ATTACHMENT_SIZE_BYTES,
         MAX_BATCH_FILE_COUNT, MAX_CHECKPOINT_COUNT, MAX_IMPORT_BATCH_SIZE_BYTES,
-        MAX_IMPORT_FILE_SIZE_BYTES, MAX_NOTEBOOK_NAME_CHARS, MAX_NOTE_CONTENT_BYTES,
-        MAX_NOTE_TITLE_CHARS, MAX_PAGE_SIZE, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_LENGTH,
-        MAX_TAG_NAME_CHARS,
+        MAX_IMPORT_FILE_SIZE_BYTES, MAX_NOTEBOOK_NAME_CHARS, MAX_NOTEBOOK_NESTING_DEPTH,
+        MAX_NOTE_CONTENT_BYTES, MAX_NOTE_TITLE_CHARS, MAX_PAGE_SIZE, MAX_SEARCH_LIMIT,
+        MAX_SEARCH_QUERY_LENGTH, MAX_TAG_NAME_CHARS,
     },
     models::{
         BackupCreateRequest, BackupType, CreateNoteDto, CreateNotebookDto, ListNotesQueryOptions,
@@ -188,18 +188,29 @@ fn test_notebook_hierarchy_navigation_and_depth_limits() {
     )
     .expect("create grandchild");
 
-    // 2. Enforce MAX_NOTEBOOK_NESTING_DEPTH = 3: creating level 4 must be rejected
+    // 2. Fill every remaining level up to MAX_NOTEBOOK_NESTING_DEPTH, then the next must be rejected
+    let mut deepest = grandchild.clone();
+    for level in 4..=MAX_NOTEBOOK_NESTING_DEPTH {
+        deepest = NotebookRepository::create(
+            &conn,
+            CreateNotebookDto {
+                name: format!("Level {level}"),
+                parent_id: Some(deepest.id.clone()),
+            },
+        )
+        .expect("create level within limit");
+    }
     let great_grandchild_res = NotebookRepository::create(
         &conn,
         CreateNotebookDto {
-            name: "Level 4: Beyond Limit".to_string(),
-            parent_id: Some(grandchild.id.clone()),
+            name: "Beyond Limit".to_string(),
+            parent_id: Some(deepest.id.clone()),
         },
     );
 
     assert!(
         matches!(great_grandchild_res, Err(StorageError::InvalidHierarchy(ref msg)) if msg.contains("maximum nesting depth")),
-        "Attempting to create notebook at depth 4 must be rejected with InvalidHierarchy error"
+        "Attempting to create notebook beyond the maximum depth must be rejected with InvalidHierarchy error"
     );
 
     // 3. Notebook name length boundaries (MAX_NOTEBOOK_NAME_CHARS = 200)

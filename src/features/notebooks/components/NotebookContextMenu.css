@@ -98,3 +98,12 @@
   background-color: var(--color-border-subtle);
   margin: 4px 0;
 }
+
+.notebook-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.notebook-context-menu-item:disabled:hover {
+  background: transparent;
+}

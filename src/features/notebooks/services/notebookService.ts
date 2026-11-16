@@ -45,6 +45,13 @@ export const notebookService = {
   },
 
   /**
+   * Moves a notebook (and its sub-notebooks) under a new parent, or to the top level.
+   */
+  async move(id: string, newParentId: string | null): Promise<Notebook> {
+    return await notebooksStorage.move(id, newParentId);
+  },
+
+  /**
    * Deletes a notebook by ID safely.
    * Fails if sub-notebooks still exist. Notes inside are reset to unfiled (NULL).
    */
