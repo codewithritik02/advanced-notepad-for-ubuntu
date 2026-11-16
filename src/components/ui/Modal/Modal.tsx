@@ -9,6 +9,8 @@ export interface ModalProps {
   children: React.ReactNode;
   footer?: React.ReactNode;
   maxWidth?: string;
+  /** "page" renders full-screen below the top bar instead of a floating dialog. */
+  variant?: "dialog" | "page";
 }
 
 const CloseIcon = () => (
@@ -25,6 +27,7 @@ export const Modal: React.FC<ModalProps> = ({
   children,
   footer,
   maxWidth = "520px",
+  variant = "dialog",
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
@@ -44,11 +47,13 @@ export const Modal: React.FC<ModalProps> = ({
 
   if (!isOpen) return null;
 
+  const isPage = variant === "page";
+
   return (
-    <div className="app-modal-backdrop" onClick={onClose} role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div className={`app-modal-backdrop${isPage ? " is-page" : ""}`} onClick={isPage ? undefined : onClose} role="dialog" aria-modal="true" aria-labelledby="modal-title">
       <div
-        className="app-modal-window"
-        style={{ maxWidth }}
+        className={`app-modal-window${isPage ? " is-page" : ""}`}
+        style={isPage ? undefined : { maxWidth }}
         onClick={(e) => e.stopPropagation()}
         ref={modalRef}
       >

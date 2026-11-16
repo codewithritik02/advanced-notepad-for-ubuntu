@@ -79,3 +79,43 @@
     transform: scale(1);
   }
 }
+
+/* Full-page variant: fills the area below the top bar */
+.app-modal-backdrop.is-page {
+  top: var(--topbar-height);
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background-color: var(--color-bg-base);
+  z-index: 900;
+}
+
+.app-modal-window.is-page {
+  max-width: none;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: var(--color-bg-base);
+  animation: none;
+}
+
+.app-modal-window.is-page .app-modal-header {
+  height: 56px;
+  padding: 0 max(var(--spacing-base), calc((100% - 860px) / 2));
+}
+
+.app-modal-window.is-page .app-modal-title {
+  font-size: var(--font-size-lg, 1.15rem);
+}
+
+.app-modal-window.is-page .app-modal-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  padding: var(--spacing-lg, 24px) max(var(--spacing-base), calc((100% - 860px) / 2));
+}
+
+.app-modal-window.is-page .app-modal-footer {
+  padding: var(--spacing-sm) max(var(--spacing-base), calc((100% - 860px) / 2));
+}

@@ -438,3 +438,37 @@
   flex-shrink: 0;
 }
 
+
+/* Full-page layout: fills the area below the top bar */
+.export-batch-modal-overlay {
+  top: var(--topbar-height, 48px);
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  background-color: var(--color-bg-base, #f8f9fa);
+  backdrop-filter: none;
+  z-index: 900;
+}
+
+.export-batch-modal-dialog {
+  max-width: none;
+  max-height: none;
+  height: 100%;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: var(--color-bg-base, #f8f9fa);
+}
+
+.export-batch-modal-header {
+  padding: 16px max(24px, calc((100% - 820px) / 2));
+}
+
+.export-batch-modal-body {
+  flex: 1;
+  min-height: 0;
+  padding: 24px max(24px, calc((100% - 820px) / 2));
+}
+
+.export-batch-modal-footer {
+  padding: 14px max(24px, calc((100% - 820px) / 2));
+}

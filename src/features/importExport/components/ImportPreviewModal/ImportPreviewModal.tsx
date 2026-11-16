@@ -175,7 +175,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
       isOpen={isPreviewVisible}
       onClose={isSubmitting ? () => {} : onClose}
       title="Import Notes Preview"
-      maxWidth="680px"
+        variant="page"
       footer={
         <div className="import-modal-footer">
           <div className="import-footer-left">

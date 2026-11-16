@@ -125,7 +125,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         isOpen={isOpen}
         onClose={onClose}
         title="Settings"
-        maxWidth="540px"
+        variant="page"
         footer={
           <Button variant="secondary" size="sm" onClick={onClose}>
             Done

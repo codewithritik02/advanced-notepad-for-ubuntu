@@ -241,3 +241,38 @@
   flex-shrink: 0;
 }
 
+
+/* Full-page layout: fills the area below the top bar */
+.export-note-modal-overlay {
+  top: var(--topbar-height, 48px);
+  align-items: stretch;
+  justify-content: stretch;
+  background-color: var(--color-bg-base, #f8f9fa);
+  backdrop-filter: none;
+  z-index: 900;
+}
+
+.export-note-modal-dialog {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  background-color: var(--color-bg-base, #f8f9fa);
+}
+
+.export-note-modal-header {
+  padding: 14px max(20px, calc((100% - 820px) / 2));
+}
+
+.export-note-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px max(20px, calc((100% - 820px) / 2));
+}
+
+.export-note-modal-footer {
+  padding: 12px max(20px, calc((100% - 820px) / 2));
+}
