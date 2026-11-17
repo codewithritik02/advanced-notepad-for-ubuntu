@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.5] - 2026-11-17
+
+### Changed
+- Backup, trash and restore notifications now appear in the top-right corner below the top bar, with a fixed width and word wrap for long messages.
+
+### Added
+- MIT `LICENSE`, `CONTRIBUTING.md`, and the reinstall command in the README.
+
+---
+
 ## [0.1.4] - 2026-11-17
 
 ### Fixed
