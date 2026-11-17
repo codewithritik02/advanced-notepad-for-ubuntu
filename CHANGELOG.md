@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2026-11-17
+
+### Changed
+- **Settings, Import and Export are now full pages** instead of floating dialogs. They fill the area below the top bar, the body scrolls, and the action buttons stay visible at the bottom, so the export screen no longer runs off the screen.
+
 ## [0.1.1] - 2026-11-16
 
 ### Added

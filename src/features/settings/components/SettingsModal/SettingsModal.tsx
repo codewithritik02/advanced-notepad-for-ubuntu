@@ -496,7 +496,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* About Section */}
           <div className="settings-section">
             <h4 className="settings-section-title">About</h4>
-            <p className="settings-about-version">Personal Notepad · Version 0.1.1</p>
+            <p className="settings-about-version">Personal Notepad · Version 0.1.2</p>
           </div>
       </div>
     </Modal>
