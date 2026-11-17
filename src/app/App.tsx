@@ -10,6 +10,7 @@ import { useTheme } from "../hooks/useTheme";
 import { useDisplaySettings } from "../hooks/useDisplaySettings";
 import { useSidebarPin } from "../hooks/useSidebarPin";
 import { useOpenFiles } from "../hooks/useOpenFiles";
+import "./App.css";
 import { useRecentNotes } from "../hooks/useRecentNotes";
 import type { OpenFilesReport } from "../services/storage/openFiles";
 import { markdownToPlainText } from "../utils/markdown";

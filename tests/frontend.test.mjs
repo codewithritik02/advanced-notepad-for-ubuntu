@@ -29627,4 +29627,8 @@ describe("Hidden Notes Feature & Invariants", () => {
     assert.match(backlinks, /backlinks-add-btn/);
     assert.match(backlinks, /<LinkFromNotesModal/);
   });
+
+  it("imports App.css so toast styles (backup/trash/restore) are actually applied", () => {
+    assert.match(read("src/app/App.tsx"), /import "\.\/App\.css";/);
+  });
 });

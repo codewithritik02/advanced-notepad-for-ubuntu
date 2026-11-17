@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2026-11-17
+
+### Fixed
+- Backup, trash and restore notifications are now styled as floating cards in the bottom-right corner. Their stylesheet was never loaded, so they showed as plain text at the bottom of the window.
+- The "Loading incoming links..." spinner in "Linked from" now shows.
+
+### Changed
+- README rewritten: clear feature list, platform support (Linux available, Windows in progress), install steps, project structure, how to run from source safely, and how to contribute.
+
+---
+
 ## [0.1.3] - 2026-11-17
 
 ### Added
