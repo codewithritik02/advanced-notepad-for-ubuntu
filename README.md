@@ -64,7 +64,15 @@ Start it from your application menu (search for **Personal Notepad**) or run:
 personal-notepad
 ```
 
-To upgrade, install the newer `.deb` the same way. Your notes stay untouched.
+**Upgrade** to a newer version: install the newer `.deb` the same way. Your notes stay untouched.
+
+**Reinstall** the same version (for example to repair a broken install, or to install a rebuilt package with the same version number): add `--reinstall`. Plain `apt install` does nothing when that version is already installed.
+
+```bash
+sudo apt install --reinstall -y ./personal-notepad_<version>_amd64.deb
+```
+
+Close the app before upgrading or reinstalling. Your notes are not affected either way.
 
 ### Where your data is stored
 
@@ -237,6 +245,14 @@ How to contribute:
 Found a bug or have an idea? Open an issue and explain what you expected and what happened.
 
 Please do not add anything that sends data over the network, adds tracking, or requires an account. Keeping the app private and offline is a core goal.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+---
+
+## License
+
+Personal Notepad is released under the [MIT License](LICENSE). You may use, copy, modify and distribute it freely.
 
 ---
 

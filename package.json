@@ -1,6 +1,7 @@
 {
   "name": "personal-notepad",
   "private": true,
+  "license": "MIT",
   "version": "0.1.4",
   "type": "module",
   "scripts": {
