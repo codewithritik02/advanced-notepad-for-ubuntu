@@ -364,3 +364,13 @@ export function appendInternalLinkToContent(
   const separator = raw.length === 0 ? "" : raw.endsWith("\n\n") ? "" : raw.endsWith("\n") ? "\n" : "\n\n";
   return raw + separator + token + "\n";
 }
+
+/**
+ * Shortens internal link targets inside a text snippet for display:
+ * `[Name](notepad://note/<id>)` becomes `[Name](...)`.
+ * Also handles a target that was cut off at the end of the snippet.
+ */
+export function compactInternalLinkSnippet(snippet: string): string {
+  if (!snippet) return snippet;
+  return snippet.replace(/\(notepad:\/\/note\/[^)\s]*\)?/gi, "(...)");
+}

@@ -29631,4 +29631,18 @@ describe("Hidden Notes Feature & Invariants", () => {
   it("imports App.css so toast styles (backup/trash/restore) are actually applied", () => {
     assert.match(read("src/app/App.tsx"), /import "\.\/App\.css";/);
   });
+
+  it("compacts internal link targets in backlink snippets and offers unlink", async () => {
+    const { compactInternalLinkSnippet, removeInternalLink } = await import("../src/utils/linkParser.ts");
+    assert.strictEqual(
+      compactInternalLinkSnippet("a [guddu](notepad://note/b8ba55e0-faef-4d20) b"),
+      "a [guddu](...) b"
+    );
+    assert.strictEqual(compactInternalLinkSnippet("x [g](notepad://note/b8ba55e0-fa"), "x [g](...)");
+    assert.strictEqual(compactInternalLinkSnippet("plain text"), "plain text");
+    assert.strictEqual(removeInternalLink("x [guddu](notepad://note/abc) y", "abc"), "x guddu y");
+    const backlinks = read("src/features/notes/components/Links/BacklinksSection.tsx");
+    assert.match(backlinks, /backlink-unlink-btn/);
+    assert.match(backlinks, /compactInternalLinkSnippet\(item\.labelSnippet\)/);
+  });
 });

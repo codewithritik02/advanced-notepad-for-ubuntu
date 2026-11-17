@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.6] - 2026-11-17
+
+### Added
+- "Linked from" cards have a **✕** button to remove the link from the other note (the link text stays as plain text), with a confirmation.
+
+### Changed
+- "Linked from" previews show `[Name](...)` instead of the full link ID.
+
+---
+
 ## [0.1.5] - 2026-11-17
 
 ### Changed
