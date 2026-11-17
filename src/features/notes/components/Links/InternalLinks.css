@@ -341,3 +341,11 @@
 .editor-preview-area .plain-note-image .attachment-image.is-inline {
   margin: 0;
 }
+
+/* Add-link button sits at the right edge; refresh follows it without extra auto margin */
+.backlinks-add-btn {
+  margin-left: auto;
+}
+.backlinks-refresh-btn.backlinks-refresh-after-add {
+  margin-left: 0;
+}

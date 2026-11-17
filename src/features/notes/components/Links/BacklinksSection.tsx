@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { BacklinkItem } from "../../../../services/storage/types";
 import { storageService } from "../../../../services/storage";
+import { LinkFromNotesModal } from "./LinkFromNotesModal";
 import "./InternalLinks.css";
 
 export interface BacklinksSectionProps {
@@ -9,6 +10,8 @@ export interface BacklinksSectionProps {
   isReadOnly?: boolean;
   refreshTrigger?: number | string | null;
   includeHidden?: boolean;
+  /** Title of the open note, used as the link label inserted into other notes. */
+  noteTitle?: string;
 }
 
 function formatBacklinkDate(dateStr?: string): string {
@@ -31,9 +34,12 @@ function formatBacklinkDate(dateStr?: string): string {
 export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
   noteId,
   onActivateLink,
+  isReadOnly = false,
   refreshTrigger,
   includeHidden = false,
+  noteTitle = "",
 }) => {
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
   const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
@@ -142,9 +148,24 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
           </span>
         </button>
 
+        {!isReadOnly && (
+          <button
+            type="button"
+            className="backlinks-refresh-btn backlinks-add-btn"
+            data-testid="backlinks-add-btn"
+            onClick={() => setIsPickerOpen(true)}
+            title="Link from other notes"
+            aria-label="Link from other notes"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
+        )}
         <button
           type="button"
-          className="backlinks-refresh-btn"
+          className="backlinks-refresh-btn backlinks-refresh-after-add"
           data-testid="backlinks-refresh-btn"
           onClick={() => fetchBacklinks(noteId)}
           title="Refresh incoming links"
@@ -227,6 +248,14 @@ export const BacklinksSection: React.FC<BacklinksSectionProps> = ({
           )}
         </div>
       )}
+      <LinkFromNotesModal
+        isOpen={isPickerOpen}
+        onClose={() => setIsPickerOpen(false)}
+        targetNoteId={noteId}
+        targetTitle={noteTitle}
+        includeHidden={includeHidden}
+        onLinked={() => fetchBacklinks(noteId)}
+      />
     </section>
   );
 };

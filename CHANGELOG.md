@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2026-11-17
+
+### Added
+- "Linked from" section now has a **+** button: pick one or more notes from a searchable list and a link to the current note is added to each of them. Notes that already link here are marked and skipped.
+
+---
+
 ## [0.1.2] - 2026-11-17
 
 ### Changed

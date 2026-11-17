@@ -29617,4 +29617,14 @@ describe("Hidden Notes Feature & Invariants", () => {
     assert.match(app, /onShowHiddenNotesChange=\{display\.setShowHiddenNotes\}/);
     assert.match(app, /if \(!display\.showHiddenNotes && selectedNoteId && !isExternalId\(selectedNoteId\)\)/);
   });
+
+  it("appends internal links to other notes for the Linked from picker without duplicating", async () => {
+    const { appendInternalLinkToContent } = await import("../src/utils/linkParser.ts");
+    assert.strictEqual(appendInternalLinkToContent("hello", "abc", "T"), "hello\n\n[T](notepad://note/abc)\n");
+    assert.strictEqual(appendInternalLinkToContent("", "abc", "T"), "[T](notepad://note/abc)\n");
+    assert.strictEqual(appendInternalLinkToContent("x [a](notepad://note/abc)", "abc", "T"), null);
+    const backlinks = read("src/features/notes/components/Links/BacklinksSection.tsx");
+    assert.match(backlinks, /backlinks-add-btn/);
+    assert.match(backlinks, /<LinkFromNotesModal/);
+  });
 });

@@ -345,3 +345,22 @@ export function removeInternalLink(
   return updated;
 }
 
+
+/**
+ * Appends an internal link to `targetNoteId` at the end of `content`.
+ * Returns null when the content already links to that note (nothing to do).
+ */
+export function appendInternalLinkToContent(
+  content: string,
+  targetNoteId: string,
+  targetTitle?: string
+): string | null {
+  const raw = typeof content === "string" ? content : "";
+  const needle = targetNoteId.trim().toLowerCase();
+  if (parseInternalLinks(raw).some((l) => l.targetId.toLowerCase() === needle)) {
+    return null;
+  }
+  const token = formatInternalLink(targetNoteId, targetTitle?.trim() || "Untitled Note");
+  const separator = raw.length === 0 ? "" : raw.endsWith("\n\n") ? "" : raw.endsWith("\n") ? "\n" : "\n\n";
+  return raw + separator + token + "\n";
+}

@@ -4,3 +4,4 @@ export * from "./NoteLinksBar";
 export * from "./BrokenLinkDialog";
 export * from "./BacklinksSection";
 
+export * from "./LinkFromNotesModal";

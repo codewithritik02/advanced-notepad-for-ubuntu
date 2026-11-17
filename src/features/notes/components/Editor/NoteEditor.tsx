@@ -1958,6 +1958,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             noteId={noteId}
             onActivateLink={handleActivateLink}
             isReadOnly={isReadOnly}
+            noteTitle={title}
             refreshTrigger={lastSavedAt}
             includeHidden={showHiddenNotes}
           />
